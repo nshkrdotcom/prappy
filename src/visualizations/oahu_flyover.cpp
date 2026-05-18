@@ -20,8 +20,10 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
   }
 
   bx::Vec3 terrainPosition(const OahuTerrainSample& sample) const {
-    const float x = (sample.x - 0.5f) * 12.0f;
-    const float z = (0.5f - sample.y) * 8.2f;
+    constexpr float zSpan = 8.2f;
+    constexpr float xSpan = zSpan * kOahuMapAspect;
+    const float x = (sample.x - 0.5f) * xSpan;
+    const float z = (0.5f - sample.y) * zSpan;
     const float y = std::max(sample.elevationMeters, 0.0f) / kOahuMaxElevationMeters * 1.85f;
     return {x, y, z};
   }
@@ -42,6 +44,14 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
 
     const float k = (t - 0.72f) / 0.28f;
     return rgbaFloatToAbgr(0.54f + k * 0.22f, 0.51f + k * 0.18f, 0.42f + k * 0.20f, 1.0f);
+  }
+
+  bool triangleTouchesLand(
+    const OahuTerrainSample& a,
+    const OahuTerrainSample& b,
+    const OahuTerrainSample& c
+  ) const {
+    return static_cast<int>(a.land) + static_cast<int>(b.land) + static_cast<int>(c.land) >= 2;
   }
 
   void pushTerrainTriangle(
@@ -105,10 +115,10 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
         const OahuTerrainSample& c = sampleAt(col, row + 1);
         const OahuTerrainSample& d = sampleAt(col + 1, row + 1);
 
-        if (a.land && b.land && c.land) {
+        if (triangleTouchesLand(a, b, c)) {
           pushTerrainTriangle(terrain, a, b, c);
         }
-        if (b.land && d.land && c.land) {
+        if (triangleTouchesLand(b, d, c)) {
           pushTerrainTriangle(terrain, b, d, c);
         }
       }
@@ -154,6 +164,8 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
     ImGui::Text("Grid: %d", kOahuGridWidth * kOahuGridHeight);
     ImGui::Text("Land samples: %d", landSamples);
     ImGui::Text("Coast points: %d", kOahuCoastlinePointCount);
+    ImGui::Text("Source points: %d", kOahuSourceCoastlinePointCount);
+    ImGui::Text("Aspect: %.3f", kOahuMapAspect);
     ImGui::Text("Max elevation: %.0f m", kOahuMaxElevationMeters);
   }
 };

@@ -64,6 +64,9 @@ Smoke-test the current build:
 pwsh scripts\visual-regression.ps1
 ```
 
+That script also validates the generated Oahu topology header before running
+the capture checks.
+
 Screenshots from the capture path are written below the active build directory:
 
 ```text

@@ -1,7 +1,8 @@
 # Development Workflow
 
-Most work happens in `src\main.cpp`, `src\oahu_topology.h`, shader files under
-`src\shaders\`, and scripts under `scripts\`.
+Most app work happens in `src\app.*`, `src\renderer.*`,
+`src\visualization_core.*`, files under `src\visualizations\`, shader files
+under `src\shaders\`, and scripts under `scripts\`.
 
 ## Build And Run
 
@@ -55,8 +56,9 @@ The capture is written under:
 build\windows-msvc-release\captures\
 ```
 
-The regression script runs all visualizations, verifies 32-bit BMP dimensions,
-checks that captures are nonblank, and does a D3D11 renderer override smoke.
+The regression script validates the generated Oahu topology header, runs all
+visualizations, verifies 32-bit BMP dimensions, checks that captures are
+nonblank, and does a D3D11 renderer override smoke.
 
 ## Renderer Override
 

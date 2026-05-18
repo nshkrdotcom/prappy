@@ -16,6 +16,13 @@ $buildDir = Join-Path $root "build\windows-msvc-$configName"
 $captureDir = Join-Path $buildDir "captures"
 $visualizations = @("RandomLines", "Starfield", "Oahu", "ParticleField")
 
+$python = Get-Command python -ErrorAction SilentlyContinue
+if ($python) {
+    & python (Join-Path $root "tools\validate_oahu_topology.py")
+} else {
+    Write-Warning "Python was not found; skipping generated Oahu topology validation."
+}
+
 function Read-BmpInfo {
     param(
         [Parameter(Mandatory=$true)]

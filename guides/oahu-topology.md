@@ -19,8 +19,25 @@ python tools\fetch_oahu_topology.py
 
 The generator pulls:
 
-- Coastline geometry from OpenStreetMap through Nominatim.
+- Coastline geometry from the Hawaii Statewide GIS Program `Coastline` layer,
+  filtered to the main Oahu polygon.
 - Elevation samples from the USGS National Map Elevation Point Query Service.
+
+The coastline layer is exposed by the State GIS ArcGIS service as GeoJSON and
+is derived from USGS Digital Line Graphs. The generator keeps the source ring in
+projected meters before normalizing it, so the rendered island preserves the
+east-west/north-south aspect instead of stretching raw longitude and latitude.
+
+## Validate The Generated Header
+
+After regenerating, run:
+
+```powershell
+python tools\validate_oahu_topology.py
+```
+
+That check verifies the source, sample count, Oahu bounds, aspect ratio, source
+area, grid density, and sampled elevation range.
 
 ## When To Regenerate
 
@@ -35,6 +52,7 @@ Regenerate when you want to change:
 After regenerating, build and smoke-test Oahu:
 
 ```powershell
+python tools\validate_oahu_topology.py
 pwsh scripts\build.ps1
 pwsh scripts\run.ps1 -Visualization Oahu -SmokeTest -ScreenshotSmoke
 ```

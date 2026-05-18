@@ -79,6 +79,7 @@ and writes a BMP file under `captures\`.
 
 ## Regression Coverage
 
-`scripts\visual-regression.ps1` is the first behavior-level test layer. It runs
-all visualizations, captures screenshots, verifies BMP dimensions, checks for
-nonblank pixels, and smoke-tests a D3D11 renderer override.
+`scripts\visual-regression.ps1` is the first behavior-level test layer. It
+validates the generated Oahu topology header, runs all visualizations, captures
+screenshots, verifies BMP dimensions, checks for nonblank pixels, and
+smoke-tests a D3D11 renderer override.

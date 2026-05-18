@@ -1,6 +1,6 @@
 # Visualization Guide
 
-Prappy currently ships three visualizations:
+Prappy currently ships four visualizations:
 
 - Random Lines 2D
 - Infinite Starfield
@@ -30,8 +30,9 @@ The 3D visualizations share a camera rig:
 - Mouse wheel: zoom for terrain, FOV adjustment for the starfield.
 - Reset Camera: restore the visualization's default camera state.
 
-The Oahu flyover also has an auto-route mode. Disable auto-route from the
-inspector or by interacting with the canvas.
+The Oahu flyover uses a generated USGS/Hawaii GIS coastline and elevation data
+header. It also has an auto-route mode. Disable auto-route from the inspector or
+by interacting with the canvas.
 
 The particle field exposes inspector controls for particle count, speed, spread,
 turbulence, trail length, hue drift, and reset. It uses bgfx-submitted vertex
@@ -59,7 +60,7 @@ struct MyVisualization final : IVisualizationModule {
   const VisualizationDescriptor& descriptor() const override;
   void reset(const ImVec2& size) override;
   void draw(VisualizationContext& context) override;
-  void drawInspector() const override;
+  void drawInspector() override;
 };
 ```
 

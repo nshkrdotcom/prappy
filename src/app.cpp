@@ -855,15 +855,18 @@ void drawVisualizationTab(AppState& state) {
 }
 
 void drawDataTab() {
-  drawKeyValue("Oahu relation", "OSM 3489649");
-  drawKeyValue("Coastline", "Nominatim GeoJSON");
+  drawKeyValue("Oahu source", "Hawaii GIS Coastline");
+  drawKeyValue("Coastline", "USGS DLG-derived polygon");
   drawKeyValue("Elevation", "USGS EPQS meters");
   drawKeyValueNumber("Grid width", kOahuGridWidth);
   drawKeyValueNumber("Grid height", kOahuGridHeight);
   drawKeyValueNumber("Coast samples", kOahuCoastlinePointCount);
+  drawKeyValueNumber("Source samples", kOahuSourceCoastlinePointCount);
+  drawKeyValueFloat("Map aspect", kOahuMapAspect);
   ImGui::Separator();
   drawKeyValue("Topology file", "src/oahu_topology.h");
   drawKeyValue("Refresh tool", "tools/fetch_oahu_topology.py");
+  drawKeyValue("Validate tool", "tools/validate_oahu_topology.py");
 }
 
 void drawInspectorPanel(AppState& state) {
