@@ -624,6 +624,10 @@ struct AppState {
   int height = 720;
   bool running = true;
   bool smokeTest = false;
+  bool focusMode = false;
+  bool showStackPanel = true;
+  bool showInspectorPanel = true;
+  bool showStatusStrip = true;
   int frameCount = 0;
   float deltaSeconds = 1.0f / 60.0f;
   float elapsedSeconds = 0.0f;
@@ -678,6 +682,8 @@ Program loadProgram(const char* vsPath, const char* fsPath) {
   program.handle = bgfx::createProgram(vs, fs, true);
   return program;
 }
+
+void applyPrappyStyle();
 
 void initVisualizationRenderer(AppState& state) {
   state.visualizationRenderer.colorLayout
@@ -753,7 +759,7 @@ void initImGui(AppState& state) {
   io.DisplaySize = ImVec2(static_cast<float>(state.width), static_cast<float>(state.height));
 
   logSmoke(state, "smoke: initImGui/style");
-  ImGui::StyleColorsDark();
+  applyPrappyStyle();
 
   logSmoke(state, "smoke: initImGui/layout");
   state.imguiLayout
@@ -1021,6 +1027,427 @@ double timerMilliseconds(int64_t begin, int64_t end, int64_t frequency) {
   return static_cast<double>(end - begin) * 1000.0 / static_cast<double>(frequency);
 }
 
+void applyPrappyStyle() {
+  ImGui::StyleColorsDark();
+
+  ImGuiStyle& style = ImGui::GetStyle();
+  style.WindowRounding = 0.0f;
+  style.ChildRounding = 5.0f;
+  style.FrameRounding = 4.0f;
+  style.PopupRounding = 5.0f;
+  style.GrabRounding = 4.0f;
+  style.TabRounding = 4.0f;
+  style.ScrollbarRounding = 8.0f;
+  style.WindowBorderSize = 0.0f;
+  style.ChildBorderSize = 1.0f;
+  style.FrameBorderSize = 0.0f;
+  style.WindowPadding = ImVec2(10.0f, 10.0f);
+  style.FramePadding = ImVec2(9.0f, 5.0f);
+  style.ItemSpacing = ImVec2(8.0f, 7.0f);
+  style.ItemInnerSpacing = ImVec2(7.0f, 5.0f);
+
+  ImVec4* colors = style.Colors;
+  colors[ImGuiCol_Text] = ImVec4(0.91f, 0.94f, 0.97f, 1.0f);
+  colors[ImGuiCol_TextDisabled] = ImVec4(0.52f, 0.58f, 0.64f, 1.0f);
+  colors[ImGuiCol_WindowBg] = ImVec4(0.035f, 0.043f, 0.058f, 0.96f);
+  colors[ImGuiCol_ChildBg] = ImVec4(0.055f, 0.064f, 0.083f, 0.94f);
+  colors[ImGuiCol_PopupBg] = ImVec4(0.045f, 0.052f, 0.068f, 0.98f);
+  colors[ImGuiCol_Border] = ImVec4(0.19f, 0.23f, 0.28f, 0.82f);
+  colors[ImGuiCol_FrameBg] = ImVec4(0.08f, 0.10f, 0.13f, 0.92f);
+  colors[ImGuiCol_FrameBgHovered] = ImVec4(0.12f, 0.16f, 0.20f, 0.96f);
+  colors[ImGuiCol_FrameBgActive] = ImVec4(0.16f, 0.22f, 0.28f, 1.0f);
+  colors[ImGuiCol_TitleBg] = ImVec4(0.04f, 0.05f, 0.06f, 1.0f);
+  colors[ImGuiCol_TitleBgActive] = ImVec4(0.05f, 0.07f, 0.09f, 1.0f);
+  colors[ImGuiCol_MenuBarBg] = ImVec4(0.035f, 0.043f, 0.058f, 0.98f);
+  colors[ImGuiCol_ScrollbarBg] = ImVec4(0.035f, 0.043f, 0.058f, 0.78f);
+  colors[ImGuiCol_ScrollbarGrab] = ImVec4(0.24f, 0.29f, 0.34f, 0.9f);
+  colors[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.31f, 0.38f, 0.44f, 0.95f);
+  colors[ImGuiCol_CheckMark] = ImVec4(0.31f, 0.76f, 0.86f, 1.0f);
+  colors[ImGuiCol_SliderGrab] = ImVec4(0.31f, 0.76f, 0.86f, 0.88f);
+  colors[ImGuiCol_Button] = ImVec4(0.10f, 0.13f, 0.17f, 0.96f);
+  colors[ImGuiCol_ButtonHovered] = ImVec4(0.16f, 0.22f, 0.28f, 1.0f);
+  colors[ImGuiCol_ButtonActive] = ImVec4(0.23f, 0.36f, 0.42f, 1.0f);
+  colors[ImGuiCol_Header] = ImVec4(0.11f, 0.16f, 0.20f, 0.92f);
+  colors[ImGuiCol_HeaderHovered] = ImVec4(0.16f, 0.23f, 0.29f, 1.0f);
+  colors[ImGuiCol_HeaderActive] = ImVec4(0.22f, 0.36f, 0.42f, 1.0f);
+  colors[ImGuiCol_Separator] = ImVec4(0.20f, 0.24f, 0.29f, 0.75f);
+  colors[ImGuiCol_Tab] = ImVec4(0.08f, 0.10f, 0.13f, 0.96f);
+  colors[ImGuiCol_TabHovered] = ImVec4(0.19f, 0.29f, 0.35f, 1.0f);
+  colors[ImGuiCol_TabSelected] = ImVec4(0.14f, 0.23f, 0.28f, 1.0f);
+  colors[ImGuiCol_TableHeaderBg] = ImVec4(0.08f, 0.10f, 0.13f, 1.0f);
+  colors[ImGuiCol_TableBorderStrong] = ImVec4(0.22f, 0.27f, 0.32f, 1.0f);
+  colors[ImGuiCol_TableBorderLight] = ImVec4(0.15f, 0.18f, 0.22f, 1.0f);
+}
+
+const char* buildConfiguration() {
+#ifdef NDEBUG
+  return "Release";
+#else
+  return "Debug";
+#endif
+}
+
+const char* compilerLabel() {
+#ifdef _MSC_VER
+  static char label[32];
+  std::snprintf(label, sizeof(label), "MSVC %d", _MSC_VER);
+  return label;
+#else
+  return "C++20";
+#endif
+}
+
+int oahuLandSampleCount() {
+  int count = 0;
+  for (const OahuTerrainSample& sample : kOahuTerrain) {
+    if (sample.land) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+const char* visualizationSpaceLabel(VisualizationId id) {
+  switch (id) {
+    case VisualizationId::RandomLines2D:
+      return "2D screen-space line pass";
+    case VisualizationId::Starfield3D:
+      return "3D line pass";
+    case VisualizationId::OahuFlyover:
+      return "3D terrain pass";
+  }
+
+  return "Unknown";
+}
+
+bool drawModeButton(const char* label, bool active, const ImVec2& size) {
+  if (active) {
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.38f, 0.43f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.23f, 0.47f, 0.53f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.16f, 0.32f, 0.38f, 1.0f));
+  }
+
+  const bool pressed = ImGui::Button(label, size);
+
+  if (active) {
+    ImGui::PopStyleColor(3);
+  }
+
+  return pressed;
+}
+
+void drawKeyValue(const char* key, const char* value) {
+  ImGui::TextDisabled("%s", key);
+  ImGui::SameLine(136.0f);
+  ImGui::TextUnformatted(value);
+}
+
+void drawKeyValueNumber(const char* key, int value) {
+  char buffer[32];
+  std::snprintf(buffer, sizeof(buffer), "%d", value);
+  drawKeyValue(key, buffer);
+}
+
+void drawKeyValueFloat(const char* key, double value, const char* suffix = "") {
+  char buffer[48];
+  std::snprintf(buffer, sizeof(buffer), "%.2f%s", value, suffix);
+  drawKeyValue(key, buffer);
+}
+
+void drawMetricTile(const char* label, const char* value, const ImVec4& accent) {
+  ImGui::BeginGroup();
+  ImGui::PushStyleColor(ImGuiCol_Text, accent);
+  ImGui::TextUnformatted(value);
+  ImGui::PopStyleColor();
+  ImGui::TextDisabled("%s", label);
+  ImGui::EndGroup();
+}
+
+void drawLibraryModule(
+  const char* name,
+  const char* role,
+  const char* primary,
+  const char* secondary,
+  const ImVec4& accent
+) {
+  ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.065f, 0.078f, 0.098f, 0.96f));
+  ImGui::BeginChild(name, ImVec2(0.0f, 86.0f), ImGuiChildFlags_Borders);
+  ImGui::PushStyleColor(ImGuiCol_Text, accent);
+  ImGui::TextUnformatted(name);
+  ImGui::PopStyleColor();
+  ImGui::SameLine();
+  ImGui::TextDisabled("%s", role);
+  ImGui::Separator();
+  ImGui::TextUnformatted(primary);
+  ImGui::TextDisabled("%s", secondary);
+  ImGui::EndChild();
+  ImGui::PopStyleColor();
+}
+
+void drawVisualizationSelector(AppState& state) {
+  const float available = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
+  const float gap = 6.0f;
+  const float width = std::clamp((available - gap * 2.0f) / 3.0f, 92.0f, 154.0f);
+  const ImVec2 size(width, 30.0f);
+
+  if (drawModeButton("Lines", state.visualizations.active == VisualizationId::RandomLines2D, size)) {
+    state.visualizations.setActive(VisualizationId::RandomLines2D);
+  }
+  ImGui::SameLine(0.0f, gap);
+  if (drawModeButton("Starfield", state.visualizations.active == VisualizationId::Starfield3D, size)) {
+    state.visualizations.setActive(VisualizationId::Starfield3D);
+  }
+  ImGui::SameLine(0.0f, gap);
+  if (drawModeButton("Oahu", state.visualizations.active == VisualizationId::OahuFlyover, size)) {
+    state.visualizations.setActive(VisualizationId::OahuFlyover);
+  }
+}
+
+void drawCommandBar(AppState& state) {
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f, 10.0f));
+  ImGui::BeginChild(
+    "CommandBar",
+    ImVec2(0.0f, 66.0f),
+    ImGuiChildFlags_Borders,
+    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse
+  );
+
+  if (ImGui::BeginTable("CommandBarLayout", 3, ImGuiTableFlags_SizingStretchProp)) {
+    ImGui::TableSetupColumn("Brand", ImGuiTableColumnFlags_WidthFixed, 210.0f);
+    ImGui::TableSetupColumn("Modes", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, 310.0f);
+    ImGui::TableNextRow();
+
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted("PRAPPY");
+    ImGui::TextDisabled("SDL3 / bgfx / Dear ImGui");
+
+    ImGui::TableSetColumnIndex(1);
+    drawVisualizationSelector(state);
+    ImGui::TextDisabled("%s", visualizationSpaceLabel(state.visualizations.active));
+
+    ImGui::TableSetColumnIndex(2);
+    if (ImGui::Button(state.focusMode ? "Workspace" : "Focus", ImVec2(92.0f, 30.0f))) {
+      state.focusMode = !state.focusMode;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset", ImVec2(82.0f, 30.0f))) {
+      state.visualizations.resetRequested = true;
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox("Diagnostics", &state.visualizations.showStatus);
+    ImGui::TextDisabled("%s / %s", buildConfiguration(), compilerLabel());
+
+    ImGui::EndTable();
+  }
+
+  ImGui::EndChild();
+  ImGui::PopStyleVar();
+}
+
+void drawStackPanel(AppState& state) {
+  const bgfx::Caps* caps = bgfx::getCaps();
+  const bgfx::Stats* stats = bgfx::getStats();
+
+  char sdlPrimary[64];
+  std::snprintf(sdlPrimary, sizeof(sdlPrimary), "%d x %d window", state.width, state.height);
+
+  char bgfxPrimary[96];
+  std::snprintf(
+    bgfxPrimary,
+    sizeof(bgfxPrimary),
+    "%s / %s",
+    caps ? bgfx::getRendererName(caps->rendererType) : "renderer",
+    caps ? vendorName(caps->vendorId) : "GPU"
+  );
+
+  char imguiPrimary[64];
+  std::snprintf(imguiPrimary, sizeof(imguiPrimary), "%.1f ms UI tick", state.deltaSeconds * 1000.0f);
+
+  char buildPrimary[64];
+  std::snprintf(buildPrimary, sizeof(buildPrimary), "%s C++20", buildConfiguration());
+
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 12.0f));
+  ImGui::BeginChild("StackPanel", ImVec2(284.0f, 0.0f), ImGuiChildFlags_Borders);
+  ImGui::TextUnformatted("Native Stack");
+  ImGui::TextDisabled("runtime surface");
+  ImGui::Separator();
+
+  drawLibraryModule(
+    "SDL3",
+    "window/input",
+    sdlPrimary,
+    "event pump + native handle",
+    ImVec4(0.37f, 0.78f, 0.92f, 1.0f)
+  );
+  drawLibraryModule(
+    "bgfx",
+    "renderer",
+    bgfxPrimary,
+    stats ? "custom transient vertex passes" : "initializing",
+    ImVec4(0.58f, 0.84f, 0.46f, 1.0f)
+  );
+  drawLibraryModule(
+    "Dear ImGui",
+    "tool UI",
+    imguiPrimary,
+    "menus, tabs, tables, overlays",
+    ImVec4(0.94f, 0.70f, 0.36f, 1.0f)
+  );
+  drawLibraryModule(
+    "CMake/Ninja",
+    compilerLabel(),
+    buildPrimary,
+    "scripted Windows build",
+    ImVec4(0.84f, 0.62f, 0.92f, 1.0f)
+  );
+
+  ImGui::EndChild();
+  ImGui::PopStyleVar();
+}
+
+void drawRendererTab(AppState& state) {
+  const bgfx::Caps* caps = bgfx::getCaps();
+  const bgfx::Stats* stats = bgfx::getStats();
+  const double renderCpuMs = stats
+    ? timerMilliseconds(stats->cpuTimeBegin, stats->cpuTimeEnd, stats->cpuTimerFreq)
+    : 0.0;
+  const double gpuMs = stats
+    ? timerMilliseconds(stats->gpuTimeBegin, stats->gpuTimeEnd, stats->gpuTimerFreq)
+    : 0.0;
+
+  char frameValue[32];
+  char cpuValue[32];
+  char gpuValue[32];
+  std::snprintf(frameValue, sizeof(frameValue), "%.2f ms", state.deltaSeconds * 1000.0f);
+  std::snprintf(cpuValue, sizeof(cpuValue), "%.2f ms", renderCpuMs);
+  std::snprintf(gpuValue, sizeof(gpuValue), "%.2f ms", gpuMs);
+
+  if (ImGui::BeginTable("RendererMetrics", 3, ImGuiTableFlags_SizingStretchSame)) {
+    ImGui::TableNextColumn();
+    drawMetricTile("frame", frameValue, ImVec4(0.38f, 0.82f, 0.92f, 1.0f));
+    ImGui::TableNextColumn();
+    drawMetricTile("CPU", cpuValue, ImVec4(0.80f, 0.88f, 0.52f, 1.0f));
+    ImGui::TableNextColumn();
+    drawMetricTile("GPU", gpuValue, ImVec4(0.94f, 0.68f, 0.42f, 1.0f));
+    ImGui::EndTable();
+  }
+
+  ImGui::Separator();
+  if (caps) {
+    drawKeyValue("Renderer", bgfx::getRendererName(caps->rendererType));
+    drawKeyValue("Vendor", vendorName(caps->vendorId));
+    drawKeyValueNumber("Device", caps->deviceId);
+    drawKeyValueNumber("GPUs", static_cast<int>(caps->numGPUs));
+    drawKeyValue("Compute", (caps->supported & BGFX_CAPS_COMPUTE) ? "available" : "unavailable");
+  }
+  if (stats) {
+    drawKeyValueNumber("Draw calls", static_cast<int>(stats->numDraw));
+    drawKeyValueNumber("Transient VB", static_cast<int>(stats->transientVbUsed));
+  }
+}
+
+void drawVisualizationTab(AppState& state) {
+  drawVisualizationSelector(state);
+  ImGui::Separator();
+  drawKeyValue("Active", visualizationName(state.visualizations.active));
+  drawKeyValue("Space", visualizationSpaceLabel(state.visualizations.active));
+
+  switch (state.visualizations.active) {
+    case VisualizationId::RandomLines2D:
+      drawKeyValueNumber("Segments", static_cast<int>(state.visualizations.randomLines.segments.size()));
+      drawKeyValue("Primitive", "line list");
+      drawKeyValue("Coordinates", "screen pixels");
+      break;
+    case VisualizationId::Starfield3D:
+      drawKeyValueNumber("Stars", static_cast<int>(state.visualizations.starfield.stars.size()));
+      drawKeyValue("Primitive", "depth lines");
+      drawKeyValue("Camera", "perspective");
+      break;
+    case VisualizationId::OahuFlyover:
+      drawKeyValueNumber("Grid", kOahuGridWidth * kOahuGridHeight);
+      drawKeyValueNumber("Land samples", oahuLandSampleCount());
+      drawKeyValueNumber("Coast points", kOahuCoastlinePointCount);
+      drawKeyValueFloat("Max elevation", kOahuMaxElevationMeters, " m");
+      break;
+  }
+
+  ImGui::Separator();
+  ImGui::Checkbox("Renderer overlay", &state.visualizations.showStatus);
+  ImGui::Checkbox("Focus mode", &state.focusMode);
+  if (ImGui::Button("Reset Active Visualization", ImVec2(-1.0f, 30.0f))) {
+    state.visualizations.resetRequested = true;
+  }
+}
+
+void drawDataTab() {
+  drawKeyValue("Oahu relation", "OSM 3489649");
+  drawKeyValue("Coastline", "Nominatim GeoJSON");
+  drawKeyValue("Elevation", "USGS EPQS meters");
+  drawKeyValueNumber("Grid width", kOahuGridWidth);
+  drawKeyValueNumber("Grid height", kOahuGridHeight);
+  drawKeyValueNumber("Coast samples", kOahuCoastlinePointCount);
+  ImGui::Separator();
+  drawKeyValue("Topology file", "src/oahu_topology.h");
+  drawKeyValue("Refresh tool", "tools/fetch_oahu_topology.py");
+}
+
+void drawInspectorPanel(AppState& state) {
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 12.0f));
+  ImGui::BeginChild("InspectorPanel", ImVec2(340.0f, 0.0f), ImGuiChildFlags_Borders);
+  ImGui::TextUnformatted("Inspector");
+  ImGui::TextDisabled("%s", visualizationName(state.visualizations.active));
+  ImGui::Separator();
+
+  if (ImGui::BeginTabBar("InspectorTabs")) {
+    if (ImGui::BeginTabItem("Renderer")) {
+      drawRendererTab(state);
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("Visual")) {
+      drawVisualizationTab(state);
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("Data")) {
+      drawDataTab();
+      ImGui::EndTabItem();
+    }
+    ImGui::EndTabBar();
+  }
+
+  ImGui::EndChild();
+  ImGui::PopStyleVar();
+}
+
+void drawStatusStrip(AppState& state) {
+  const bgfx::Caps* caps = bgfx::getCaps();
+  const bgfx::Stats* stats = bgfx::getStats();
+
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 5.0f));
+  ImGui::BeginChild(
+    "StatusStrip",
+    ImVec2(0.0f, 32.0f),
+    ImGuiChildFlags_Borders,
+    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse
+  );
+  ImGui::Text(
+    "%s | %s | %.0f x %.0f",
+    caps ? bgfx::getRendererName(caps->rendererType) : "bgfx",
+    visualizationName(state.visualizations.active),
+    state.visualizationCanvasSize.x,
+    state.visualizationCanvasSize.y
+  );
+  ImGui::SameLine();
+  ImGui::TextDisabled(
+    "| frame %.2f ms | draws %u | %s",
+    state.deltaSeconds * 1000.0f,
+    stats ? stats->numDraw : 0u,
+    state.focusMode ? "focus" : "workspace"
+  );
+  ImGui::EndChild();
+  ImGui::PopStyleVar();
+}
+
 void drawVisualizationStatus(AppState& state, const ImVec2& canvasOrigin) {
   if (!state.visualizations.showStatus) {
     return;
@@ -1156,6 +1583,11 @@ void drawAppUi(AppState& state) {
 
     if (ImGui::BeginMenu("View")) {
       ImGui::MenuItem("Renderer Diagnostics", nullptr, &state.visualizations.showStatus);
+      ImGui::MenuItem("Focus Mode", nullptr, &state.focusMode);
+      ImGui::Separator();
+      ImGui::MenuItem("Stack Panel", nullptr, &state.showStackPanel);
+      ImGui::MenuItem("Inspector Panel", nullptr, &state.showInspectorPanel);
+      ImGui::MenuItem("Status Strip", nullptr, &state.showStatusStrip);
       ImGui::EndMenu();
     }
 
@@ -1163,6 +1595,26 @@ void drawAppUi(AppState& state) {
     ImGui::TextUnformatted(visualizationName(state.visualizations.active));
     ImGui::EndMenuBar();
   }
+
+  if (!state.focusMode) {
+    drawCommandBar(state);
+  }
+
+  const float statusStripHeight = (!state.focusMode && state.showStatusStrip) ? 36.0f : 0.0f;
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 8.0f));
+  ImGui::BeginChild("Workspace", ImVec2(0.0f, -statusStripHeight), false, ImGuiWindowFlags_NoScrollbar);
+
+  const bool showStack = !state.focusMode && state.showStackPanel;
+  const bool showInspector = !state.focusMode && state.showInspectorPanel;
+
+  if (showStack) {
+    drawStackPanel(state);
+    ImGui::SameLine();
+  }
+
+  const float inspectorWidth = showInspector ? 348.0f : 0.0f;
+  const float canvasWidth = std::max(ImGui::GetContentRegionAvail().x - inspectorWidth, 1.0f);
+  ImGui::BeginChild("VisualizationRegion", ImVec2(canvasWidth, 0.0f), false, ImGuiWindowFlags_NoScrollbar);
 
   const ImVec2 canvasOrigin = ImGui::GetCursorScreenPos();
   ImVec2 canvasSize = ImGui::GetContentRegionAvail();
@@ -1174,6 +1626,20 @@ void drawAppUi(AppState& state) {
   state.visualizationCanvasOrigin = canvasOrigin;
   state.visualizationCanvasSize = canvasSize;
   drawVisualizationStatus(state, canvasOrigin);
+
+  ImGui::EndChild();
+
+  if (showInspector) {
+    ImGui::SameLine();
+    drawInspectorPanel(state);
+  }
+
+  ImGui::EndChild();
+  ImGui::PopStyleVar();
+
+  if (!state.focusMode && state.showStatusStrip) {
+    drawStatusStrip(state);
+  }
 
   ImGui::End();
   ImGui::PopStyleVar(3);
