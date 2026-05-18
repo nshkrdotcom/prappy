@@ -17,6 +17,10 @@ Prappy is a native C++20 GPU visualization workbench. It uses SDL3 for the
 window and input layer, bgfx for renderer abstraction, Dear ImGui for the tool
 UI, and CMake/Ninja/MSVC for the Windows build.
 
+<p align="center">
+  <img src="assets/oahu-visualization.png" alt="Oahu flyover visualization running in the normal Prappy workspace" width="720"/>
+</p>
+
 The app lives in:
 
 ```text
