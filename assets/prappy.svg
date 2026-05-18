@@ -1,0 +1,296 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 320" width="900" height="320">
+  <defs>
+    <!-- Dark but not black background -->
+    <radialGradient id="bg" cx="0.48" cy="0.42" r="0.8">
+      <stop offset="0%" stop-color="#151e12"/>
+      <stop offset="60%" stop-color="#10160e"/>
+      <stop offset="100%" stop-color="#0b100a"/>
+    </radialGradient>
+
+    <!-- Warm ambient pools -->
+    <radialGradient id="amb1" cx="0.45" cy="0.42" r="0.38">
+      <stop offset="0%" stop-color="#4a8030" stop-opacity="0.20"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="amb2" cx="0.68" cy="0.35" r="0.28">
+      <stop offset="0%" stop-color="#a09028" stop-opacity="0.14"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="amb3" cx="0.28" cy="0.6" r="0.30">
+      <stop offset="0%" stop-color="#2a6830" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="amb4" cx="0.5" cy="0.45" r="0.18">
+      <stop offset="0%" stop-color="#c0b040" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Node glow -->
+    <filter id="glo" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="3.5"/>
+    </filter>
+    <!-- Shape glow -->
+    <filter id="sg" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <!-- Core bloom -->
+    <filter id="bloom" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="10" result="b1"/>
+      <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="b2"/>
+      <feMerge><feMergeNode in="b1"/><feMergeNode in="b2"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <clipPath id="frame">
+      <rect width="900" height="320" rx="6"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#frame)">
+    <rect width="900" height="320" fill="url(#bg)"/>
+    <rect width="900" height="320" fill="url(#amb1)"/>
+    <rect width="900" height="320" fill="url(#amb2)"/>
+    <rect width="900" height="320" fill="url(#amb3)"/>
+    <rect width="900" height="320" fill="url(#amb4)"/>
+
+    <!-- ===== CONSTELLATION MESH — clearly visible ===== -->
+    <g stroke="#5a9040" stroke-width="0.5" fill="none" opacity="0.35">
+      <!-- Left cluster -->
+      <line x1="55" y1="35" x2="170" y2="75"/>
+      <line x1="170" y1="75" x2="135" y2="175"/>
+      <line x1="135" y1="175" x2="55" y2="195"/>
+      <line x1="55" y1="195" x2="35" y2="115"/>
+      <line x1="35" y1="115" x2="55" y2="35"/>
+      <line x1="170" y1="75" x2="290" y2="55"/>
+      <line x1="290" y1="55" x2="335" y2="125"/>
+      <line x1="335" y1="125" x2="270" y2="195"/>
+      <line x1="270" y1="195" x2="135" y2="175"/>
+      <!-- Right cluster -->
+      <line x1="565" y1="45" x2="690" y2="65"/>
+      <line x1="690" y1="65" x2="730" y2="155"/>
+      <line x1="730" y1="155" x2="660" y2="225"/>
+      <line x1="660" y1="225" x2="545" y2="195"/>
+      <line x1="545" y1="195" x2="525" y2="105"/>
+      <line x1="525" y1="105" x2="565" y2="45"/>
+      <line x1="690" y1="65" x2="810" y2="48"/>
+      <line x1="810" y1="48" x2="858" y2="125"/>
+      <line x1="858" y1="125" x2="815" y2="218"/>
+      <line x1="815" y1="218" x2="730" y2="155"/>
+      <!-- Bridge connections -->
+      <line x1="290" y1="55" x2="420" y2="78"/>
+      <line x1="420" y1="78" x2="525" y2="105"/>
+      <line x1="335" y1="125" x2="420" y2="78"/>
+      <line x1="270" y1="195" x2="380" y2="258"/>
+      <line x1="380" y1="258" x2="545" y2="195"/>
+      <line x1="660" y1="225" x2="545" y2="270"/>
+      <line x1="270" y1="195" x2="180" y2="268"/>
+      <line x1="55" y1="195" x2="85" y2="275"/>
+    </g>
+
+    <!-- Mesh nodes — visible dots -->
+    <g fill="#6aaa48">
+      <circle cx="55" cy="35" r="2" opacity="0.5"/>
+      <circle cx="170" cy="75" r="2.2" opacity="0.55"/>
+      <circle cx="135" cy="175" r="2" opacity="0.45"/>
+      <circle cx="55" cy="195" r="1.8" opacity="0.4"/>
+      <circle cx="35" cy="115" r="1.5" opacity="0.35"/>
+      <circle cx="290" cy="55" r="2.2" opacity="0.5"/>
+      <circle cx="335" cy="125" r="2" opacity="0.45"/>
+      <circle cx="270" cy="195" r="1.8" opacity="0.4"/>
+      <circle cx="565" cy="45" r="2" opacity="0.5"/>
+      <circle cx="690" cy="65" r="2.2" opacity="0.55"/>
+      <circle cx="730" cy="155" r="2" opacity="0.45"/>
+      <circle cx="660" cy="225" r="1.8" opacity="0.4"/>
+      <circle cx="545" cy="195" r="2" opacity="0.45"/>
+      <circle cx="525" cy="105" r="1.8" opacity="0.4"/>
+      <circle cx="810" cy="48" r="1.5" opacity="0.35"/>
+      <circle cx="858" cy="125" r="2" opacity="0.45"/>
+      <circle cx="815" cy="218" r="1.8" opacity="0.4"/>
+      <circle cx="420" cy="78" r="1.8" opacity="0.4"/>
+      <circle cx="380" cy="258" r="1.5" opacity="0.35"/>
+      <circle cx="180" cy="268" r="1.5" opacity="0.3"/>
+      <circle cx="85" cy="275" r="1.2" opacity="0.3"/>
+      <circle cx="545" cy="270" r="1.5" opacity="0.3"/>
+    </g>
+
+    <!-- ===== GEOMETRIC SHAPES — solid presence ===== -->
+
+    <!-- Large hexagon left -->
+    <g transform="translate(310, 148) rotate(-8)">
+      <polygon points="0,-75 65,-37 65,37 0,75 -65,37 -65,-37"
+               fill="none" stroke="#68a848" stroke-width="1.2" opacity="0.30"/>
+      <polygon points="0,-54 47,-27 47,27 0,54 -47,27 -47,-27"
+               fill="none" stroke="#78b850" stroke-width="0.8" opacity="0.22"/>
+      <polygon points="0,-33 29,-16 29,16 0,33 -29,16 -29,-16"
+               fill="none" stroke="#88c858" stroke-width="0.5" opacity="0.16"/>
+    </g>
+
+    <!-- Large hexagon right -->
+    <g transform="translate(590, 152) rotate(12)">
+      <polygon points="0,-70 61,-35 61,35 0,70 -61,35 -61,-35"
+               fill="none" stroke="#78a840" stroke-width="1.0" opacity="0.25"/>
+      <polygon points="0,-46 40,-23 40,23 0,46 -40,23 -40,-23"
+               fill="none" stroke="#88b848" stroke-width="0.6" opacity="0.18"/>
+    </g>
+
+    <!-- Central triangle -->
+    <g transform="translate(450, 128) rotate(3)">
+      <polygon points="0,-68 59,34 -59,34"
+               fill="none" stroke="#a0b840" stroke-width="1.0" opacity="0.25"/>
+    </g>
+    <!-- Counter-rotated triangle -->
+    <g transform="translate(450, 168) rotate(180)">
+      <polygon points="0,-60 52,30 -52,30"
+               fill="none" stroke="#90a838" stroke-width="0.7" opacity="0.18"/>
+    </g>
+
+    <!-- Large diamond -->
+    <polygon points="450,62 510,148 450,234 390,148"
+             fill="none" stroke="#b0c048" stroke-width="0.8" opacity="0.18"/>
+
+    <!-- Outer large circle -->
+    <circle cx="450" cy="148" r="100" fill="none" stroke="#5a8a30" stroke-width="0.5" opacity="0.14" stroke-dasharray="3,7"/>
+
+    <!-- ===== FLOWING CURVES — visible energy paths ===== -->
+    <g fill="none" stroke-linecap="round">
+      <path d="M -20,195 C 120,170 200,85 345,115 C 490,145 555,75 700,98 C 785,110 860,138 925,118"
+            stroke="#60a840" stroke-width="1.2" opacity="0.30"/>
+      <path d="M -20,208 C 130,190 215,95 360,128 C 505,158 565,88 715,106 C 795,116 870,146 925,126"
+            stroke="#70b848" stroke-width="0.7" opacity="0.20"/>
+
+      <path d="M -20,115 C 100,148 195,218 375,188 C 505,165 605,238 785,198 C 855,185 895,198 925,193"
+            stroke="#90a838" stroke-width="0.9" opacity="0.22"/>
+
+      <!-- Vertical ribbons -->
+      <path d="M 345,-10 C 335,55 365,100 350,158 C 335,218 355,268 340,330"
+            stroke="#4a8830" stroke-width="0.7" opacity="0.18"/>
+      <path d="M 555,-10 C 565,65 538,118 558,178 C 575,238 548,278 562,330"
+            stroke="#6a8828" stroke-width="0.7" opacity="0.15"/>
+
+      <!-- Spiraling arcs near center -->
+      <path d="M 395,100 C 418,88 475,98 462,132 C 448,168 405,172 395,142 C 385,112 415,92 452,108"
+            stroke="#a0c048" stroke-width="0.7" opacity="0.28"/>
+      <path d="M 482,118 C 508,102 540,112 530,148 C 520,178 488,182 482,158 C 476,132 505,115 528,130"
+            stroke="#80aa40" stroke-width="0.5" opacity="0.20"/>
+    </g>
+
+    <!-- ===== CENTRAL SINGULARITY ===== -->
+
+    <!-- Outer ring -->
+    <circle cx="450" cy="148" r="44" fill="none" stroke="#78b848" stroke-width="1.0" opacity="0.35"/>
+    <circle cx="450" cy="148" r="40" fill="none" stroke="#88c850" stroke-width="0.5" opacity="0.20" stroke-dasharray="4,5"/>
+
+    <!-- Radiating spokes -->
+    <g stroke="#78b040" stroke-width="0.6" opacity="0.25" stroke-linecap="round">
+      <line x1="450" y1="148" x2="450" y2="84"/>
+      <line x1="450" y1="148" x2="450" y2="212"/>
+      <line x1="450" y1="148" x2="386" y2="148"/>
+      <line x1="450" y1="148" x2="514" y2="148"/>
+      <line x1="450" y1="148" x2="495" y2="103"/>
+      <line x1="450" y1="148" x2="405" y2="193"/>
+      <line x1="450" y1="148" x2="405" y2="103"/>
+      <line x1="450" y1="148" x2="495" y2="193"/>
+    </g>
+
+    <!-- Inner sacred geometry -->
+    <g transform="translate(450, 148)">
+      <polygon points="0,-24 21,-12 21,12 0,24 -21,12 -21,-12"
+               fill="none" stroke="#98ca48" stroke-width="1.0" opacity="0.40"/>
+      <polygon points="0,-15 13,8 -13,8"
+               fill="none" stroke="#b0d850" stroke-width="0.8" opacity="0.35"/>
+      <polygon points="0,15 13,-8 -13,-8"
+               fill="none" stroke="#a0c848" stroke-width="0.7" opacity="0.30"/>
+    </g>
+
+    <!-- Core glow -->
+    <circle cx="450" cy="148" r="20" fill="#6aaa30" opacity="0.08" filter="url(#bloom)"/>
+    <circle cx="450" cy="148" r="4" fill="#b0d848" opacity="0.7" filter="url(#sg)"/>
+    <circle cx="450" cy="148" r="2" fill="#d0f060" opacity="0.9"/>
+
+    <!-- ===== BRIGHT ACCENT NODES ===== -->
+
+    <!-- Primary — green -->
+    <circle cx="310" cy="148" r="4" fill="#60aa40" opacity="0.5" filter="url(#glo)"/>
+    <circle cx="310" cy="148" r="2" fill="#88cc58" opacity="0.8"/>
+
+    <circle cx="590" cy="152" r="4" fill="#70a838" opacity="0.45" filter="url(#glo)"/>
+    <circle cx="590" cy="152" r="2" fill="#90c048" opacity="0.75"/>
+
+    <!-- Secondary — amber/yellow -->
+    <circle cx="450" cy="65" r="3.5" fill="#b0a030" opacity="0.4" filter="url(#glo)"/>
+    <circle cx="450" cy="65" r="1.5" fill="#d0c050" opacity="0.7"/>
+
+    <circle cx="450" cy="232" r="3.5" fill="#a09828" opacity="0.35" filter="url(#glo)"/>
+    <circle cx="450" cy="232" r="1.5" fill="#c0b848" opacity="0.65"/>
+
+    <!-- Tertiary — scattered greens -->
+    <circle cx="170" cy="75" r="3" fill="#58a038" opacity="0.5" filter="url(#glo)"/>
+    <circle cx="170" cy="75" r="1.2" fill="#78c050" opacity="0.75"/>
+
+    <circle cx="730" cy="155" r="3" fill="#68a030" opacity="0.45" filter="url(#glo)"/>
+    <circle cx="730" cy="155" r="1.2" fill="#88c048" opacity="0.7"/>
+
+    <circle cx="420" cy="78" r="2.5" fill="#90a838" opacity="0.4" filter="url(#glo)"/>
+    <circle cx="420" cy="78" r="1" fill="#b0c848" opacity="0.65"/>
+
+    <circle cx="858" cy="125" r="2.5" fill="#70a030" opacity="0.35" filter="url(#glo)"/>
+    <circle cx="858" cy="125" r="1" fill="#90c040" opacity="0.6"/>
+
+    <circle cx="35" cy="115" r="2" fill="#80a038" opacity="0.3" filter="url(#glo)"/>
+    <circle cx="35" cy="115" r="0.8" fill="#a0c048" opacity="0.55"/>
+
+    <!-- Warm accent nodes -->
+    <circle cx="335" cy="125" r="2.5" fill="#a0a030" opacity="0.35" filter="url(#glo)"/>
+    <circle cx="335" cy="125" r="1" fill="#c0c048" opacity="0.6"/>
+
+    <circle cx="525" cy="105" r="2.5" fill="#a09830" opacity="0.3" filter="url(#glo)"/>
+    <circle cx="525" cy="105" r="1" fill="#c0b848" opacity="0.55"/>
+
+    <!-- ===== PARTICLE DUST — clearly visible ===== -->
+    <g fill="#80b850" opacity="0.30">
+      <circle cx="30" cy="20" r="0.7"/>
+      <circle cx="98" cy="48" r="0.6"/>
+      <circle cx="215" cy="28" r="0.8"/>
+      <circle cx="315" cy="38" r="0.6"/>
+      <circle cx="395" cy="25" r="0.7"/>
+      <circle cx="505" cy="32" r="0.5"/>
+      <circle cx="605" cy="20" r="0.7"/>
+      <circle cx="675" cy="42" r="0.5"/>
+      <circle cx="755" cy="28" r="0.7"/>
+      <circle cx="875" cy="38" r="0.6"/>
+    </g>
+    <g fill="#a0b848" opacity="0.25">
+      <circle cx="50" cy="288" r="0.7"/>
+      <circle cx="205" cy="278" r="0.6"/>
+      <circle cx="318" cy="292" r="0.5"/>
+      <circle cx="495" cy="286" r="0.7"/>
+      <circle cx="615" cy="292" r="0.6"/>
+      <circle cx="705" cy="276" r="0.7"/>
+      <circle cx="825" cy="290" r="0.5"/>
+      <circle cx="875" cy="270" r="0.6"/>
+    </g>
+    <g fill="#b0c040" opacity="0.18">
+      <circle cx="165" cy="128" r="0.6"/>
+      <circle cx="265" cy="98" r="0.5"/>
+      <circle cx="375" cy="178" r="0.6"/>
+      <circle cx="535" cy="188" r="0.5"/>
+      <circle cx="645" cy="118" r="0.6"/>
+      <circle cx="765" cy="188" r="0.5"/>
+      <circle cx="425" cy="248" r="0.6"/>
+      <circle cx="485" cy="88" r="0.5"/>
+    </g>
+
+    <!-- ===== CURVED CONNECTIONS between major nodes ===== -->
+    <g fill="none" stroke-linecap="round">
+      <path d="M 170,75 Q 240,55 310,148" stroke="#60a840" stroke-width="0.6" opacity="0.22"/>
+      <path d="M 590,152 Q 660,128 730,155" stroke="#70a830" stroke-width="0.6" opacity="0.18"/>
+      <path d="M 310,148 Q 380,128 450,148" stroke="#80b840" stroke-width="0.8" opacity="0.28"/>
+      <path d="M 450,148 Q 520,130 590,152" stroke="#80b840" stroke-width="0.8" opacity="0.28"/>
+      <path d="M 450,65 Q 442,108 450,148" stroke="#a0a838" stroke-width="0.5" opacity="0.22"/>
+      <path d="M 450,148 Q 458,192 450,232" stroke="#a0a838" stroke-width="0.5" opacity="0.22"/>
+    </g>
+
+    <!-- Border -->
+    <rect width="900" height="320" rx="6" fill="none" stroke="#2a3520" stroke-width="1"/>
+  </g>
+</svg>

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/prappy.svg" alt="Prappy — Native GPU Visualization Engine" width="900"/>
+</p>
+
 # Prappy
 
 Prappy is the sample native Windows app for the setup in
