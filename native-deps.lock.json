@@ -1,0 +1,39 @@
+{
+  "dependencies": [
+    {
+      "name": "bx",
+      "url": "https://github.com/bkaradzic/bx.git",
+      "ref": "eed706fb272f201f628287a80da028655cab5be9",
+      "sourceRef": "eed706fb272f201f628287a80da028655cab5be9",
+      "submodules": true
+    },
+    {
+      "name": "bimg",
+      "url": "https://github.com/bkaradzic/bimg.git",
+      "ref": "5c7eabb1d73cb0c1a3c23c0268dd70e8dca972f7",
+      "sourceRef": "5c7eabb1d73cb0c1a3c23c0268dd70e8dca972f7",
+      "submodules": true
+    },
+    {
+      "name": "bgfx",
+      "url": "https://github.com/bkaradzic/bgfx.git",
+      "ref": "de332e5937dd20635880ad7a9e4d7da88082c187",
+      "sourceRef": "de332e5937dd20635880ad7a9e4d7da88082c187",
+      "submodules": true
+    },
+    {
+      "name": "imgui",
+      "url": "https://github.com/ocornut/imgui.git",
+      "ref": "93e396ffb75834b4fa79004a4f0fccb600a8e164",
+      "sourceRef": "93e396ffb75834b4fa79004a4f0fccb600a8e164",
+      "submodules": true
+    },
+    {
+      "name": "SDL",
+      "url": "https://github.com/libsdl-org/SDL.git",
+      "ref": "d8b2434047f5a74798cb567b38432e166f4d3361",
+      "sourceRef": "d8b2434047f5a74798cb567b38432e166f4d3361",
+      "submodules": true
+    }
+  ]
+}

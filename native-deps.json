@@ -1,0 +1,35 @@
+{
+  "dependencies": [
+    {
+      "name": "bx",
+      "url": "https://github.com/bkaradzic/bx.git",
+      "ref": "master",
+      "submodules": true
+    },
+    {
+      "name": "bimg",
+      "url": "https://github.com/bkaradzic/bimg.git",
+      "ref": "master",
+      "submodules": true
+    },
+    {
+      "name": "bgfx",
+      "url": "https://github.com/bkaradzic/bgfx.git",
+      "ref": "master",
+      "submodules": true
+    },
+    {
+      "name": "imgui",
+      "url": "https://github.com/ocornut/imgui.git",
+      "ref": "master",
+      "submodules": true
+    },
+    {
+      "name": "SDL",
+      "url": "https://github.com/libsdl-org/SDL.git",
+      "ref": "main",
+      "submodules": true
+    }
+  ]
+}
+
