@@ -5,8 +5,12 @@ param(
     [string]$Config = "Release",
 
     [Parameter()]
-    [ValidateSet("RandomLines", "Starfield", "Oahu")]
+    [ValidateSet("RandomLines", "Starfield", "Oahu", "ParticleField")]
     [string]$Visualization,
+
+    [Parameter()]
+    [ValidateSet("Auto", "D3D11", "D3D12", "Vulkan")]
+    [string]$Renderer = "Auto",
 
     [Parameter()]
     [switch]$SmokeTest,
@@ -20,6 +24,7 @@ $ErrorActionPreference = "Stop"
 
 $parameters = @{
     Config = $Config
+    Renderer = $Renderer
 }
 
 if ($SmokeTest) {

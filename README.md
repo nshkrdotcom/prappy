@@ -61,7 +61,7 @@ pwsh scripts\run.ps1
 Smoke-test the current build:
 
 ```powershell
-pwsh scripts\run.ps1 -Visualization Oahu -SmokeTest -ScreenshotSmoke
+pwsh scripts\visual-regression.ps1
 ```
 
 Screenshots from the capture path are written below the active build directory:
@@ -85,6 +85,8 @@ build\windows-msvc-release\captures\
 - Random Lines 2D
 - Infinite Starfield
 - Oahu Flyover
+- GPU Particle Field
 
 The app has a reusable visualization module contract, shared camera controls for
-3D modules, renderer diagnostics, and a bgfx-backed screenshot export path.
+3D modules, renderer diagnostics, renderer override support, and a bgfx-backed
+screenshot export path.

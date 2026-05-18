@@ -32,6 +32,7 @@ pwsh scripts\run.ps1 -SmokeTest
 pwsh scripts\run.ps1 -Visualization RandomLines -SmokeTest
 pwsh scripts\run.ps1 -Visualization Starfield -SmokeTest
 pwsh scripts\run.ps1 -Visualization Oahu -SmokeTest
+pwsh scripts\run.ps1 -Visualization ParticleField -SmokeTest
 ```
 
 The smoke log is written beside the executable, for example:
@@ -45,7 +46,7 @@ build\windows-msvc-release\prappy_smoke.log
 Use this when changing render views, layout, diagnostics, or screenshot code:
 
 ```powershell
-pwsh scripts\run.ps1 -Visualization Oahu -SmokeTest -ScreenshotSmoke
+pwsh scripts\visual-regression.ps1
 ```
 
 The capture is written under:
@@ -53,6 +54,21 @@ The capture is written under:
 ```text
 build\windows-msvc-release\captures\
 ```
+
+The regression script runs all visualizations, verifies 32-bit BMP dimensions,
+checks that captures are nonblank, and does a D3D11 renderer override smoke.
+
+## Renderer Override
+
+Use this when checking backend-specific behavior:
+
+```powershell
+pwsh scripts\run.ps1 -Renderer D3D11 -Visualization ParticleField
+pwsh scripts\run.ps1 -Renderer D3D12 -Visualization ParticleField
+pwsh scripts\run.ps1 -Renderer Vulkan -Visualization ParticleField
+```
+
+`Auto` is the default and lets bgfx choose the backend.
 
 ## Clean Build
 

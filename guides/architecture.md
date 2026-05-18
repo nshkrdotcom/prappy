@@ -31,30 +31,7 @@ The core internal types are:
 This gives the app a stable place to add new visualizations without growing
 more UI-specific branching.
 
-## Renderer Layer
-
-Visualizations submit custom bgfx vertex buffers. Current primitives include:
-
-- Screen-space line lists.
-- 3D line lists.
-- Terrain triangles.
-- Coastline and diagnostic line overlays.
-
-The renderer abstraction is intentionally bgfx-level, not CUDA-level. That keeps
-the app portable across graphics APIs while still giving access to GPU buffers,
-shaders, and compute-capable backends later.
-
-## Screenshot Path
-
-Screenshots use bgfx's framebuffer screenshot callback rather than a desktop
-screen grab. That makes capture reproducible even if another window overlaps
-the app. The callback crops the framebuffer to the current visualization canvas
-and writes a BMP file under `captures\`.
-
-## Future Split
-
-The code is still compact enough to live mostly in `src\main.cpp`, but the
-stable next split is:
+The current source split is:
 
 ```text
 src\app.*
@@ -63,8 +40,45 @@ src\visualization_core.*
 src\visualizations\random_lines.*
 src\visualizations\starfield.*
 src\visualizations\oahu_flyover.*
+src\visualizations\particle_field.*
 src\platform\screenshot.*
 ```
 
-That split should happen when the next visualization or renderer pass makes the
-single-file layout slow to navigate.
+## Renderer Layer
+
+Visualizations submit custom bgfx vertex buffers. Current primitives include:
+
+- Screen-space line lists.
+- 3D line lists.
+- Particle streak line lists.
+- Terrain triangles.
+- Coastline and diagnostic line overlays.
+
+The renderer abstraction is intentionally bgfx-level, not CUDA-level. That keeps
+the app portable across graphics APIs while still giving access to GPU buffers,
+shaders, and compute-capable backends later.
+
+The renderer can be selected at launch:
+
+```powershell
+pwsh scripts\run.ps1 -Renderer D3D11
+pwsh scripts\run.ps1 -Renderer D3D12
+pwsh scripts\run.ps1 -Renderer Vulkan
+```
+
+The diagnostics panels show the selected backend, requested backend, supported
+backends, vendor/device IDs, and key capabilities such as compute, instancing,
+texture readback, and indirect draw support.
+
+## Screenshot Path
+
+Screenshots use bgfx's framebuffer screenshot callback rather than a desktop
+screen grab. That makes capture reproducible even if another window overlaps
+the app. The callback crops the framebuffer to the current visualization canvas
+and writes a BMP file under `captures\`.
+
+## Regression Coverage
+
+`scripts\visual-regression.ps1` is the first behavior-level test layer. It runs
+all visualizations, captures screenshots, verifies BMP dimensions, checks for
+nonblank pixels, and smoke-tests a D3D11 renderer override.

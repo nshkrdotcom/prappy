@@ -37,7 +37,7 @@ pwsh windows\bootstrap_windows\Invoke-PrappyNativeSample.ps1 All -Force -SmokeTe
 For screenshot verification through the wrapper:
 
 ```powershell
-pwsh windows\bootstrap_windows\Invoke-PrappyNativeSample.ps1 Run -Visualization Oahu -SmokeTest -ScreenshotSmoke
+pwsh windows\bootstrap_windows\Invoke-PrappyNativeSample.ps1 Run -Visualization ParticleField -SmokeTest -ScreenshotSmoke -Renderer D3D11
 ```
 
 ## If The Tooling Cannot Be Found

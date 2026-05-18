@@ -77,7 +77,15 @@ target_include_directories(imgui PUBLIC
 )
 
 add_executable(prappy_native
+  src/app.cpp
   src/main.cpp
+  src/platform/screenshot.cpp
+  src/renderer.cpp
+  src/visualization_core.cpp
+  src/visualizations/oahu_flyover.cpp
+  src/visualizations/particle_field.cpp
+  src/visualizations/random_lines.cpp
+  src/visualizations/starfield.cpp
 )
 
 target_include_directories(prappy_native PRIVATE

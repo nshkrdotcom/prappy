@@ -5,6 +5,7 @@ Prappy currently ships three visualizations:
 - Random Lines 2D
 - Infinite Starfield
 - Oahu Flyover
+- GPU Particle Field
 
 Each visualization is exposed through a reusable module contract rather than a
 large switch in the UI.
@@ -15,6 +16,7 @@ large switch in the UI.
 pwsh scripts\run.ps1 -Visualization RandomLines
 pwsh scripts\run.ps1 -Visualization Starfield
 pwsh scripts\run.ps1 -Visualization Oahu
+pwsh scripts\run.ps1 -Visualization ParticleField
 ```
 
 The same options work with `-SmokeTest`.
@@ -30,6 +32,11 @@ The 3D visualizations share a camera rig:
 
 The Oahu flyover also has an auto-route mode. Disable auto-route from the
 inspector or by interacting with the canvas.
+
+The particle field exposes inspector controls for particle count, speed, spread,
+turbulence, trail length, hue drift, and reset. It uses bgfx-submitted vertex
+buffers for particle streaks, so it is the first visualization that is explicitly
+structured as a reusable GPU draw workload.
 
 ## Module Contract
 
@@ -58,5 +65,5 @@ struct MyVisualization final : IVisualizationModule {
 
 Then register it in `VisualizationHost`.
 
-Longer term, these modules should move out of `src\main.cpp` into separate
-files under `src\visualizations\`.
+Visualization modules now live under `src\visualizations\`, with shared
+contracts in `src\visualization_core.*`.

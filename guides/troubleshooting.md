@@ -50,7 +50,7 @@ external\
 Run the targeted smoke test:
 
 ```powershell
-pwsh scripts\run.ps1 -Visualization Oahu -SmokeTest -ScreenshotSmoke
+pwsh scripts\visual-regression.ps1
 ```
 
 Then inspect:
@@ -65,11 +65,27 @@ build\windows-msvc-release\captures\
 Use the scripted capture path:
 
 ```powershell
-pwsh scripts\run.ps1 -Visualization Oahu -SmokeTest -ScreenshotSmoke
+pwsh scripts\run.ps1 -Visualization ParticleField -SmokeTest -ScreenshotSmoke
 ```
 
 Screenshots are produced by the bgfx callback after a frame is submitted, so the
 app needs to reach the render loop successfully.
+
+## Renderer Override Fails
+
+Return to bgfx auto-selection first:
+
+```powershell
+pwsh scripts\run.ps1 -Renderer Auto -Visualization ParticleField -SmokeTest
+```
+
+Then test a specific backend:
+
+```powershell
+pwsh scripts\run.ps1 -Renderer D3D11 -Visualization ParticleField -SmokeTest
+```
+
+D3D12 and Vulkan depend on driver and bgfx backend availability on the machine.
 
 ## Debug Output Is Too Noisy
 
