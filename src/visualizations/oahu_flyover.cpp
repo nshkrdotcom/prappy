@@ -19,13 +19,17 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
     return kOahuTerrain[static_cast<std::size_t>(row * kOahuGridWidth + col)];
   }
 
-  bx::Vec3 terrainPosition(const OahuTerrainSample& sample) const {
+  bx::Vec3 terrainPosition(float xValue, float yValue, float elevationMeters) const {
     constexpr float zSpan = 8.2f;
     constexpr float xSpan = zSpan * kOahuMapAspect;
-    const float x = (sample.x - 0.5f) * xSpan;
-    const float z = (0.5f - sample.y) * zSpan;
-    const float y = std::max(sample.elevationMeters, 0.0f) / kOahuMaxElevationMeters * 1.85f;
+    const float x = (xValue - 0.5f) * xSpan;
+    const float z = (0.5f - yValue) * zSpan;
+    const float y = std::max(elevationMeters, 0.0f) / kOahuMaxElevationMeters * 1.85f;
     return {x, y, z};
+  }
+
+  bx::Vec3 terrainPosition(const OahuTerrainSample& sample) const {
+    return terrainPosition(sample.x, sample.y, sample.elevationMeters);
   }
 
   std::uint32_t terrainColor(float elevationMeters) const {
@@ -93,63 +97,126 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
     vertices.push_back(ColorVertex{-42.0f, 20.0f, z, skyTop});
   }
 
+  void pushGridLines(std::vector<ColorVertex>& lines) const {
+    const std::uint32_t gridColor = rgbaToAbgr(217, 246, 255, 88);
+    for (int row = 0; row < kOahuGridHeight; ++row) {
+      for (int col = 0; col < kOahuGridWidth - 1; ++col) {
+        const OahuTerrainSample& a = sampleAt(col, row);
+        const OahuTerrainSample& b = sampleAt(col + 1, row);
+        if (a.land && b.land) {
+          const bx::Vec3 pa = terrainPosition(a);
+          const bx::Vec3 pb = terrainPosition(b);
+          pushLine(lines, pa.x, pa.y + 0.04f, pa.z, pb.x, pb.y + 0.04f, pb.z, gridColor);
+        }
+      }
+    }
+
+    for (int col = 0; col < kOahuGridWidth; ++col) {
+      for (int row = 0; row < kOahuGridHeight - 1; ++row) {
+        const OahuTerrainSample& a = sampleAt(col, row);
+        const OahuTerrainSample& b = sampleAt(col, row + 1);
+        if (a.land && b.land) {
+          const bx::Vec3 pa = terrainPosition(a);
+          const bx::Vec3 pb = terrainPosition(b);
+          pushLine(lines, pa.x, pa.y + 0.04f, pa.z, pb.x, pb.y + 0.04f, pb.z, gridColor);
+        }
+      }
+    }
+  }
+
+  void pushLandmarkLines(std::vector<ColorVertex>& lines) const {
+    const std::uint32_t markerColor = rgbaToAbgr(255, 73, 216, 255);
+    const std::uint32_t spikeColor = rgbaToAbgr(255, 255, 255, 220);
+    constexpr float markerSize = 0.13f;
+    for (const OahuLandmark& landmark : kOahuLandmarks) {
+      const bx::Vec3 p = terrainPosition(landmark.x, landmark.y, 90.0f);
+      pushLine(lines, p.x - markerSize, p.y + 0.09f, p.z, p.x + markerSize, p.y + 0.09f, p.z, markerColor);
+      pushLine(lines, p.x, p.y + 0.09f, p.z - markerSize, p.x, p.y + 0.09f, p.z + markerSize, markerColor);
+      pushLine(lines, p.x, p.y + 0.09f, p.z, p.x, p.y + 0.72f, p.z, spikeColor);
+    }
+  }
+
   void reset(const ImVec2& size) override {
     lastSize = size;
   }
 
   void draw(VisualizationContext& context) override {
     lastSize = context.size;
+    const OahuDiagnosticSettings defaults;
+    const OahuDiagnosticSettings& diagnostics = context.oahuDiagnostics
+      ? *context.oahuDiagnostics
+      : defaults;
 
-    std::vector<ColorVertex> background;
-    background.reserve(12);
-    pushHorizon(background);
-    pushOcean(background);
-    submitColorVertices(*context.renderer, context.viewId, background, ColorPrimitive::Triangles, false, false);
+    if (diagnostics.showBackground && !diagnostics.topDown) {
+      std::vector<ColorVertex> background;
+      background.reserve(12);
+      pushHorizon(background);
+      pushOcean(background);
+      submitColorVertices(*context.renderer, context.viewId, background, ColorPrimitive::Triangles, false, false);
+    }
 
-    std::vector<ColorVertex> terrain;
-    terrain.reserve((kOahuGridWidth - 1) * (kOahuGridHeight - 1) * 6);
-    for (int row = 0; row < kOahuGridHeight - 1; ++row) {
-      for (int col = 0; col < kOahuGridWidth - 1; ++col) {
-        const OahuTerrainSample& a = sampleAt(col, row);
-        const OahuTerrainSample& b = sampleAt(col + 1, row);
-        const OahuTerrainSample& c = sampleAt(col, row + 1);
-        const OahuTerrainSample& d = sampleAt(col + 1, row + 1);
+    if (diagnostics.showFilledTerrain) {
+      std::vector<ColorVertex> terrain;
+      terrain.reserve((kOahuGridWidth - 1) * (kOahuGridHeight - 1) * 6);
+      for (int row = 0; row < kOahuGridHeight - 1; ++row) {
+        for (int col = 0; col < kOahuGridWidth - 1; ++col) {
+          const OahuTerrainSample& a = sampleAt(col, row);
+          const OahuTerrainSample& b = sampleAt(col + 1, row);
+          const OahuTerrainSample& c = sampleAt(col, row + 1);
+          const OahuTerrainSample& d = sampleAt(col + 1, row + 1);
 
-        if (triangleTouchesLand(a, b, c)) {
-          pushTerrainTriangle(terrain, a, b, c);
-        }
-        if (triangleTouchesLand(b, d, c)) {
-          pushTerrainTriangle(terrain, b, d, c);
+          if (triangleTouchesLand(a, b, c)) {
+            pushTerrainTriangle(terrain, a, b, c);
+          }
+          if (triangleTouchesLand(b, d, c)) {
+            pushTerrainTriangle(terrain, b, d, c);
+          }
         }
       }
+      submitColorVertices(*context.renderer, context.viewId, terrain, ColorPrimitive::Triangles, true, true);
     }
-    submitColorVertices(*context.renderer, context.viewId, terrain, ColorPrimitive::Triangles, true, true);
 
     std::vector<ColorVertex> lines;
-    lines.reserve(kOahuCoastlinePointCount * 2 + (kOahuGridWidth + kOahuGridHeight) * 2);
-    const std::uint32_t coastColor = rgbaToAbgr(247, 228, 159, 255);
-    for (int i = 0; i < kOahuCoastlinePointCount; ++i) {
-      const OahuTopologyPoint& a = kOahuCoastline[static_cast<std::size_t>(i)];
-      const OahuTopologyPoint& b = kOahuCoastline[static_cast<std::size_t>((i + 1) % kOahuCoastlinePointCount)];
-      const OahuTerrainSample sa{a.x, a.y, 18.0f, 1};
-      const OahuTerrainSample sb{b.x, b.y, 18.0f, 1};
-      const bx::Vec3 pa = terrainPosition(sa);
-      const bx::Vec3 pb = terrainPosition(sb);
-      pushLine(lines, pa.x, pa.y + 0.015f, pa.z, pb.x, pb.y + 0.015f, pb.z, coastColor);
+    lines.reserve(
+      kOahuCoastlinePointCount * 2 +
+      kOahuGridWidth * kOahuGridHeight * 4 +
+      kOahuLandmarkCount * 6
+    );
+
+    if (diagnostics.showCoastline) {
+      const std::uint32_t coastColor = rgbaToAbgr(247, 228, 159, 255);
+      for (int i = 0; i < kOahuCoastlinePointCount; ++i) {
+        const OahuTopologyPoint& a = kOahuCoastline[static_cast<std::size_t>(i)];
+        const OahuTopologyPoint& b = kOahuCoastline[static_cast<std::size_t>((i + 1) % kOahuCoastlinePointCount)];
+        const bx::Vec3 pa = terrainPosition(a.x, a.y, 18.0f);
+        const bx::Vec3 pb = terrainPosition(b.x, b.y, 18.0f);
+        pushLine(lines, pa.x, pa.y + 0.015f, pa.z, pb.x, pb.y + 0.015f, pb.z, coastColor);
+      }
     }
 
-    const std::uint32_t ridgeColor = rgbaToAbgr(255, 255, 255, 48);
-    for (int row = 2; row < kOahuGridHeight - 2; row += 3) {
-      for (int col = 1; col < kOahuGridWidth - 1; ++col) {
-        const OahuTerrainSample& a = sampleAt(col - 1, row);
-        const OahuTerrainSample& b = sampleAt(col, row);
-        if (a.land && b.land && a.elevationMeters > 140.0f && b.elevationMeters > 140.0f) {
-          const bx::Vec3 pa = terrainPosition(a);
-          const bx::Vec3 pb = terrainPosition(b);
-          pushLine(lines, pa.x, pa.y + 0.025f, pa.z, pb.x, pb.y + 0.025f, pb.z, ridgeColor);
+    if (diagnostics.showGrid) {
+      pushGridLines(lines);
+    }
+
+    if (diagnostics.showRidges) {
+      const std::uint32_t ridgeColor = rgbaToAbgr(255, 255, 255, 48);
+      for (int row = 2; row < kOahuGridHeight - 2; row += 3) {
+        for (int col = 1; col < kOahuGridWidth - 1; ++col) {
+          const OahuTerrainSample& a = sampleAt(col - 1, row);
+          const OahuTerrainSample& b = sampleAt(col, row);
+          if (a.land && b.land && a.elevationMeters > 140.0f && b.elevationMeters > 140.0f) {
+            const bx::Vec3 pa = terrainPosition(a);
+            const bx::Vec3 pb = terrainPosition(b);
+            pushLine(lines, pa.x, pa.y + 0.025f, pa.z, pb.x, pb.y + 0.025f, pb.z, ridgeColor);
+          }
         }
       }
     }
+
+    if (diagnostics.showLandmarks) {
+      pushLandmarkLines(lines);
+    }
+
     submitColorVertices(*context.renderer, context.viewId, lines, ColorPrimitive::Lines, true, false);
   }
 
@@ -165,8 +232,32 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
     ImGui::Text("Land samples: %d", landSamples);
     ImGui::Text("Coast points: %d", kOahuCoastlinePointCount);
     ImGui::Text("Source points: %d", kOahuSourceCoastlinePointCount);
+    ImGui::Text("Landmarks: %d", kOahuLandmarkCount);
     ImGui::Text("Aspect: %.3f", kOahuMapAspect);
     ImGui::Text("Max elevation: %.0f m", kOahuMaxElevationMeters);
+
+    if (ImGui::TreeNode("Landmark Controls")) {
+      if (ImGui::BeginTable("OahuLandmarkTable", 4, ImGuiTableFlags_SizingFixedFit)) {
+        ImGui::TableSetupColumn("Name");
+        ImGui::TableSetupColumn("X");
+        ImGui::TableSetupColumn("Y");
+        ImGui::TableSetupColumn("Land");
+        ImGui::TableHeadersRow();
+        for (const OahuLandmark& landmark : kOahuLandmarks) {
+          ImGui::TableNextRow();
+          ImGui::TableSetColumnIndex(0);
+          ImGui::TextUnformatted(landmark.name);
+          ImGui::TableSetColumnIndex(1);
+          ImGui::Text("%.3f", landmark.x);
+          ImGui::TableSetColumnIndex(2);
+          ImGui::Text("%.3f", landmark.y);
+          ImGui::TableSetColumnIndex(3);
+          ImGui::TextUnformatted(landmark.land ? "yes" : "edge");
+        }
+        ImGui::EndTable();
+      }
+      ImGui::TreePop();
+    }
   }
 };
 

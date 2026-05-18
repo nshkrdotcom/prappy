@@ -65,12 +65,19 @@ pwsh scripts\visual-regression.ps1
 ```
 
 That script also validates the generated Oahu topology header before running
-the capture checks.
+the capture checks, including a top-down Oahu diagnostic capture.
 
 Screenshots from the capture path are written below the active build directory:
 
 ```text
 build\windows-msvc-release\captures\
+```
+
+Use the Oahu isolation view when checking coastline shape, mesh fill, or camera
+distortion:
+
+```powershell
+pwsh scripts\run.ps1 -Visualization Oahu -OahuDiagnostic All -Focus -NoOverlay
 ```
 
 ## Guides

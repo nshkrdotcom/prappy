@@ -107,5 +107,37 @@ foreach ($visualization in $visualizations) {
     Write-Host ("[OK] {0}: {1}x{2} {3}bpp -> {4}" -f $visualization, $info.Width, $info.Height, $info.BitsPerPixel, $after.FullName) -ForegroundColor Green
 }
 
+$beforeDiagnostic = Get-ChildItem $captureDir -Filter *.bmp -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+
+& (Join-Path $PSScriptRoot "run.ps1") `
+    -Config $Config `
+    -Visualization Oahu `
+    -OahuDiagnostic All `
+    -Focus `
+    -NoOverlay `
+    -SmokeTest `
+    -ScreenshotSmoke
+
+$afterDiagnostic = Get-ChildItem $captureDir -Filter *.bmp -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+
+if (-not $afterDiagnostic) {
+    throw "No diagnostic capture produced for Oahu"
+}
+
+if (
+    $beforeDiagnostic -and
+    $afterDiagnostic.FullName -eq $beforeDiagnostic.FullName -and
+    $afterDiagnostic.LastWriteTime -le $beforeDiagnostic.LastWriteTime
+) {
+    throw "Diagnostic capture was not refreshed for Oahu"
+}
+
+$diagnosticInfo = Read-BmpInfo $afterDiagnostic.FullName
+Write-Host ("[OK] OahuDiagnostic: {0}x{1} {2}bpp -> {3}" -f $diagnosticInfo.Width, $diagnosticInfo.Height, $diagnosticInfo.BitsPerPixel, $afterDiagnostic.FullName) -ForegroundColor Green
+
 & (Join-Path $PSScriptRoot "run.ps1") -Config $Config -Renderer D3D11 -Visualization ParticleField -SmokeTest
 Write-Host "[OK] Renderer override: D3D11 ParticleField smoke" -ForegroundColor Green

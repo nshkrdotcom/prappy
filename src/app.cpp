@@ -831,6 +831,20 @@ void drawCameraControls(AppState& state) {
   }
 }
 
+void drawOahuDiagnosticControls(AppState& state) {
+  OahuDiagnosticSettings& diagnostics = state.oahuDiagnostics;
+
+  ImGui::Separator();
+  ImGui::TextUnformatted("Oahu Isolation");
+  ImGui::Checkbox("Top-down north-up", &diagnostics.topDown);
+  ImGui::Checkbox("Background", &diagnostics.showBackground);
+  ImGui::Checkbox("Filled terrain", &diagnostics.showFilledTerrain);
+  ImGui::Checkbox("Coastline", &diagnostics.showCoastline);
+  ImGui::Checkbox("Terrain grid", &diagnostics.showGrid);
+  ImGui::Checkbox("Ridge lines", &diagnostics.showRidges);
+  ImGui::Checkbox("Landmarks", &diagnostics.showLandmarks);
+}
+
 void drawVisualizationTab(AppState& state) {
   drawVisualizationSelector(state);
   ImGui::Separator();
@@ -838,6 +852,9 @@ void drawVisualizationTab(AppState& state) {
   drawKeyValue("Space", visualizationSpaceLabel(state.visualizations.active));
   drawKeyValue("Primitive", visualizationDescriptor(state.visualizations.active).primitiveLabel);
   state.visualizations.activeModule().drawInspector();
+  if (state.visualizations.active == VisualizationId::OahuFlyover) {
+    drawOahuDiagnosticControls(state);
+  }
   drawCameraControls(state);
 
   ImGui::Separator();
@@ -867,6 +884,7 @@ void drawDataTab() {
   drawKeyValue("Topology file", "src/oahu_topology.h");
   drawKeyValue("Refresh tool", "tools/fetch_oahu_topology.py");
   drawKeyValue("Validate tool", "tools/validate_oahu_topology.py");
+  drawKeyValue("Debug artifacts", "build/oahu_debug");
 }
 
 void drawInspectorPanel(AppState& state) {
@@ -1267,27 +1285,58 @@ void renderVisualization(AppState& state) {
   float projection[16];
 
   if (state.visualizations.active == VisualizationId::OahuFlyover) {
-    bx::Vec3 eye = {0.0f, 0.0f, 0.0f};
-    bx::Vec3 at = {0.0f, 0.0f, 0.0f};
-    if (camera.manual) {
-      eye = camera.orbitEye();
-      at = camera.target;
+    if (state.oahuDiagnostics.topDown) {
+      const float terrainHeight = 8.2f;
+      const float terrainWidth = terrainHeight * kOahuMapAspect;
+      const float viewAspect = static_cast<float>(width) / static_cast<float>(height);
+      float halfWidth = terrainWidth * 0.58f;
+      float halfHeight = terrainHeight * 0.58f;
+      if (viewAspect > kOahuMapAspect) {
+        halfWidth = halfHeight * viewAspect;
+      } else {
+        halfHeight = halfWidth / viewAspect;
+      }
+
+      bx::mtxLookAt(
+        view,
+        bx::Vec3{0.0f, 14.0f, 0.0f},
+        bx::Vec3{0.0f, 0.0f, 0.0f},
+        bx::Vec3{0.0f, 0.0f, -1.0f}
+      );
+      bx::mtxOrtho(
+        projection,
+        -halfWidth,
+        halfWidth,
+        -halfHeight,
+        halfHeight,
+        0.05f,
+        40.0f,
+        0.0f,
+        caps->homogeneousDepth
+      );
     } else {
-      const float cycle = std::fmod(state.elapsedSeconds * 0.025f * camera.routeSpeed, 1.0f);
-      const float route = cycle * 2.0f - 1.0f;
-      const float sway = std::sin(state.elapsedSeconds * 0.35f) * 0.55f;
-      eye = {sway, 2.65f, 7.4f - route * 8.5f};
-      at = {sway * 0.25f, 0.42f, 4.1f - route * 8.5f};
+      bx::Vec3 eye = {0.0f, 0.0f, 0.0f};
+      bx::Vec3 at = {0.0f, 0.0f, 0.0f};
+      if (camera.manual) {
+        eye = camera.orbitEye();
+        at = camera.target;
+      } else {
+        const float cycle = std::fmod(state.elapsedSeconds * 0.025f * camera.routeSpeed, 1.0f);
+        const float route = cycle * 2.0f - 1.0f;
+        const float sway = std::sin(state.elapsedSeconds * 0.35f) * 0.55f;
+        eye = {sway, 2.65f, 7.4f - route * 8.5f};
+        at = {sway * 0.25f, 0.42f, 4.1f - route * 8.5f};
+      }
+      bx::mtxLookAt(view, eye, at);
+      bx::mtxProj(
+        projection,
+        camera.fovDegrees,
+        static_cast<float>(width) / static_cast<float>(height),
+        0.05f,
+        80.0f,
+        caps->homogeneousDepth
+      );
     }
-    bx::mtxLookAt(view, eye, at);
-    bx::mtxProj(
-      projection,
-      camera.fovDegrees,
-      static_cast<float>(width) / static_cast<float>(height),
-      0.05f,
-      80.0f,
-      caps->homogeneousDepth
-    );
   } else if (state.visualizations.active == VisualizationId::Starfield3D) {
     const bx::Vec3 eye = {0.0f, 0.0f, 0.0f};
     const bx::Vec3 direction = camera.manual ? camera.lookDirection() : bx::Vec3{0.0f, 0.0f, -1.0f};
@@ -1337,6 +1386,7 @@ void renderVisualization(AppState& state) {
   context.size = ImVec2(static_cast<float>(width), static_cast<float>(height));
   context.deltaSeconds = state.deltaSeconds;
   context.elapsedSeconds = state.elapsedSeconds;
+  context.oahuDiagnostics = &state.oahuDiagnostics;
 
   state.visualizations.draw(context);
 }
@@ -1391,6 +1441,74 @@ bgfx::RendererType::Enum rendererFromArgs(int argc, char** argv) {
   return bgfx::RendererType::Count;
 }
 
+std::string argumentValue(int argc, char** argv, const char* prefix) {
+  const std::string prefixString(prefix);
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (arg.rfind(prefixString, 0) == 0) {
+      return arg.substr(prefixString.size());
+    }
+  }
+
+  return {};
+}
+
+void applyOahuDiagnosticPreset(OahuDiagnosticSettings& diagnostics, const std::string& preset) {
+  if (preset == "all") {
+    diagnostics.topDown = true;
+    diagnostics.showBackground = false;
+    diagnostics.showFilledTerrain = true;
+    diagnostics.showCoastline = true;
+    diagnostics.showGrid = true;
+    diagnostics.showRidges = true;
+    diagnostics.showLandmarks = true;
+  } else if (preset == "coastline") {
+    diagnostics.topDown = true;
+    diagnostics.showBackground = false;
+    diagnostics.showFilledTerrain = false;
+    diagnostics.showCoastline = true;
+    diagnostics.showGrid = false;
+    diagnostics.showRidges = false;
+    diagnostics.showLandmarks = true;
+  } else if (preset == "mesh") {
+    diagnostics.topDown = true;
+    diagnostics.showBackground = false;
+    diagnostics.showFilledTerrain = true;
+    diagnostics.showCoastline = true;
+    diagnostics.showGrid = true;
+    diagnostics.showRidges = false;
+    diagnostics.showLandmarks = false;
+  } else if (preset == "landmarks") {
+    diagnostics.topDown = true;
+    diagnostics.showBackground = false;
+    diagnostics.showFilledTerrain = false;
+    diagnostics.showCoastline = true;
+    diagnostics.showGrid = false;
+    diagnostics.showRidges = false;
+    diagnostics.showLandmarks = true;
+  }
+}
+
+void applyRuntimeArgs(AppState& state, int argc, char** argv) {
+  if (hasArg(argc, argv, "--oahu-topdown")) {
+    state.oahuDiagnostics.topDown = true;
+  }
+
+  const std::string oahuPreset = argumentValue(argc, argv, "--oahu-diagnostic=");
+  if (!oahuPreset.empty()) {
+    applyOahuDiagnosticPreset(state.oahuDiagnostics, oahuPreset);
+  }
+
+  if (hasArg(argc, argv, "--focus")) {
+    state.focusMode = true;
+  }
+
+  if (hasArg(argc, argv, "--no-overlay")) {
+    state.visualizations.showStatus = false;
+    state.showStatusStrip = false;
+  }
+}
+
 void cleanup(AppState& state) {
   if (state.imguiReady) {
     shutdownImGui(state);
@@ -1416,6 +1534,7 @@ int runApp(int argc, char** argv) {
   state.screenshotSmoke = hasArg(argc, argv, "--screenshot-smoke");
   state.requestedRenderer = rendererFromArgs(argc, argv);
   state.visualizations.setActive(visualizationFromArgs(argc, argv));
+  applyRuntimeArgs(state, argc, argv);
   if (state.smokeTest) {
     state.smokeLog.open("prappy_smoke.log", std::ios::out | std::ios::trunc);
     logSmoke(state, "smoke: start");

@@ -23,9 +23,19 @@ struct OahuTerrainSample {
   std::uint8_t land;
 };
 
+struct OahuLandmark {
+  const char* name;
+  float longitude;
+  float latitude;
+  float x;
+  float y;
+  std::uint8_t land;
+};
+
 constexpr int kOahuGridWidth = 61;
 constexpr int kOahuGridHeight = 45;
 constexpr int kOahuCoastlinePointCount = 512;
+constexpr int kOahuLandmarkCount = 6;
 constexpr int kOahuSourceCoastlinePointCount = 15455;
 constexpr int kOahuInteriorRingCount = 1;
 constexpr float kOahuMinLongitude = -158.2809686f;
@@ -551,6 +561,15 @@ inline constexpr std::array<OahuTopologyPoint, kOahuCoastlinePointCount> kOahuCo
   { 0.459055f, 0.919966f },
   { 0.453018f, 0.920578f },
   { 0.452275f, 0.915965f },
+}};
+
+inline constexpr std::array<OahuLandmark, kOahuLandmarkCount> kOahuLandmarks = {{
+  { "Kaena Point", -158.2805800f, 21.5744200f, 0.054120f, 0.671903f, 0 },
+  { "Kahuku Point", -157.9839349f, 21.7119767f, 0.472978f, 0.932264f, 1 },
+  { "Mokapu Point", -157.7229452f, 21.4584208f, 0.841490f, 0.452345f, 1 },
+  { "Koko Head", -157.7041350f, 21.2629350f, 0.868050f, 0.082339f, 1 },
+  { "Pearl Harbor", -157.9802400f, 21.3511830f, 0.478195f, 0.249371f, 0 },
+  { "Barbers Point", -158.1150360f, 21.3206340f, 0.287865f, 0.191549f, 1 },
 }};
 
 inline constexpr std::array<OahuTerrainSample, kOahuGridWidth * kOahuGridHeight> kOahuTerrain = {{
@@ -1445,7 +1464,7 @@ inline constexpr std::array<OahuTerrainSample, kOahuGridWidth * kOahuGridHeight>
   { 0.566667f, 0.318182f, 139.784f, 1 },
   { 0.583333f, 0.318182f, 199.239f, 1 },
   { 0.600000f, 0.318182f, 177.319f, 1 },
-  { 0.616667f, 0.318182f, 323.447f, 1 },
+  { 0.616667f, 0.318182f, 323.504f, 1 },
   { 0.633333f, 0.318182f, 235.639f, 1 },
   { 0.650000f, 0.318182f, 269.009f, 1 },
   { 0.666667f, 0.318182f, 223.231f, 1 },
@@ -1847,7 +1866,7 @@ inline constexpr std::array<OahuTerrainSample, kOahuGridWidth * kOahuGridHeight>
   { 0.150000f, 0.477273f, 11.718f, 1 },
   { 0.166667f, 0.477273f, 45.119f, 1 },
   { 0.183333f, 0.477273f, 145.397f, 1 },
-  { 0.200000f, 0.477273f, 375.969f, 1 },
+  { 0.200000f, 0.477273f, 379.210f, 1 },
   { 0.216667f, 0.477273f, 164.875f, 1 },
   { 0.233333f, 0.477273f, 143.565f, 1 },
   { 0.250000f, 0.477273f, 339.901f, 1 },
@@ -2399,7 +2418,7 @@ inline constexpr std::array<OahuTerrainSample, kOahuGridWidth * kOahuGridHeight>
   { 0.200000f, 0.681818f, 3.278f, 1 },
   { 0.216667f, 0.681818f, 1.180f, 1 },
   { 0.233333f, 0.681818f, 4.081f, 1 },
-  { 0.250000f, 0.681818f, 4.100f, 1 },
+  { 0.250000f, 0.681818f, 4.215f, 1 },
   { 0.266667f, 0.681818f, 2.985f, 1 },
   { 0.283333f, 0.681818f, 1.807f, 1 },
   { 0.300000f, 0.681818f, 2.280f, 1 },
@@ -2594,7 +2613,7 @@ inline constexpr std::array<OahuTerrainSample, kOahuGridWidth * kOahuGridHeight>
   { 0.400000f, 0.750000f, 257.916f, 1 },
   { 0.416667f, 0.750000f, 212.624f, 1 },
   { 0.433333f, 0.750000f, 296.937f, 1 },
-  { 0.450000f, 0.750000f, 243.341f, 1 },
+  { 0.450000f, 0.750000f, 243.535f, 1 },
   { 0.466667f, 0.750000f, 398.868f, 1 },
   { 0.483333f, 0.750000f, 535.855f, 1 },
   { 0.500000f, 0.750000f, 441.682f, 1 },

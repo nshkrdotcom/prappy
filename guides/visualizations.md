@@ -34,6 +34,17 @@ The Oahu flyover uses a generated USGS/Hawaii GIS coastline and elevation data
 header. It also has an auto-route mode. Disable auto-route from the inspector or
 by interacting with the canvas.
 
+Oahu has an isolation mode for map-shape debugging:
+
+```powershell
+pwsh scripts\run.ps1 -Visualization Oahu -OahuDiagnostic Coastline -Focus -NoOverlay
+pwsh scripts\run.ps1 -Visualization Oahu -OahuDiagnostic Mesh -Focus -NoOverlay
+pwsh scripts\run.ps1 -Visualization Oahu -OahuDiagnostic All -Focus -NoOverlay
+```
+
+The visual inspector exposes the same layer toggles for background, filled
+terrain, coastline, terrain grid, ridge lines, landmarks, and top-down view.
+
 The particle field exposes inspector controls for particle count, speed, spread,
 turbulence, trail length, hue drift, and reset. It uses bgfx-submitted vertex
 buffers for particle streaks, so it is the first visualization that is explicitly

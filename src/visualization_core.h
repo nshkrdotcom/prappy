@@ -17,6 +17,7 @@ struct VisualizationContext {
   ImVec2 size{};
   float deltaSeconds = 1.0f / 60.0f;
   float elapsedSeconds = 0.0f;
+  const struct OahuDiagnosticSettings* oahuDiagnostics = nullptr;
 };
 
 enum class VisualizationId {
@@ -34,6 +35,16 @@ struct VisualizationDescriptor {
   const char* primitiveLabel;
   bool usesCamera;
   bool hasAutoCamera;
+};
+
+struct OahuDiagnosticSettings {
+  bool topDown = false;
+  bool showBackground = true;
+  bool showFilledTerrain = true;
+  bool showCoastline = true;
+  bool showGrid = false;
+  bool showRidges = true;
+  bool showLandmarks = false;
 };
 
 const VisualizationDescriptor& visualizationDescriptor(VisualizationId id);

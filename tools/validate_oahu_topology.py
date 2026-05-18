@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HEADER = ROOT / "src" / "oahu_topology.h"
+DEBUG_DIR = ROOT / "build" / "oahu_debug"
 
 
 def read_const(text: str, name: str, kind: str):
@@ -18,6 +19,7 @@ def read_const(text: str, name: str, kind: str):
 
 
 def main() -> int:
+    require_debug_artifacts = "--require-debug-artifacts" in sys.argv
     text = HEADER.read_text(encoding="utf-8")
 
     checks = [
@@ -63,7 +65,40 @@ def main() -> int:
             "sampled elevation",
             read_const(text, "kOahuMaxElevationMeters", "float") >= 900.0,
         ),
+        (
+            "landmark controls",
+            read_const(text, "kOahuLandmarkCount", "int") >= 6
+            and all(
+                name in text
+                for name in (
+                    "Kaena Point",
+                    "Kahuku Point",
+                    "Mokapu Point",
+                    "Koko Head",
+                    "Pearl Harbor",
+                    "Barbers Point",
+                )
+            ),
+        ),
     ]
+
+    if require_debug_artifacts:
+        checks.extend(
+            [
+                (
+                    "debug source artifact",
+                    (DEBUG_DIR / "oahu_source.geojson").exists(),
+                ),
+                (
+                    "debug resampled artifact",
+                    (DEBUG_DIR / "oahu_resampled.geojson").exists(),
+                ),
+                (
+                    "debug preview artifact",
+                    (DEBUG_DIR / "oahu_preview.svg").exists(),
+                ),
+            ]
+        )
 
     failed = [name for name, passed in checks if not passed]
     if failed:

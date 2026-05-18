@@ -13,6 +13,19 @@ param(
     [string]$Renderer = "Auto",
 
     [Parameter()]
+    [ValidateSet("Default", "All", "Coastline", "Mesh", "Landmarks")]
+    [string]$OahuDiagnostic = "Default",
+
+    [Parameter()]
+    [switch]$OahuTopDown,
+
+    [Parameter()]
+    [switch]$Focus,
+
+    [Parameter()]
+    [switch]$NoOverlay,
+
+    [Parameter()]
     [switch]$SmokeTest,
 
     [Parameter()]
@@ -37,6 +50,22 @@ if ($ScreenshotSmoke) {
 
 if ($Visualization) {
     $parameters.Visualization = $Visualization
+}
+
+if ($OahuDiagnostic -ne "Default") {
+    $parameters.OahuDiagnostic = $OahuDiagnostic
+}
+
+if ($OahuTopDown) {
+    $parameters.OahuTopDown = $true
+}
+
+if ($Focus) {
+    $parameters.Focus = $true
+}
+
+if ($NoOverlay) {
+    $parameters.NoOverlay = $true
 }
 
 Invoke-PrappyNativeTool "run.ps1" $parameters

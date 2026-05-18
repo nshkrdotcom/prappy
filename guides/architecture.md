@@ -81,5 +81,13 @@ and writes a BMP file under `captures\`.
 
 `scripts\visual-regression.ps1` is the first behavior-level test layer. It
 validates the generated Oahu topology header, runs all visualizations, captures
-screenshots, verifies BMP dimensions, checks for nonblank pixels, and
-smoke-tests a D3D11 renderer override.
+screenshots, verifies BMP dimensions, checks for nonblank pixels, captures a
+top-down Oahu diagnostic layer view, and smoke-tests a D3D11 renderer override.
+
+## Oahu Data Isolation
+
+The Oahu topology generator writes both committed C++ data and ignored debug
+artifacts. The committed header keeps runtime startup network-free; the debug
+artifacts let the source coastline, resampled coastline, terrain grid, and
+landmark controls be inspected separately from bgfx rendering and the flyover
+camera.

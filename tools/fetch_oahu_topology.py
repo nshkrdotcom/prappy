@@ -11,6 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "src" / "oahu_topology.h"
+DEBUG_DIR = ROOT / "build" / "oahu_debug"
 USER_AGENT = "prappy-native-oahu-data/1.1 (local development)"
 
 GRID_WIDTH = 61
@@ -22,6 +23,15 @@ EARTH_RADIUS_METERS = 6371008.8
 COASTLINE_QUERY_URL = (
     "https://geodata.hawaii.gov/arcgis/rest/services/Terrestrial/MapServer/3/query"
 )
+
+LANDMARKS = [
+    {"name": "Kaena Point", "lon": -158.28058, "lat": 21.57442},
+    {"name": "Kahuku Point", "lon": -157.9839349, "lat": 21.7119767},
+    {"name": "Mokapu Point", "lon": -157.7229452, "lat": 21.4584208},
+    {"name": "Koko Head", "lon": -157.704135, "lat": 21.262935},
+    {"name": "Pearl Harbor", "lon": -157.980240, "lat": 21.351183},
+    {"name": "Barbers Point", "lon": -158.115036, "lat": 21.320634},
+]
 
 
 def fetch_json(url: str) -> dict:
@@ -117,6 +127,11 @@ def normalized_xy(x: float, y: float, bounds):
     return (x - min_x) / (max_x - min_x), (y - min_y) / (max_y - min_y)
 
 
+def denormalized_xy(x: float, y: float, bounds):
+    min_x, min_y, max_x, max_y = bounds
+    return min_x + x * (max_x - min_x), min_y + y * (max_y - min_y)
+
+
 def projected_bounds(points):
     xs = [point[0] for point in points]
     ys = [point[1] for point in points]
@@ -153,6 +168,24 @@ def sample_closed_ring(points, count, bounds):
         sampled.append(normalized_xy(x, y, bounds))
 
     return sampled
+
+
+def build_landmarks(bounds, origin_lon, origin_lat, outer, holes):
+    landmarks = []
+    for landmark in LANDMARKS:
+        x, y = project(landmark["lon"], landmark["lat"], origin_lon, origin_lat)
+        nx, ny = normalized_xy(x, y, bounds)
+        landmarks.append(
+            {
+                "name": landmark["name"],
+                "lon": landmark["lon"],
+                "lat": landmark["lat"],
+                "x": nx,
+                "y": ny,
+                "land": point_on_land(x, y, outer, holes),
+            }
+        )
+    return landmarks
 
 
 def fetch_elevation_meters(lon: float, lat: float) -> float:
@@ -215,7 +248,137 @@ def build_grid(outer, holes, bounds, origin_lon, origin_lat):
     return samples
 
 
-def write_header(feature, lonlat_bounds, metric_bounds, coastline, samples, source_point_count, hole_count):
+def svg_points(points, bounds, width, height, margin):
+    result = []
+    for x, y in points:
+        nx, ny = normalized_xy(x, y, bounds)
+        sx = margin + nx * (width - margin * 2)
+        sy = margin + (1.0 - ny) * (height - margin * 2)
+        result.append(f"{sx:.1f},{sy:.1f}")
+    return " ".join(result)
+
+
+def svg_normalized_points(points, width, height, margin):
+    result = []
+    for nx, ny in points:
+        sx = margin + nx * (width - margin * 2)
+        sy = margin + (1.0 - ny) * (height - margin * 2)
+        result.append(f"{sx:.1f},{sy:.1f}")
+    return " ".join(result)
+
+
+def write_debug_artifacts(feature, outer, bounds, coastline, samples, landmarks, origin_lon, origin_lat):
+    DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+
+    source_geojson = {
+        "type": "FeatureCollection",
+        "features": [feature],
+    }
+    (DEBUG_DIR / "oahu_source.geojson").write_text(
+        json.dumps(source_geojson, indent=2),
+        encoding="utf-8",
+    )
+
+    resampled_lonlat = []
+    for nx, ny in coastline:
+        x, y = denormalized_xy(nx, ny, bounds)
+        resampled_lonlat.append(unproject(x, y, origin_lon, origin_lat))
+
+    resampled_features = [
+        {
+            "type": "Feature",
+            "properties": {"name": "resampled coastline", "points": len(resampled_lonlat)},
+            "geometry": {
+                "type": "LineString",
+                "coordinates": resampled_lonlat + [resampled_lonlat[0]],
+            },
+        }
+    ]
+    for landmark in landmarks:
+        resampled_features.append(
+            {
+                "type": "Feature",
+                "properties": {
+                    "name": landmark["name"],
+                    "land": bool(landmark["land"]),
+                    "normalized_x": landmark["x"],
+                    "normalized_y": landmark["y"],
+                },
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [landmark["lon"], landmark["lat"]],
+                },
+            }
+        )
+
+    (DEBUG_DIR / "oahu_resampled.geojson").write_text(
+        json.dumps({"type": "FeatureCollection", "features": resampled_features}, indent=2),
+        encoding="utf-8",
+    )
+
+    width = 1000
+    height = 760
+    margin = 52
+    source_points = svg_points(outer, bounds, width, height, margin)
+    resampled_points = svg_normalized_points(coastline + [coastline[0]], width, height, margin)
+
+    sample_dots = []
+    for sample in samples:
+        if not sample["land"]:
+            continue
+        sx = margin + sample["x"] * (width - margin * 2)
+        sy = margin + (1.0 - sample["y"]) * (height - margin * 2)
+        shade = 70 + min(170, int(sample["elevation"] / 1220.0 * 170.0))
+        sample_dots.append(
+            f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="2.2" fill="rgb(33,{shade},68)" />'
+        )
+
+    landmark_nodes = []
+    for landmark in landmarks:
+        sx = margin + landmark["x"] * (width - margin * 2)
+        sy = margin + (1.0 - landmark["y"]) * (height - margin * 2)
+        landmark_nodes.extend(
+            [
+                f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="5" fill="#ff4fd8" stroke="#111827" stroke-width="1.5" />',
+                f'<text x="{sx + 8.0:.1f}" y="{sy - 8.0:.1f}" font-size="16" font-family="Segoe UI, Arial" fill="#111827">{landmark["name"]}</text>',
+            ]
+        )
+
+    svg = "\n".join(
+        [
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 760">',
+            '<rect width="1000" height="760" fill="#75c7df" />',
+            '<text x="52" y="34" font-size="22" font-family="Segoe UI, Arial" fill="#0f172a">Oahu topology debug preview: source, resampled coastline, grid, landmarks</text>',
+            f'<polyline points="{source_points}" fill="none" stroke="#334155" stroke-width="3" opacity="0.55" />',
+            "\n".join(sample_dots),
+            f'<polyline points="{resampled_points}" fill="none" stroke="#ffe45e" stroke-width="4" />',
+            "\n".join(landmark_nodes),
+            '<text x="52" y="724" font-size="16" font-family="Segoe UI, Arial" fill="#0f172a">Gray: raw source ring. Yellow: resampled embedded ring. Green dots: terrain land samples.</text>',
+            "</svg>",
+            "",
+        ]
+    )
+    (DEBUG_DIR / "oahu_preview.svg").write_text(svg, encoding="utf-8")
+
+    metadata = {
+        "source": "Hawaii Statewide GIS Program Coastline layer",
+        "sourceFeature": feature.get("properties", {}),
+        "sourcePointCount": len(outer),
+        "resampledPointCount": len(coastline),
+        "gridWidth": GRID_WIDTH,
+        "gridHeight": GRID_HEIGHT,
+        "landSamples": sum(1 for sample in samples if sample["land"]),
+        "landmarks": landmarks,
+    }
+    (DEBUG_DIR / "oahu_debug_metadata.json").write_text(
+        json.dumps(metadata, indent=2),
+        encoding="utf-8",
+    )
+
+    print(f"wrote debug artifacts under {DEBUG_DIR}")
+
+
+def write_header(feature, lonlat_bounds, metric_bounds, coastline, samples, landmarks, source_point_count, hole_count):
     properties = feature.get("properties", {})
     max_elevation = max(sample["elevation"] for sample in samples)
     land_count = sum(1 for sample in samples if sample["land"])
@@ -250,9 +413,19 @@ def write_header(feature, lonlat_bounds, metric_bounds, coastline, samples, sour
         "  std::uint8_t land;",
         "};",
         "",
+        "struct OahuLandmark {",
+        "  const char* name;",
+        "  float longitude;",
+        "  float latitude;",
+        "  float x;",
+        "  float y;",
+        "  std::uint8_t land;",
+        "};",
+        "",
         f"constexpr int kOahuGridWidth = {GRID_WIDTH};",
         f"constexpr int kOahuGridHeight = {GRID_HEIGHT};",
         f"constexpr int kOahuCoastlinePointCount = {len(coastline)};",
+        f"constexpr int kOahuLandmarkCount = {len(landmarks)};",
         f"constexpr int kOahuSourceCoastlinePointCount = {source_point_count};",
         f"constexpr int kOahuInteriorRingCount = {hole_count};",
         f"constexpr float kOahuMinLongitude = {lonlat_bounds[0]:.7f}f;",
@@ -270,6 +443,21 @@ def write_header(feature, lonlat_bounds, metric_bounds, coastline, samples, sour
 
     for x, y in coastline:
         lines.append(f"  {{ {x:.6f}f, {y:.6f}f }},")
+
+    lines.extend(
+        [
+            "}};",
+            "",
+            "inline constexpr std::array<OahuLandmark, kOahuLandmarkCount> kOahuLandmarks = {{",
+        ]
+    )
+
+    for landmark in landmarks:
+        land = 1 if landmark["land"] else 0
+        lines.append(
+            f"  {{ \"{landmark['name']}\", {landmark['lon']:.7f}f, {landmark['lat']:.7f}f, "
+            f"{landmark['x']:.6f}f, {landmark['y']:.6f}f, {land} }},"
+        )
 
     lines.extend(
         [
@@ -304,13 +492,16 @@ def main():
 
     bounds = projected_bounds(outer)
     coastline = sample_closed_ring(outer, COASTLINE_POINTS, bounds)
+    landmarks = build_landmarks(bounds, origin_lon, origin_lat, outer, holes)
     samples = build_grid(outer, holes, bounds, origin_lon, origin_lat)
+    write_debug_artifacts(feature, outer, bounds, coastline, samples, landmarks, origin_lon, origin_lat)
     write_header(
         feature,
         lonlat_bounds,
         bounds,
         coastline,
         samples,
+        landmarks,
         len(outer_lonlat),
         len(holes),
     )

@@ -39,6 +39,7 @@ struct AppState {
   PrappyBgfxCallback bgfxCallback;
   VisualizationRenderer visualizationRenderer;
   VisualizationHost visualizations;
+  OahuDiagnosticSettings oahuDiagnostics;
 
   bgfx::VertexLayout imguiLayout;
   Program imguiProgram;

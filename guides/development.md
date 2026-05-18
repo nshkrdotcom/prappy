@@ -58,7 +58,8 @@ build\windows-msvc-release\captures\
 
 The regression script validates the generated Oahu topology header, runs all
 visualizations, verifies 32-bit BMP dimensions, checks that captures are
-nonblank, and does a D3D11 renderer override smoke.
+nonblank, captures an Oahu top-down diagnostic frame, and does a D3D11 renderer
+override smoke.
 
 ## Renderer Override
 
@@ -71,6 +72,21 @@ pwsh scripts\run.ps1 -Renderer Vulkan -Visualization ParticleField
 ```
 
 `Auto` is the default and lets bgfx choose the backend.
+
+## Oahu Shape Isolation
+
+Use these commands when checking whether an Oahu shape issue is source data,
+resampling, terrain mesh fill, or camera perspective:
+
+```powershell
+python tools\fetch_oahu_topology.py
+python tools\validate_oahu_topology.py --require-debug-artifacts
+pwsh scripts\run.ps1 -Visualization Oahu -OahuDiagnostic Coastline -Focus -NoOverlay
+pwsh scripts\run.ps1 -Visualization Oahu -OahuDiagnostic Mesh -Focus -NoOverlay
+pwsh scripts\run.ps1 -Visualization Oahu -OahuDiagnostic All -Focus -NoOverlay
+```
+
+The generator writes external inspection files under `build\oahu_debug\`.
 
 ## Clean Build
 
