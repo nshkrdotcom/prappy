@@ -123,6 +123,12 @@ The app has a reusable visualization module contract, named presentation
 presets, shared camera controls for 3D modules, renderer diagnostics, renderer
 override support, and a bgfx-backed screenshot export path.
 
+The GPU Particle Field uses a retained/updateable bgfx dynamic vertex buffer
+and dedicated particle shaders. Particle motion is still deterministic
+CPU-side simulation, but rendering now follows the same reusable resource
+lifecycle used by the serious bgfx paths instead of rebuilding transient draw
+state as the whole renderer.
+
 The Oahu visualization is generated from committed topology data: 4,096
 coastline samples, a 241 x 181 terrain grid, and two smoothing passes over
 USGS elevation samples. Its filled terrain now renders through a retained bgfx

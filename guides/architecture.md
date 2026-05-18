@@ -52,13 +52,19 @@ include:
 
 - Screen-space line lists.
 - 3D line lists.
-- Particle streak line lists.
+- Updateable dynamic particle line buffers with dedicated particle shaders.
 - Retained indexed Oahu terrain mesh.
 - Coastline and diagnostic line overlays.
 
 The renderer abstraction is intentionally bgfx-level, not CUDA-level. That keeps
 the app portable across graphics APIs while still giving access to GPU buffers,
 shaders, and compute-capable backends later.
+
+The particle field is the dynamic-buffer renderer path: simulation is
+CPU-deterministic, then packed particle vertices are uploaded into a retained
+bgfx dynamic vertex buffer and submitted through particle-specific shaders each
+frame. That keeps the architecture ready for heavier GPU workloads without
+making the app NVIDIA-only.
 
 The renderer can be selected at launch:
 

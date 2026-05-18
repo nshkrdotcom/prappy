@@ -74,9 +74,10 @@ shader. Coastline, ridge, grid, and landmark diagnostics remain transient line
 overlays so they can be toggled without rebuilding the terrain buffers.
 
 The particle field exposes inspector controls for particle count, speed, spread,
-turbulence, trail length, hue drift, and reset. It uses bgfx-submitted vertex
-buffers for particle streaks, so it is the first visualization that is explicitly
-structured as a reusable GPU draw workload.
+turbulence, trail length, hue drift, and reset. It owns a reusable bgfx vertex
+layout, retained dynamic vertex buffer, and dedicated particle shader program.
+Each frame updates the buffer with deterministic CPU-simulated particle streaks,
+then submits the retained buffer as a GPU draw workload.
 
 ## Module Contract
 
