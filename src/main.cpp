@@ -1602,36 +1602,65 @@ void drawAppUi(AppState& state) {
 
   const float statusStripHeight = (!state.focusMode && state.showStatusStrip) ? 36.0f : 0.0f;
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 8.0f));
-  ImGui::BeginChild("Workspace", ImVec2(0.0f, -statusStripHeight), false, ImGuiWindowFlags_NoScrollbar);
+  ImGui::BeginChild(
+    "Workspace",
+    ImVec2(0.0f, -statusStripHeight),
+    false,
+    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground
+  );
 
   const bool showStack = !state.focusMode && state.showStackPanel;
   const bool showInspector = !state.focusMode && state.showInspectorPanel;
+  const int workspaceColumns = 1 + (showStack ? 1 : 0) + (showInspector ? 1 : 0);
 
-  if (showStack) {
-    drawStackPanel(state);
-    ImGui::SameLine();
-  }
+  if (ImGui::BeginTable(
+    "WorkspaceLayout",
+    workspaceColumns,
+    ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoPadOuterX
+  )) {
+    if (showStack) {
+      ImGui::TableSetupColumn("Stack", ImGuiTableColumnFlags_WidthFixed, 284.0f);
+    }
+    ImGui::TableSetupColumn("Visualization", ImGuiTableColumnFlags_WidthStretch);
+    if (showInspector) {
+      ImGui::TableSetupColumn("Inspector", ImGuiTableColumnFlags_WidthFixed, 340.0f);
+    }
 
-  const float inspectorWidth = showInspector ? 348.0f : 0.0f;
-  const float canvasWidth = std::max(ImGui::GetContentRegionAvail().x - inspectorWidth, 1.0f);
-  ImGui::BeginChild("VisualizationRegion", ImVec2(canvasWidth, 0.0f), false, ImGuiWindowFlags_NoScrollbar);
+    ImGui::TableNextRow();
+    int column = 0;
 
-  const ImVec2 canvasOrigin = ImGui::GetCursorScreenPos();
-  ImVec2 canvasSize = ImGui::GetContentRegionAvail();
-  canvasSize.x = std::max(canvasSize.x, 1.0f);
-  canvasSize.y = std::max(canvasSize.y, 1.0f);
+    if (showStack) {
+      ImGui::TableSetColumnIndex(column++);
+      drawStackPanel(state);
+    }
 
-  ImGui::InvisibleButton("VisualizationCanvas", canvasSize);
+    ImGui::TableSetColumnIndex(column++);
+    ImGui::BeginChild(
+      "VisualizationRegion",
+      ImVec2(0.0f, 0.0f),
+      false,
+      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground
+    );
 
-  state.visualizationCanvasOrigin = canvasOrigin;
-  state.visualizationCanvasSize = canvasSize;
-  drawVisualizationStatus(state, canvasOrigin);
+    const ImVec2 canvasOrigin = ImGui::GetCursorScreenPos();
+    ImVec2 canvasSize = ImGui::GetContentRegionAvail();
+    canvasSize.x = std::max(canvasSize.x, 1.0f);
+    canvasSize.y = std::max(canvasSize.y, 1.0f);
 
-  ImGui::EndChild();
+    ImGui::InvisibleButton("VisualizationCanvas", canvasSize);
 
-  if (showInspector) {
-    ImGui::SameLine();
-    drawInspectorPanel(state);
+    state.visualizationCanvasOrigin = canvasOrigin;
+    state.visualizationCanvasSize = canvasSize;
+    drawVisualizationStatus(state, canvasOrigin);
+
+    ImGui::EndChild();
+
+    if (showInspector) {
+      ImGui::TableSetColumnIndex(column++);
+      drawInspectorPanel(state);
+    }
+
+    ImGui::EndTable();
   }
 
   ImGui::EndChild();
