@@ -5,6 +5,10 @@ param(
     [string]$Config = "Release",
 
     [Parameter()]
+    [ValidateSet("RandomLines", "Starfield")]
+    [string]$Visualization,
+
+    [Parameter()]
     [switch]$SmokeTest
 )
 
@@ -17,6 +21,10 @@ $parameters = @{
 
 if ($SmokeTest) {
     $parameters.SmokeTest = $true
+}
+
+if ($Visualization) {
+    $parameters.Visualization = $Visualization
 }
 
 Invoke-PrappyNativeTool "run.ps1" $parameters

@@ -66,6 +66,13 @@ For a quick non-interactive check that opens, renders a few frames, and exits:
 pwsh scripts\run.ps1 -SmokeTest
 ```
 
+Launch a specific visualization from the script:
+
+```powershell
+pwsh scripts\run.ps1 -Visualization RandomLines
+pwsh scripts\run.ps1 -Visualization Starfield
+```
+
 The smoke test writes its log under the active build directory, for example:
 
 ```text
@@ -179,4 +186,3 @@ pwsh scripts\clean.ps1
 pwsh scripts\configure.ps1
 pwsh scripts\build.ps1
 ```
-
