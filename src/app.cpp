@@ -1416,9 +1416,10 @@ void renderVisualization(AppState& state) {
         halfHeight = halfWidth / viewAspect;
       }
 
+      // Looking up the Y axis keeps east on the right in bgfx's view handedness.
       bx::mtxLookAt(
         view,
-        bx::Vec3{0.0f, 14.0f, 0.0f},
+        bx::Vec3{0.0f, -14.0f, 0.0f},
         bx::Vec3{0.0f, 0.0f, 0.0f},
         bx::Vec3{0.0f, 0.0f, -1.0f}
       );
@@ -1443,8 +1444,8 @@ void renderVisualization(AppState& state) {
         const float cycle = std::fmod(state.elapsedSeconds * 0.025f * camera.routeSpeed, 1.0f);
         const float route = cycle * 2.0f - 1.0f;
         const float sway = std::sin(state.elapsedSeconds * 0.35f) * 0.55f;
-        eye = {sway, 2.65f, 7.4f - route * 8.5f};
-        at = {sway * 0.25f, 0.42f, 4.1f - route * 8.5f};
+        eye = {sway, 2.65f, -7.4f + route * 8.5f};
+        at = {sway * 0.25f, 0.42f, -4.1f + route * 8.5f};
       }
       bx::mtxLookAt(view, eye, at);
       bx::mtxProj(

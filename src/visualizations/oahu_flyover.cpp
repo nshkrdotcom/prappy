@@ -77,18 +77,18 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
     const std::uint32_t nearOcean = rgbaToAbgr(26, 128, 176, 255);
     const std::uint32_t farOcean = rgbaToAbgr(96, 181, 221, 255);
     const float y = -0.035f;
-    vertices.push_back(ColorVertex{-36.0f, y, -42.0f, farOcean});
-    vertices.push_back(ColorVertex{36.0f, y, -42.0f, farOcean});
-    vertices.push_back(ColorVertex{36.0f, y, 24.0f, nearOcean});
-    vertices.push_back(ColorVertex{-36.0f, y, -42.0f, farOcean});
-    vertices.push_back(ColorVertex{36.0f, y, 24.0f, nearOcean});
-    vertices.push_back(ColorVertex{-36.0f, y, 24.0f, nearOcean});
+    vertices.push_back(ColorVertex{-36.0f, y, -24.0f, nearOcean});
+    vertices.push_back(ColorVertex{36.0f, y, -24.0f, nearOcean});
+    vertices.push_back(ColorVertex{36.0f, y, 42.0f, farOcean});
+    vertices.push_back(ColorVertex{-36.0f, y, -24.0f, nearOcean});
+    vertices.push_back(ColorVertex{36.0f, y, 42.0f, farOcean});
+    vertices.push_back(ColorVertex{-36.0f, y, 42.0f, farOcean});
   }
 
   void pushHorizon(std::vector<ColorVertex>& vertices) const {
     const std::uint32_t skyTop = rgbaToAbgr(88, 176, 239, 255);
     const std::uint32_t horizon = rgbaToAbgr(204, 235, 246, 255);
-    const float z = -42.0f;
+    const float z = 42.0f;
     vertices.push_back(ColorVertex{-42.0f, 0.0f, z, horizon});
     vertices.push_back(ColorVertex{42.0f, 0.0f, z, horizon});
     vertices.push_back(ColorVertex{42.0f, 20.0f, z, skyTop});

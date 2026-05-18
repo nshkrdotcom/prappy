@@ -86,7 +86,7 @@ void CameraRig::resetFor(VisualizationId id) {
       target = {0.0f, 0.0f, -1.0f};
       break;
     case VisualizationId::OahuFlyover:
-      yaw = 0.0f;
+      yaw = kPi;
       pitch = 0.25f;
       distance = 10.0f;
       fovDegrees = 62.0f;
