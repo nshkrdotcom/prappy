@@ -76,6 +76,29 @@ target_include_directories(imgui PUBLIC
   "${IMGUI_DIR}"
 )
 
+set(PRAPPY_ICON_ICO "${ROOT_DIR}/assets/prappy_icon.ico")
+set(PRAPPY_ICON_BMP "${ROOT_DIR}/assets/prappy_icon.bmp")
+set(PRAPPY_PLATFORM_RESOURCES)
+
+if(WIN32)
+  if(NOT EXISTS "${PRAPPY_ICON_ICO}")
+    message(FATAL_ERROR "Missing Windows icon: ${PRAPPY_ICON_ICO}. Run: python tools/generate_app_icon.py")
+  endif()
+
+  if(NOT EXISTS "${PRAPPY_ICON_BMP}")
+    message(FATAL_ERROR "Missing runtime icon: ${PRAPPY_ICON_BMP}. Run: python tools/generate_app_icon.py")
+  endif()
+
+  enable_language(RC)
+  set(PRAPPY_ICON_ICO_RC "${PRAPPY_ICON_ICO}")
+  configure_file(
+    "${ROOT_DIR}/src/platform/windows_resources.rc.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/windows_resources.rc"
+    @ONLY
+  )
+  list(APPEND PRAPPY_PLATFORM_RESOURCES "${CMAKE_CURRENT_BINARY_DIR}/windows_resources.rc")
+endif()
+
 add_executable(prappy_native
   src/app.cpp
   src/main.cpp
@@ -86,6 +109,7 @@ add_executable(prappy_native
   src/visualizations/particle_field.cpp
   src/visualizations/random_lines.cpp
   src/visualizations/starfield.cpp
+  ${PRAPPY_PLATFORM_RESOURCES}
 )
 
 target_include_directories(prappy_native PRIVATE
@@ -211,6 +235,10 @@ add_custom_target(shaders ALL
 add_dependencies(prappy_native shaders)
 
 add_custom_command(TARGET prappy_native POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:prappy_native>/assets"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${PRAPPY_ICON_BMP}"
+    "$<TARGET_FILE_DIR:prappy_native>/assets/prappy_icon.bmp"
   COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:prappy_native>/shaders"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${SHADER_OUT_DIR}/imgui_vs.bin"

@@ -4,6 +4,7 @@
 
 #include "oahu_topology.h"
 
+#include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_main.h>
 #include <bgfx/platform.h>
 #include <bx/math.h>
@@ -13,11 +14,13 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #ifdef _WIN32
@@ -118,6 +121,47 @@ void fatalMessage(const char* title, const std::string& message) {
 #else
   std::fprintf(stderr, "%s: %s\n", title, message.c_str());
 #endif
+}
+
+std::filesystem::path runtimeAssetPath(const char* relativePath) {
+  const std::filesystem::path relative(relativePath);
+  std::vector<std::filesystem::path> candidates;
+
+  if (const char* basePath = SDL_GetBasePath(); basePath != nullptr && basePath[0] != '\0') {
+    candidates.push_back(std::filesystem::path(basePath) / relative);
+  }
+
+  std::error_code error;
+  const std::filesystem::path current = std::filesystem::current_path(error);
+  if (!error) {
+    candidates.push_back(current / relative);
+  }
+
+  for (const auto& candidate : candidates) {
+    error.clear();
+    if (std::filesystem::exists(candidate, error)) {
+      return candidate;
+    }
+  }
+
+  return candidates.empty() ? relative : candidates.front();
+}
+
+void applyWindowIcon(AppState& state) {
+  const std::filesystem::path iconPath = runtimeAssetPath("assets/prappy_icon.bmp");
+  SDL_Surface* icon = SDL_LoadBMP(iconPath.string().c_str());
+  if (icon == nullptr) {
+    const std::string message = std::string("smoke: window icon skipped: ") + SDL_GetError();
+    logSmoke(state, message.c_str());
+    return;
+  }
+
+  if (!SDL_SetWindowIcon(state.window, icon)) {
+    const std::string message = std::string("smoke: window icon rejected: ") + SDL_GetError();
+    logSmoke(state, message.c_str());
+  }
+
+  SDL_DestroySurface(icon);
 }
 
 void initBgfx(AppState& state) {
@@ -554,6 +598,58 @@ bool drawModeButton(const char* label, bool active, const ImVec2& size) {
   }
 
   return pressed;
+}
+
+void drawPrappyMenuMark() {
+  ImDrawList* drawList = ImGui::GetWindowDrawList();
+  const float size = std::max(14.0f, ImGui::GetFrameHeight() - 6.0f);
+  const ImVec2 pos = ImGui::GetCursorScreenPos();
+  const ImVec2 max = ImVec2(pos.x + size, pos.y + size);
+  const float rounding = size * 0.24f;
+
+  const ImU32 background = ImGui::GetColorU32(ImVec4(0.02f, 0.055f, 0.078f, 1.0f));
+  const ImU32 rim = ImGui::GetColorU32(ImVec4(0.24f, 0.78f, 0.92f, 0.82f));
+  const ImU32 cyan = ImGui::GetColorU32(ImVec4(0.23f, 0.88f, 1.0f, 1.0f));
+  const ImU32 green = ImGui::GetColorU32(ImVec4(0.34f, 0.82f, 0.48f, 1.0f));
+  const ImU32 gold = ImGui::GetColorU32(ImVec4(0.86f, 0.67f, 0.26f, 1.0f));
+  const ImU32 magenta = ImGui::GetColorU32(ImVec4(0.95f, 0.24f, 0.76f, 1.0f));
+
+  drawList->AddRectFilled(pos, max, background, rounding);
+  drawList->AddRect(pos, max, rim, rounding, 0, 1.0f);
+  drawList->PathClear();
+  drawList->PathArcTo(
+    ImVec2(pos.x + size * 0.50f, pos.y + size * 0.46f),
+    size * 0.30f,
+    -1.42f,
+    1.22f,
+    18
+  );
+  drawList->PathStroke(cyan, false, 1.7f);
+  drawList->AddLine(
+    ImVec2(pos.x + size * 0.25f, pos.y + size * 0.78f),
+    ImVec2(pos.x + size * 0.25f, pos.y + size * 0.23f),
+    cyan,
+    1.7f
+  );
+  drawList->AddTriangleFilled(
+    ImVec2(pos.x + size * 0.37f, pos.y + size * 0.63f),
+    ImVec2(pos.x + size * 0.72f, pos.y + size * 0.49f),
+    ImVec2(pos.x + size * 0.74f, pos.y + size * 0.69f),
+    green
+  );
+  drawList->AddTriangleFilled(
+    ImVec2(pos.x + size * 0.37f, pos.y + size * 0.63f),
+    ImVec2(pos.x + size * 0.74f, pos.y + size * 0.69f),
+    ImVec2(pos.x + size * 0.47f, pos.y + size * 0.78f),
+    gold
+  );
+  drawList->AddCircleFilled(ImVec2(pos.x + size * 0.76f, pos.y + size * 0.31f), size * 0.055f, magenta, 12);
+
+  ImGui::Dummy(ImVec2(size, size));
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip("Prappy");
+  }
+  ImGui::SameLine(0.0f, 8.0f);
 }
 
 void drawKeyValue(const char* key, const char* value) {
@@ -1177,6 +1273,8 @@ void drawAppUi(AppState& state) {
   ImGui::Begin("PrappyVisualizationHost", nullptr, windowFlags);
 
   if (ImGui::BeginMenuBar()) {
+    drawPrappyMenuMark();
+
     if (ImGui::BeginMenu("File")) {
       if (ImGui::MenuItem("Reset Visualization")) {
         state.visualizations.resetRequested = true;
@@ -1679,6 +1777,9 @@ int runApp(int argc, char** argv) {
   try {
     logSmoke(state, "smoke: SDL_SetMainReady");
     SDL_SetMainReady();
+    SDL_SetAppMetadata("Prappy", "0.1.0", "com.nshkr.prappy");
+    SDL_SetAppMetadataProperty(SDL_PROP_APP_METADATA_CREATOR_STRING, "nshkrdotcom");
+    SDL_SetAppMetadataProperty(SDL_PROP_APP_METADATA_TYPE_STRING, "application");
 
     logSmoke(state, "smoke: SDL_Init");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
@@ -1687,7 +1788,7 @@ int runApp(int argc, char** argv) {
 
     logSmoke(state, "smoke: SDL_CreateWindow");
     state.window = SDL_CreateWindow(
-      "prappy-native",
+      "Prappy",
       state.width,
       state.height,
       SDL_WINDOW_RESIZABLE
@@ -1696,6 +1797,8 @@ int runApp(int argc, char** argv) {
     if (!state.window) {
       throw std::runtime_error(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
     }
+    SDL_SetWindowMinimumSize(state.window, 960, 540);
+    applyWindowIcon(state);
 
     logSmoke(state, "smoke: initBgfx");
     initBgfx(state);

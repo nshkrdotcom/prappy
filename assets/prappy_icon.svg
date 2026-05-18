@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Prappy app icon">
+  <defs>
+    <radialGradient id="bg" cx="54%" cy="42%" r="76%">
+      <stop offset="0%" stop-color="#182b35"/>
+      <stop offset="58%" stop-color="#0b1723"/>
+      <stop offset="100%" stop-color="#07101b"/>
+    </radialGradient>
+    <linearGradient id="terrain" x1="88" y1="95" x2="174" y2="150" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#75aa48"/>
+      <stop offset="55%" stop-color="#258845"/>
+      <stop offset="100%" stop-color="#d2b75e"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="20" y="20" width="216" height="216" rx="42" fill="url(#bg)"/>
+  <rect x="23" y="23" width="210" height="210" rx="38" fill="none" stroke="#60daec" stroke-opacity=".28" stroke-width="2"/>
+  <path d="M88 138 L108 100 L143 88 L174 116 L151 148 L111 153 Z" fill="url(#terrain)" opacity=".95"/>
+  <path d="M88 138 L108 100 L122 151 L111 153 Z" fill="#7aaa47" opacity=".72"/>
+  <path d="M143 88 L174 116 L151 148 L132 132 Z" fill="#caae5b" opacity=".82"/>
+  <path d="M103 136 C122 127 142 126 159 133 M111 119 C130 111 149 113 164 122 M120 103 C139 100 151 105 155 107" fill="none" stroke="#e6f0a4" stroke-opacity=".55" stroke-width="2"/>
+  <path d="M72 192 L72 60 C128 42 190 63 190 112 C188 155 122 166 72 143" fill="none" stroke="#18d3ee" stroke-opacity=".25" stroke-width="31" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
+  <path d="M72 192 L72 60 C128 42 190 63 190 112 C188 155 122 166 72 143" fill="none" stroke="#26c6e0" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M72 192 L72 60 C128 42 190 63 190 112 C188 155 122 166 72 143" fill="none" stroke="#dafcff" stroke-opacity=".58" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M91 154 C115 144 147 139 178 124" fill="none" stroke="#fad15f" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="190" cy="112" r="15" fill="#f52bcd" opacity=".28"/>
+  <circle cx="190" cy="112" r="7" fill="#ff49d8"/>
+  <circle cx="190" cy="112" r="2.4" fill="#fffaff"/>
+</svg>
