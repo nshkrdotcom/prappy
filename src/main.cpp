@@ -1461,6 +1461,15 @@ void drawVisualizationStatus(AppState& state, const ImVec2& canvasOrigin) {
   const double gpuMs = stats
     ? timerMilliseconds(stats->gpuTimeBegin, stats->gpuTimeEnd, stats->gpuTimerFreq)
     : 0.0;
+  const float desiredHeight = state.visualizations.active == VisualizationId::OahuFlyover
+    ? 306.0f
+    : 278.0f;
+  const float maxHeight = std::max(state.visualizationCanvasSize.y - 32.0f, 160.0f);
+  const float panelHeight = std::min(desiredHeight, maxHeight);
+  const bool needsScrollbar = panelHeight + 0.5f < desiredHeight;
+  const ImGuiWindowFlags panelFlags = needsScrollbar
+    ? ImGuiWindowFlags_None
+    : ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
 
   ImGui::SetCursorScreenPos(addVec2(canvasOrigin, ImVec2(16.0f, 16.0f)));
   ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
@@ -1468,9 +1477,9 @@ void drawVisualizationStatus(AppState& state, const ImVec2& canvasOrigin) {
   ImGui::PushStyleColor(ImGuiCol_ChildBg, IM_COL32(8, 10, 18, 218));
   ImGui::BeginChild(
     "VisualizationStatus",
-    ImVec2(390.0f, 218.0f),
+    ImVec2(390.0f, panelHeight),
     ImGuiChildFlags_Borders,
-    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse
+    panelFlags
   );
 
   ImGui::TextUnformatted(visualizationName(state.visualizations.active));
