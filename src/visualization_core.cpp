@@ -95,7 +95,7 @@ const VisualizationDescriptor& visualizationDescriptor(VisualizationId id) {
       "GPU Particle Field",
       "Particles",
       "3D particle pass",
-      "particle streak lines",
+      "compute particles + line draw",
       true,
       false
     }

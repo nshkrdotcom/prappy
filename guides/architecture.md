@@ -36,7 +36,7 @@ The current source split is:
 
 ```text
 src\app.*
-src\renderer.*
+src\renderer.* (color submission + resource helpers)
 src\visualization_core.*
 src\visualizations\random_lines.*
 src\visualizations\starfield.*
@@ -52,7 +52,7 @@ include:
 
 - Screen-space line lists.
 - 3D line lists.
-- Updateable dynamic particle line buffers with dedicated particle shaders.
+- Compute-updated particle buffers with CPU simulation fallback.
 - Retained indexed Oahu terrain mesh.
 - Coastline and diagnostic line overlays.
 
@@ -60,11 +60,18 @@ The renderer abstraction is intentionally bgfx-level, not CUDA-level. That keeps
 the app portable across graphics APIs while still giving access to GPU buffers,
 shaders, and compute-capable backends later.
 
-The particle field is the dynamic-buffer renderer path: simulation is
-CPU-deterministic, then packed particle vertices are uploaded into a retained
-bgfx dynamic vertex buffer and submitted through particle-specific shaders each
-frame. That keeps the architecture ready for heavier GPU workloads without
-making the app NVIDIA-only.
+The retained paths share small resource helpers:
+
+- `ShaderProgram` owns graphics/compute program load and shutdown.
+- `DynamicVertexBuffer` owns capacity, stride, flags, update bytes, and shutdown.
+- `RenderPassDiagnostics` exposes pass name, shader, backend, draw/dispatch
+  counts, vertices, upload bytes, and compute state to the UI.
+
+The particle field uses bgfx compute when `BGFX_CAPS_COMPUTE` is available:
+particle state is updated in `particle_update_cs`, then the compute-written
+dynamic vertex buffer is submitted through the particle draw shader. If compute
+is unavailable, the same visualization falls back to CPU simulation and uploads
+particle vertices into the same retained draw path. CUDA is not involved.
 
 The renderer can be selected at launch:
 

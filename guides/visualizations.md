@@ -74,10 +74,11 @@ shader. Coastline, ridge, grid, and landmark diagnostics remain transient line
 overlays so they can be toggled without rebuilding the terrain buffers.
 
 The particle field exposes inspector controls for particle count, speed, spread,
-turbulence, trail length, hue drift, and reset. It owns a reusable bgfx vertex
-layout, retained dynamic vertex buffer, and dedicated particle shader program.
-Each frame updates the buffer with deterministic CPU-simulated particle streaks,
-then submits the retained buffer as a GPU draw workload.
+turbulence, trail length, hue drift, reset, and compute preference. On compute
+capable bgfx renderers, particle state is updated by `particle_update_cs` and
+written into a retained dynamic vertex buffer. If compute is unavailable, the
+module falls back to deterministic CPU simulation and uploads the same draw
+vertices. Both paths render through dedicated particle shaders.
 
 ## Module Contract
 

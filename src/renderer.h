@@ -3,8 +3,10 @@
 #include <bgfx/bgfx.h>
 #include <imgui.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <random>
+#include <string>
 #include <vector>
 
 namespace prappy {
@@ -15,6 +17,87 @@ struct Texture {
 
 struct Program {
   bgfx::ProgramHandle handle = BGFX_INVALID_HANDLE;
+};
+
+class ShaderProgram {
+public:
+  ShaderProgram() = default;
+  ShaderProgram(const ShaderProgram&) = delete;
+  ShaderProgram& operator=(const ShaderProgram&) = delete;
+
+  bool isValid() const;
+  bgfx::ProgramHandle get() const;
+  const char* label() const;
+
+  void loadGraphics(const char* label, const char* vsPath, const char* fsPath);
+  void loadCompute(const char* label, const char* csPath);
+  void destroy();
+
+private:
+  bgfx::ProgramHandle handle = BGFX_INVALID_HANDLE;
+  std::string programLabel;
+};
+
+class DynamicVertexBuffer {
+public:
+  DynamicVertexBuffer() = default;
+  DynamicVertexBuffer(const DynamicVertexBuffer&) = delete;
+  DynamicVertexBuffer& operator=(const DynamicVertexBuffer&) = delete;
+
+  bool isValid() const;
+  bgfx::DynamicVertexBufferHandle get() const;
+  std::uint32_t capacity() const;
+  std::uint32_t lastUploadBytes() const;
+  std::uint16_t flags() const;
+  std::uint32_t stride() const;
+
+  void ensure(
+    std::uint32_t vertexCapacity,
+    std::uint32_t vertexStride,
+    const bgfx::VertexLayout& layout,
+    std::uint16_t bufferFlags
+  );
+
+  void createWithData(
+    const void* data,
+    std::uint32_t vertexCount,
+    std::uint32_t vertexStride,
+    const bgfx::VertexLayout& layout,
+    std::uint16_t bufferFlags
+  );
+
+  void update(
+    const void* data,
+    std::uint32_t vertexCount,
+    std::uint32_t vertexStride,
+    const bgfx::VertexLayout& layout,
+    std::uint16_t bufferFlags
+  );
+
+  void destroy();
+
+private:
+  bgfx::DynamicVertexBufferHandle handle = BGFX_INVALID_HANDLE;
+  std::uint32_t vertexCapacity = 0;
+  std::uint32_t vertexStride = 0;
+  std::uint32_t uploadBytes = 0;
+  std::uint16_t creationFlags = 0;
+};
+
+struct RenderPassDiagnostics {
+  const char* passName = nullptr;
+  const char* shaderName = nullptr;
+  const char* resourceKind = nullptr;
+  const char* backendName = nullptr;
+  const char* note = nullptr;
+  std::uint32_t drawCalls = 0;
+  std::uint32_t dispatches = 0;
+  std::uint32_t vertices = 0;
+  std::uint32_t indices = 0;
+  std::uint32_t uploadedBytes = 0;
+  std::uint32_t bufferCapacity = 0;
+  bool computeSupported = false;
+  bool computeActive = false;
 };
 
 constexpr bgfx::ViewId kFrameClearView = 0;

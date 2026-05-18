@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <memory>
 #include <random>
 #include <vector>
@@ -9,13 +10,24 @@
 namespace prappy {
 namespace {
 
+constexpr std::uint32_t kParticleComputeGroupSize = 64;
+
 struct ParticleVertex {
   float x = 0.0f;
   float y = 0.0f;
   float z = 0.0f;
-  std::uint32_t abgr = 0xffffffffu;
   float intensity = 1.0f;
-  float age = 0.0f;
+  float r = 1.0f;
+  float g = 1.0f;
+  float b = 1.0f;
+  float a = 1.0f;
+};
+
+struct GpuVec4 {
+  float x = 0.0f;
+  float y = 0.0f;
+  float z = 0.0f;
+  float w = 0.0f;
 };
 
 struct ParticleFieldVisualization final : IVisualizationModule {
@@ -35,70 +47,133 @@ struct ParticleFieldVisualization final : IVisualizationModule {
   float trailLength = 0.18f;
   float hueShift = 0.08f;
   bool additiveTrails = true;
+  bool preferComputeSimulation = true;
+  bool computeSimulationActive = false;
+  bool gpuStateDirty = true;
   ImVec2 lastSize{};
+
   bgfx::VertexLayout particleLayout;
-  Program particleProgram;
-  bgfx::DynamicVertexBufferHandle particleVertexBuffer = BGFX_INVALID_HANDLE;
-  std::uint32_t particleBufferCapacity = 0;
+  bgfx::VertexLayout computeStateLayout;
+  bool layoutsReady = false;
+
+  ShaderProgram particleProgram;
+  ShaderProgram particleUpdateProgram;
+  DynamicVertexBuffer particleVertexBuffer;
+  DynamicVertexBuffer particleStateBuffer;
+  bgfx::UniformHandle u_particleParams = BGFX_INVALID_HANDLE;
+
   std::uint32_t submittedVertexCount = 0;
-  bool particleLayoutReady = false;
+  RenderPassDiagnostics passDiagnostics;
 
   const VisualizationDescriptor& descriptor() const override {
     return visualizationDescriptor(VisualizationId::ParticleField);
   }
 
-  void ensureParticleLayout() {
-    if (particleLayoutReady) {
+  bool computeSupported() const {
+    const bgfx::Caps* caps = bgfx::getCaps();
+    return caps != nullptr && (caps->supported & BGFX_CAPS_COMPUTE) != 0;
+  }
+
+  void ensureLayouts() {
+    if (layoutsReady) {
       return;
     }
 
     particleLayout
       .begin()
-      .add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float)
-      .add(bgfx::Attrib::Color0, 4, bgfx::AttribType::Uint8, true)
-      .add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float)
+      .add(bgfx::Attrib::Position, 4, bgfx::AttribType::Float)
+      .add(bgfx::Attrib::Color0, 4, bgfx::AttribType::Float)
       .end();
-    particleLayoutReady = true;
+
+    computeStateLayout
+      .begin()
+      .add(bgfx::Attrib::Position, 4, bgfx::AttribType::Float)
+      .end();
+
+    layoutsReady = true;
   }
 
-  void ensureParticleResources(std::uint32_t requiredVertexCount) {
-    ensureParticleLayout();
-
-    if (!bgfx::isValid(particleProgram.handle)) {
-      particleProgram = loadProgram("shaders/particle_vs.bin", "shaders/particle_fs.bin");
-    }
-
-    if (
-      !bgfx::isValid(particleVertexBuffer) ||
-      particleBufferCapacity < requiredVertexCount
-    ) {
-      if (bgfx::isValid(particleVertexBuffer)) {
-        bgfx::destroy(particleVertexBuffer);
-        particleVertexBuffer = BGFX_INVALID_HANDLE;
-      }
-
-      particleBufferCapacity = requiredVertexCount;
-      particleVertexBuffer = bgfx::createDynamicVertexBuffer(
-        particleBufferCapacity,
-        particleLayout,
-        BGFX_BUFFER_ALLOW_RESIZE
+  void ensureParticleProgram() {
+    ensureLayouts();
+    if (!particleProgram.isValid()) {
+      particleProgram.loadGraphics(
+        "particle_vs / particle_fs",
+        "shaders/particle_vs.bin",
+        "shaders/particle_fs.bin"
       );
     }
   }
 
-  void shutdown() override {
-    if (bgfx::isValid(particleVertexBuffer)) {
-      bgfx::destroy(particleVertexBuffer);
-      particleVertexBuffer = BGFX_INVALID_HANDLE;
+  bool ensureComputeResources() {
+    if (!computeSupported()) {
+      return false;
     }
 
-    if (bgfx::isValid(particleProgram.handle)) {
-      bgfx::destroy(particleProgram.handle);
-      particleProgram.handle = BGFX_INVALID_HANDLE;
+    ensureLayouts();
+    ensureParticleProgram();
+
+    if (!particleUpdateProgram.isValid()) {
+      particleUpdateProgram.loadCompute("particle_update_cs", "shaders/particle_update_cs.bin");
     }
 
-    particleBufferCapacity = 0;
-    submittedVertexCount = 0;
+    if (!particleUpdateProgram.isValid()) {
+      return false;
+    }
+
+    if (!bgfx::isValid(u_particleParams)) {
+      u_particleParams = bgfx::createUniform("u_particleParams", bgfx::UniformType::Vec4, 3);
+    }
+
+    const std::uint32_t particleCount = static_cast<std::uint32_t>(particles.size());
+    const std::uint32_t vertexCount = particleCount * 2u;
+    particleVertexBuffer.ensure(
+      vertexCount,
+      static_cast<std::uint32_t>(sizeof(ParticleVertex)),
+      particleLayout,
+      BGFX_BUFFER_COMPUTE_READ_WRITE
+    );
+
+    if (
+      gpuStateDirty ||
+      !particleStateBuffer.isValid() ||
+      particleStateBuffer.capacity() != particleCount * 2u
+    ) {
+      const std::vector<GpuVec4> state = makeGpuState();
+      particleStateBuffer.createWithData(
+        state.data(),
+        static_cast<std::uint32_t>(state.size()),
+        static_cast<std::uint32_t>(sizeof(GpuVec4)),
+        computeStateLayout,
+        BGFX_BUFFER_COMPUTE_READ_WRITE
+      );
+      gpuStateDirty = false;
+    }
+
+    return particleVertexBuffer.isValid() &&
+      particleStateBuffer.isValid() &&
+      bgfx::isValid(u_particleParams);
+  }
+
+  std::vector<GpuVec4> makeGpuState() const {
+    std::vector<GpuVec4> state;
+    state.reserve(particles.size() * 2u);
+
+    for (const Particle& particle : particles) {
+      state.push_back(GpuVec4{
+        particle.position.x,
+        particle.position.y,
+        particle.position.z,
+        particle.life
+      });
+      state.push_back(GpuVec4{
+        particle.velocity.x,
+        particle.velocity.y,
+        particle.velocity.z,
+        particle.hue
+      });
+    }
+
+    return state;
   }
 
   bx::Vec3 randomDirection() {
@@ -135,6 +210,7 @@ struct ParticleFieldVisualization final : IVisualizationModule {
     for (std::size_t i = previousSize; i < particles.size(); ++i) {
       resetParticle(particles[i], true);
     }
+    gpuStateDirty = true;
   }
 
   void reset(const ImVec2& size) override {
@@ -144,20 +220,57 @@ struct ParticleFieldVisualization final : IVisualizationModule {
     for (Particle& particle : particles) {
       resetParticle(particle, true);
     }
+
     submittedVertexCount = 0;
+    gpuStateDirty = true;
+  }
+
+  void shutdown() override {
+    particleStateBuffer.destroy();
+    particleVertexBuffer.destroy();
+    particleUpdateProgram.destroy();
+    particleProgram.destroy();
+
+    if (bgfx::isValid(u_particleParams)) {
+      bgfx::destroy(u_particleParams);
+      u_particleParams = BGFX_INVALID_HANDLE;
+    }
+
+    submittedVertexCount = 0;
+    computeSimulationActive = false;
+    passDiagnostics = {};
+  }
+
+  ImVec4 particleColor(float hue, float depth, float alpha) const {
+    const ImVec4 color = ImColor::HSV(hue, 0.72f, 0.96f, alpha).Value;
+    const float core = 0.78f + depth * 0.28f;
+    return ImVec4(
+      std::clamp(color.x * core, 0.0f, 1.0f),
+      std::clamp(color.y * core, 0.0f, 1.0f),
+      std::clamp(color.z * core, 0.0f, 1.0f),
+      color.w
+    );
   }
 
   void pushParticleLine(
     std::vector<ParticleVertex>& vertices,
     const bx::Vec3& a,
     const bx::Vec3& b,
-    std::uint32_t color,
+    const ImVec4& color,
     float tailIntensity,
-    float headIntensity,
-    float age
+    float headIntensity
   ) const {
-    vertices.push_back(ParticleVertex{a.x, a.y, a.z, color, tailIntensity, age});
-    vertices.push_back(ParticleVertex{b.x, b.y, b.z, color, headIntensity, age});
+    vertices.push_back(ParticleVertex{a.x, a.y, a.z, tailIntensity, color.x, color.y, color.z, color.w});
+    vertices.push_back(ParticleVertex{b.x, b.y, b.z, headIntensity, color.x, color.y, color.z, color.w});
+  }
+
+  void submitAxisLines(const VisualizationContext& context) const {
+    std::vector<ColorVertex> axis;
+    axis.reserve(4);
+    const std::uint32_t axisColor = rgbaToAbgr(120, 180, 255, 42);
+    pushLine(axis, -spread, 0.0f, -5.5f, spread, 0.0f, -5.5f, axisColor);
+    pushLine(axis, 0.0f, -spread * 0.6f, -5.5f, 0.0f, spread * 0.6f, -5.5f, axisColor);
+    submitColorVertices(*context.renderer, context.viewId, axis, ColorPrimitive::Lines, true, false);
   }
 
   void updateParticleBuffer(const std::vector<ParticleVertex>& vertices) {
@@ -166,23 +279,21 @@ struct ParticleFieldVisualization final : IVisualizationModule {
       return;
     }
 
-    ensureParticleResources(submittedVertexCount);
-    if (!bgfx::isValid(particleVertexBuffer)) {
-      return;
-    }
-
-    const bgfx::Memory* memory = bgfx::copy(
+    ensureParticleProgram();
+    particleVertexBuffer.update(
       vertices.data(),
-      submittedVertexCount * static_cast<std::uint32_t>(sizeof(ParticleVertex))
+      submittedVertexCount,
+      static_cast<std::uint32_t>(sizeof(ParticleVertex)),
+      particleLayout,
+      BGFX_BUFFER_ALLOW_RESIZE
     );
-    bgfx::update(particleVertexBuffer, 0, memory);
   }
 
   void submitParticleBuffer(bgfx::ViewId viewId) const {
     if (
       submittedVertexCount == 0 ||
-      !bgfx::isValid(particleVertexBuffer) ||
-      !bgfx::isValid(particleProgram.handle)
+      !particleVertexBuffer.isValid() ||
+      !particleProgram.isValid()
     ) {
       return;
     }
@@ -199,42 +310,56 @@ struct ParticleFieldVisualization final : IVisualizationModule {
       state |= BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_SRC_ALPHA, BGFX_STATE_BLEND_INV_SRC_ALPHA);
     }
 
-    bgfx::setVertexBuffer(0, particleVertexBuffer, 0, submittedVertexCount);
+    bgfx::setVertexBuffer(0, particleVertexBuffer.get(), 0, submittedVertexCount);
     bgfx::setState(state);
-    bgfx::submit(viewId, particleProgram.handle);
+    bgfx::submit(viewId, particleProgram.get());
   }
 
-  void draw(VisualizationContext& context) override {
-    if (
-      particles.empty() ||
-      static_cast<int>(particles.size()) != targetParticleCount ||
-      distanceSquared(context.size, lastSize) > 96.0f * 96.0f
-    ) {
-      reset(context.size);
+  bool drawComputeParticles(VisualizationContext& context) {
+    if (!preferComputeSimulation || !ensureComputeResources()) {
+      return false;
     }
 
-    std::vector<ParticleVertex> vertices;
-    vertices.reserve(particles.size() * 2u + 128u);
+    const float dt = std::min(context.deltaSeconds, 1.0f / 30.0f);
+    const float params[12] = {
+      dt,
+      context.elapsedSeconds,
+      speed,
+      spread,
+      turbulence,
+      trailLength,
+      hueShift,
+      static_cast<float>(particles.size()),
+      additiveTrails ? 1.0f : 0.0f,
+      0.0f,
+      0.0f,
+      0.0f
+    };
 
-    const std::uint32_t axisColor = rgbaToAbgr(120, 180, 255, 42);
-    pushParticleLine(
-      vertices,
-      bx::Vec3{-spread, 0.0f, -5.5f},
-      bx::Vec3{spread, 0.0f, -5.5f},
-      axisColor,
-      0.24f,
-      0.24f,
-      0.0f
-    );
-    pushParticleLine(
-      vertices,
-      bx::Vec3{0.0f, -spread * 0.6f, -5.5f},
-      bx::Vec3{0.0f, spread * 0.6f, -5.5f},
-      axisColor,
-      0.24f,
-      0.24f,
-      0.0f
-    );
+    bgfx::setUniform(u_particleParams, params, 3);
+    bgfx::setBuffer(0, particleStateBuffer.get(), bgfx::Access::ReadWrite);
+    bgfx::setBuffer(1, particleVertexBuffer.get(), bgfx::Access::Write);
+
+    const std::uint32_t particleCount = static_cast<std::uint32_t>(particles.size());
+    const std::uint32_t dispatchGroups =
+      (particleCount + kParticleComputeGroupSize - 1u) / kParticleComputeGroupSize;
+    bgfx::dispatch(context.viewId, particleUpdateProgram.get(), dispatchGroups, 1, 1);
+
+    submittedVertexCount = particleCount * 2u;
+    submitParticleBuffer(context.viewId);
+    computeSimulationActive = true;
+
+    passDiagnostics.dispatches = 1;
+    passDiagnostics.drawCalls = 1;
+    passDiagnostics.vertices = submittedVertexCount;
+    passDiagnostics.uploadedBytes = particleStateBuffer.lastUploadBytes();
+    passDiagnostics.bufferCapacity = particleVertexBuffer.capacity();
+    return true;
+  }
+
+  void drawCpuParticles(VisualizationContext& context) {
+    std::vector<ParticleVertex> vertices;
+    vertices.reserve(particles.size() * 2u);
 
     const float dt = std::min(context.deltaSeconds, 1.0f / 30.0f);
     for (Particle& particle : particles) {
@@ -260,7 +385,7 @@ struct ParticleFieldVisualization final : IVisualizationModule {
       const float alpha = additiveTrails
         ? std::clamp(0.18f + depth * 0.78f, 0.0f, 1.0f)
         : 0.66f;
-      const std::uint32_t color = hsvToAbgr(hue, 0.72f, 0.96f, alpha);
+      const ImVec4 color = particleColor(hue, depth, alpha);
 
       const bx::Vec3 tail = {
         previous.x - particle.velocity.x * trailLength * dt,
@@ -268,28 +393,77 @@ struct ParticleFieldVisualization final : IVisualizationModule {
         previous.z - particle.velocity.z * trailLength * dt
       };
 
-      pushParticleLine(
-        vertices,
-        tail,
-        particle.position,
-        color,
-        0.34f,
-        1.0f,
-        1.0f - particle.life
-      );
+      pushParticleLine(vertices, tail, particle.position, color, 0.34f, 1.0f);
     }
 
     updateParticleBuffer(vertices);
     submitParticleBuffer(context.viewId);
+    computeSimulationActive = false;
+
+    passDiagnostics.drawCalls = submittedVertexCount > 0 ? 1u : 0u;
+    passDiagnostics.vertices = submittedVertexCount;
+    passDiagnostics.uploadedBytes = particleVertexBuffer.lastUploadBytes();
+    passDiagnostics.bufferCapacity = particleVertexBuffer.capacity();
+  }
+
+  void draw(VisualizationContext& context) override {
+    if (
+      particles.empty() ||
+      static_cast<int>(particles.size()) != targetParticleCount ||
+      distanceSquared(context.size, lastSize) > 96.0f * 96.0f
+    ) {
+      reset(context.size);
+    }
+
+    passDiagnostics = RenderPassDiagnostics{
+      "Particle Field",
+      particleProgram.label(),
+      "retained dynamic vertex buffer",
+      preferComputeSimulation && computeSupported()
+        ? "GPU compute simulation"
+        : "CPU simulation + GPU draw",
+      nullptr,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      computeSupported(),
+      false
+    };
+
+    if (!drawComputeParticles(context)) {
+      drawCpuParticles(context);
+    }
+
+    passDiagnostics.shaderName = particleProgram.label();
+    passDiagnostics.computeActive = computeSimulationActive;
+    passDiagnostics.note = computeSimulationActive
+      ? "particle state is updated by a bgfx compute dispatch"
+      : "portable fallback updates particle state on CPU and uploads vertices";
+
+    submitAxisLines(context);
   }
 
   void drawInspector() override {
     bool needsReset = false;
+    const bool canCompute = computeSupported();
+
     ImGui::Text("Particles: %d", static_cast<int>(particles.size()));
-    ImGui::TextUnformatted("Primitive: dynamic bgfx particle line buffer");
+    ImGui::Text("Backend: %s", computeSimulationActive ? "bgfx compute simulation" : "CPU simulation fallback");
+    ImGui::Text("Compute support: %s", canCompute ? "available" : "unavailable");
     ImGui::Text("Submitted vertices: %u", submittedVertexCount);
-    ImGui::Text("Buffer capacity: %u", particleBufferCapacity);
-    ImGui::TextUnformatted("Shader: particle_vs / particle_fs");
+    ImGui::Text("Buffer capacity: %u", particleVertexBuffer.capacity());
+    ImGui::Text("Upload bytes: %u", particleVertexBuffer.lastUploadBytes());
+    ImGui::Text("Shader: %s", particleProgram.label());
+    if (canCompute) {
+      ImGui::Checkbox("Prefer compute simulation", &preferComputeSimulation);
+    } else {
+      ImGui::BeginDisabled();
+      ImGui::Checkbox("Prefer compute simulation", &preferComputeSimulation);
+      ImGui::EndDisabled();
+    }
 
     int nextCount = targetParticleCount;
     if (ImGui::SliderInt("Count", &nextCount, 256, 6000)) {
@@ -306,6 +480,10 @@ struct ParticleFieldVisualization final : IVisualizationModule {
     if (needsReset || ImGui::Button("Reset Particles", ImVec2(-1.0f, 28.0f))) {
       reset(lastSize);
     }
+  }
+
+  RenderPassDiagnostics renderPassDiagnostics() const override {
+    return passDiagnostics;
   }
 };
 

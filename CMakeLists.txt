@@ -292,6 +292,21 @@ add_custom_command(
   VERBATIM
 )
 
+add_custom_command(
+  OUTPUT "${SHADER_OUT_DIR}/particle_update_cs.bin"
+  COMMAND "${BGFX_SHADERC}"
+    -f "${ROOT_DIR}/src/shaders/particle_update.cs.sc"
+    -o "${SHADER_OUT_DIR}/particle_update_cs.bin"
+    --type compute
+    --platform windows
+    -p s_5_0
+    -i "${BGFX_DIR}/src"
+  DEPENDS
+    "${BGFX_SHADERC}"
+    "${ROOT_DIR}/src/shaders/particle_update.cs.sc"
+  VERBATIM
+)
+
 add_custom_target(shaders ALL
   DEPENDS
     "${SHADER_OUT_DIR}/imgui_vs.bin"
@@ -302,6 +317,7 @@ add_custom_target(shaders ALL
     "${SHADER_OUT_DIR}/oahu_terrain_fs.bin"
     "${SHADER_OUT_DIR}/particle_vs.bin"
     "${SHADER_OUT_DIR}/particle_fs.bin"
+    "${SHADER_OUT_DIR}/particle_update_cs.bin"
 )
 
 add_dependencies(prappy_native shaders)
@@ -336,4 +352,7 @@ add_custom_command(TARGET prappy_native POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${SHADER_OUT_DIR}/particle_fs.bin"
     "$<TARGET_FILE_DIR:prappy_native>/shaders/particle_fs.bin"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${SHADER_OUT_DIR}/particle_update_cs.bin"
+    "$<TARGET_FILE_DIR:prappy_native>/shaders/particle_update_cs.bin"
 )

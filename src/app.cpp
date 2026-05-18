@@ -1018,6 +1018,20 @@ void drawRendererTab(AppState& state) {
     drawKeyValueNumber("Draw calls", static_cast<int>(stats->numDraw));
     drawKeyValueNumber("Transient VB", static_cast<int>(stats->transientVbUsed));
   }
+
+  const RenderPassDiagnostics pass = state.visualizations.activeModule().renderPassDiagnostics();
+  if (pass.passName != nullptr) {
+    ImGui::SeparatorText("Active Pass");
+    drawKeyValue("Pass", pass.passName);
+    drawKeyValue("Backend", pass.backendName ? pass.backendName : "n/a");
+    drawKeyValue("Resource", pass.resourceKind ? pass.resourceKind : "n/a");
+    drawKeyValue("Shader", pass.shaderName ? pass.shaderName : "n/a");
+    drawKeyValueNumber("Vertices", static_cast<int>(pass.vertices));
+    drawKeyValueNumber("Indices", static_cast<int>(pass.indices));
+    drawKeyValueNumber("Dispatches", static_cast<int>(pass.dispatches));
+    drawKeyValueNumber("Upload bytes", static_cast<int>(pass.uploadedBytes));
+    drawKeyValue("Compute active", pass.computeActive ? "yes" : "no");
+  }
 }
 
 void drawCameraControls(AppState& state) {
@@ -1223,8 +1237,8 @@ void drawVisualizationStatus(AppState& state, const ImVec2& canvasOrigin) {
     ? timerMilliseconds(stats->gpuTimeBegin, stats->gpuTimeEnd, stats->gpuTimerFreq)
     : 0.0;
   const float desiredHeight = state.visualizations.active == VisualizationId::OahuFlyover
-    ? 364.0f
-    : 348.0f;
+    ? 482.0f
+    : 462.0f;
   const float maxHeight = std::max(state.visualizationCanvasSize.y - 32.0f, 160.0f);
   const float panelHeight = std::min(desiredHeight, maxHeight);
   const bool needsScrollbar = panelHeight + 0.5f < desiredHeight;
@@ -1268,6 +1282,18 @@ void drawVisualizationStatus(AppState& state, const ImVec2& canvasOrigin) {
       stats->transientVbUsed,
       caps ? caps->limits.maxTransientVbSize : 0u
     );
+  }
+  const RenderPassDiagnostics pass = state.visualizations.activeModule().renderPassDiagnostics();
+  if (pass.passName != nullptr) {
+    ImGui::Separator();
+    ImGui::Text("Pass: %s", pass.passName);
+    ImGui::Text("Backend: %s", pass.backendName ? pass.backendName : "n/a");
+    ImGui::Text("Resource: %s", pass.resourceKind ? pass.resourceKind : "n/a");
+    ImGui::Text("Shader: %s", pass.shaderName ? pass.shaderName : "n/a");
+    ImGui::Text("Draws/dispatches: %u / %u", pass.drawCalls, pass.dispatches);
+    ImGui::Text("Vertices/indices: %u / %u", pass.vertices, pass.indices);
+    ImGui::Text("Upload: %u bytes", pass.uploadedBytes);
+    ImGui::Text("Compute pass: %s", pass.computeActive ? "active" : "inactive");
   }
   if (state.visualizations.active == VisualizationId::OahuFlyover) {
     ImGui::Text(

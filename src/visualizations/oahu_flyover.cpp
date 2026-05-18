@@ -58,11 +58,12 @@ bx::Vec3 terrainFaceNormal(const bx::Vec3& a, const bx::Vec3& b, const bx::Vec3&
 struct OahuFlyoverVisualization final : IVisualizationModule {
   ImVec2 lastSize{};
   bgfx::VertexLayout terrainLayout;
-  Program terrainProgram;
+  ShaderProgram terrainProgram;
   bgfx::VertexBufferHandle terrainVertexBuffer = BGFX_INVALID_HANDLE;
   bgfx::IndexBufferHandle terrainIndexBuffer = BGFX_INVALID_HANDLE;
   std::uint32_t terrainVertexCount = 0;
   std::uint32_t terrainIndexCount = 0;
+  RenderPassDiagnostics terrainDiagnostics;
 
   const VisualizationDescriptor& descriptor() const override {
     return visualizationDescriptor(VisualizationId::OahuFlyover);
@@ -147,7 +148,7 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
     if (
       bgfx::isValid(terrainVertexBuffer) &&
       bgfx::isValid(terrainIndexBuffer) &&
-      bgfx::isValid(terrainProgram.handle)
+      terrainProgram.isValid()
     ) {
       return;
     }
@@ -161,7 +162,11 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
       .add(bgfx::Attrib::Color0, 4, bgfx::AttribType::Uint8, true)
       .end();
 
-    terrainProgram = loadProgram("shaders/oahu_terrain_vs.bin", "shaders/oahu_terrain_fs.bin");
+    terrainProgram.loadGraphics(
+      "oahu_terrain_vs / oahu_terrain_fs",
+      "shaders/oahu_terrain_vs.bin",
+      "shaders/oahu_terrain_fs.bin"
+    );
 
     constexpr std::uint32_t vertexCount = kOahuGridWidth * kOahuGridHeight;
     static_assert(vertexCount <= 0xffffu, "Oahu terrain uses 16-bit indices");
@@ -234,7 +239,7 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
     if (
       !bgfx::isValid(terrainVertexBuffer) ||
       !bgfx::isValid(terrainIndexBuffer) ||
-      !bgfx::isValid(terrainProgram.handle) ||
+      !terrainProgram.isValid() ||
       terrainIndexCount == 0
     ) {
       return;
@@ -248,7 +253,23 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
       BGFX_STATE_WRITE_Z |
       BGFX_STATE_DEPTH_TEST_LESS
     );
-    bgfx::submit(viewId, terrainProgram.handle);
+    bgfx::submit(viewId, terrainProgram.get());
+
+    terrainDiagnostics = RenderPassDiagnostics{
+      "Oahu Terrain",
+      terrainProgram.label(),
+      "retained indexed vertex/index buffers",
+      "GPU mesh draw",
+      "terrain mesh is retained; coastline and diagnostic overlays stay transient",
+      1,
+      0,
+      terrainVertexCount,
+      terrainIndexCount,
+      0,
+      terrainVertexCount,
+      false,
+      false
+    };
   }
 
   void pushOcean(std::vector<ColorVertex>& vertices) const {
@@ -317,13 +338,11 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
       terrainVertexBuffer = BGFX_INVALID_HANDLE;
     }
 
-    if (bgfx::isValid(terrainProgram.handle)) {
-      bgfx::destroy(terrainProgram.handle);
-      terrainProgram.handle = BGFX_INVALID_HANDLE;
-    }
+    terrainProgram.destroy();
 
     terrainVertexCount = 0;
     terrainIndexCount = 0;
+    terrainDiagnostics = {};
   }
 
   void draw(VisualizationContext& context) override {
@@ -342,6 +361,8 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
 
     if (diagnostics.showFilledTerrain) {
       submitTerrainMesh(context.viewId);
+    } else {
+      terrainDiagnostics = {};
     }
 
     std::vector<ColorVertex> lines;
@@ -402,6 +423,7 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
     ImGui::Text("Terrain vertices: %u", terrainVertexCount);
     ImGui::Text("Terrain indices: %u", terrainIndexCount);
     ImGui::TextUnformatted("Terrain pass: retained indexed bgfx mesh");
+    ImGui::Text("Terrain shader: %s", terrainProgram.label());
     ImGui::Text("Source points: %d", kOahuSourceCoastlinePointCount);
     ImGui::Text("Smoothing passes: %d", kOahuElevationSmoothingPasses);
     ImGui::Text("Landmarks: %d", kOahuLandmarkCount);
@@ -430,6 +452,10 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
       }
       ImGui::TreePop();
     }
+  }
+
+  RenderPassDiagnostics renderPassDiagnostics() const override {
+    return terrainDiagnostics;
   }
 };
 

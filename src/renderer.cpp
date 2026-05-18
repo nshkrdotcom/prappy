@@ -34,6 +34,143 @@ std::uint32_t hsvToAbgr(float hue, float saturation, float value, float alpha) {
   return rgbaFloatToAbgr(color.x, color.y, color.z, color.w);
 }
 
+bool ShaderProgram::isValid() const {
+  return bgfx::isValid(handle);
+}
+
+bgfx::ProgramHandle ShaderProgram::get() const {
+  return handle;
+}
+
+const char* ShaderProgram::label() const {
+  return programLabel.empty() ? "unloaded" : programLabel.c_str();
+}
+
+void ShaderProgram::loadGraphics(const char* label, const char* vsPath, const char* fsPath) {
+  if (isValid()) {
+    return;
+  }
+
+  programLabel = label ? label : "graphics";
+  handle = loadProgram(vsPath, fsPath).handle;
+}
+
+void ShaderProgram::loadCompute(const char* label, const char* csPath) {
+  if (isValid()) {
+    return;
+  }
+
+  programLabel = label ? label : "compute";
+  bgfx::ShaderHandle cs = loadShader(csPath);
+  handle = bgfx::createProgram(cs, true);
+}
+
+void ShaderProgram::destroy() {
+  if (bgfx::isValid(handle)) {
+    bgfx::destroy(handle);
+    handle = BGFX_INVALID_HANDLE;
+  }
+
+  programLabel.clear();
+}
+
+bool DynamicVertexBuffer::isValid() const {
+  return bgfx::isValid(handle);
+}
+
+bgfx::DynamicVertexBufferHandle DynamicVertexBuffer::get() const {
+  return handle;
+}
+
+std::uint32_t DynamicVertexBuffer::capacity() const {
+  return vertexCapacity;
+}
+
+std::uint32_t DynamicVertexBuffer::lastUploadBytes() const {
+  return uploadBytes;
+}
+
+std::uint16_t DynamicVertexBuffer::flags() const {
+  return creationFlags;
+}
+
+std::uint32_t DynamicVertexBuffer::stride() const {
+  return vertexStride;
+}
+
+void DynamicVertexBuffer::ensure(
+  std::uint32_t requiredCapacity,
+  std::uint32_t requiredStride,
+  const bgfx::VertexLayout& layout,
+  std::uint16_t bufferFlags
+) {
+  if (
+    isValid() &&
+    vertexCapacity >= requiredCapacity &&
+    vertexStride == requiredStride &&
+    creationFlags == bufferFlags
+  ) {
+    return;
+  }
+
+  destroy();
+  vertexCapacity = requiredCapacity;
+  vertexStride = requiredStride;
+  creationFlags = bufferFlags;
+  uploadBytes = 0;
+  handle = bgfx::createDynamicVertexBuffer(vertexCapacity, layout, creationFlags);
+}
+
+void DynamicVertexBuffer::createWithData(
+  const void* data,
+  std::uint32_t vertexCount,
+  std::uint32_t requiredStride,
+  const bgfx::VertexLayout& layout,
+  std::uint16_t bufferFlags
+) {
+  destroy();
+
+  vertexCapacity = vertexCount;
+  vertexStride = requiredStride;
+  creationFlags = bufferFlags;
+  uploadBytes = vertexCount * requiredStride;
+  const bgfx::Memory* memory = bgfx::copy(data, uploadBytes);
+  handle = bgfx::createDynamicVertexBuffer(memory, layout, creationFlags);
+}
+
+void DynamicVertexBuffer::update(
+  const void* data,
+  std::uint32_t vertexCount,
+  std::uint32_t requiredStride,
+  const bgfx::VertexLayout& layout,
+  std::uint16_t bufferFlags
+) {
+  uploadBytes = vertexCount * requiredStride;
+  if (vertexCount == 0) {
+    return;
+  }
+
+  ensure(vertexCount, requiredStride, layout, bufferFlags);
+  if (!isValid()) {
+    return;
+  }
+
+  const bgfx::Memory* memory = bgfx::copy(data, uploadBytes);
+  bgfx::update(handle, 0, memory);
+}
+
+void DynamicVertexBuffer::destroy() {
+  if (bgfx::isValid(handle)) {
+    bgfx::destroy(handle);
+    handle = BGFX_INVALID_HANDLE;
+  }
+
+  vertexCapacity = 0;
+  vertexStride = 0;
+  uploadBytes = 0;
+  creationFlags = 0;
+}
+
 void pushLine(
   std::vector<ColorVertex>& vertices,
   float ax,

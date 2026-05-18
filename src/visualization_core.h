@@ -82,6 +82,7 @@ struct IVisualizationModule {
   virtual void reset(const ImVec2& size) = 0;
   virtual void draw(VisualizationContext& context) = 0;
   virtual void drawInspector() = 0;
+  virtual RenderPassDiagnostics renderPassDiagnostics() const { return {}; }
 };
 
 struct CameraRig {
