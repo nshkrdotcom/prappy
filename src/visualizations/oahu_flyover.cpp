@@ -86,18 +86,6 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
     vertices.push_back(ColorVertex{-36.0f, y, 42.0f, farOcean});
   }
 
-  void pushHorizon(std::vector<ColorVertex>& vertices) const {
-    const std::uint32_t skyTop = rgbaToAbgr(88, 176, 239, 255);
-    const std::uint32_t horizon = rgbaToAbgr(204, 235, 246, 255);
-    const float z = 42.0f;
-    vertices.push_back(ColorVertex{-42.0f, 0.0f, z, horizon});
-    vertices.push_back(ColorVertex{42.0f, 0.0f, z, horizon});
-    vertices.push_back(ColorVertex{42.0f, 20.0f, z, skyTop});
-    vertices.push_back(ColorVertex{-42.0f, 0.0f, z, horizon});
-    vertices.push_back(ColorVertex{42.0f, 20.0f, z, skyTop});
-    vertices.push_back(ColorVertex{-42.0f, 20.0f, z, skyTop});
-  }
-
   void pushGridLines(std::vector<ColorVertex>& lines) const {
     const std::uint32_t gridColor = rgbaToAbgr(217, 246, 255, 88);
     for (int row = 0; row < kOahuGridHeight; ++row) {
@@ -150,8 +138,7 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
 
     if (diagnostics.showBackground && !diagnostics.topDown) {
       std::vector<ColorVertex> background;
-      background.reserve(12);
-      pushHorizon(background);
+      background.reserve(6);
       pushOcean(background);
       submitColorVertices(*context.renderer, context.viewId, background, ColorPrimitive::Triangles, false, false);
     }

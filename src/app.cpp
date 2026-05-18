@@ -143,8 +143,16 @@ void initBgfx(AppState& state) {
   state.bgfxReady = true;
 
   bgfx::setDebug(BGFX_DEBUG_TEXT);
+  bgfx::setViewMode(kFrameClearView, bgfx::ViewMode::Sequential);
   bgfx::setViewMode(kVisualizationView, bgfx::ViewMode::Sequential);
   bgfx::setViewMode(kUiView, bgfx::ViewMode::Sequential);
+  bgfx::setViewClear(
+    kFrameClearView,
+    BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH,
+    0x0b1020ff,
+    1.0f,
+    0
+  );
   bgfx::setViewClear(
     kVisualizationView,
     BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH,
@@ -1705,6 +1713,15 @@ int runApp(int argc, char** argv) {
       }
 
       logSmoke(state, "smoke: frame setup");
+      bgfx::setViewRect(
+        kFrameClearView,
+        0,
+        0,
+        static_cast<std::uint16_t>(state.width),
+        static_cast<std::uint16_t>(state.height)
+      );
+      bgfx::touch(kFrameClearView);
+
       bgfx::setViewRect(
         kUiView,
         0,

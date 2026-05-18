@@ -17,8 +17,9 @@ struct Program {
   bgfx::ProgramHandle handle = BGFX_INVALID_HANDLE;
 };
 
-constexpr bgfx::ViewId kVisualizationView = 0;
-constexpr bgfx::ViewId kUiView = 1;
+constexpr bgfx::ViewId kFrameClearView = 0;
+constexpr bgfx::ViewId kVisualizationView = 1;
+constexpr bgfx::ViewId kUiView = 2;
 constexpr float kPi = 3.14159265358979323846f;
 
 struct ColorVertex {
