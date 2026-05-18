@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <random>
 #include <stdexcept>
@@ -41,11 +42,60 @@ struct Program {
   bgfx::ProgramHandle handle = BGFX_INVALID_HANDLE;
 };
 
+constexpr bgfx::ViewId kVisualizationView = 0;
+constexpr bgfx::ViewId kUiView = 1;
 constexpr float kPi = 3.14159265358979323846f;
+
+struct ColorVertex {
+  float x = 0.0f;
+  float y = 0.0f;
+  float z = 0.0f;
+  std::uint32_t abgr = 0xffffffffu;
+};
+
+struct VisualizationRenderer {
+  bgfx::VertexLayout colorLayout;
+  Program colorProgram;
+};
 
 float randomFloat(std::mt19937& rng, float minValue, float maxValue) {
   std::uniform_real_distribution<float> distribution(minValue, maxValue);
   return distribution(rng);
+}
+
+std::uint32_t rgbaToAbgr(std::uint8_t r, std::uint8_t g, std::uint8_t b, std::uint8_t a) {
+  return
+    (static_cast<std::uint32_t>(a) << 24u) |
+    (static_cast<std::uint32_t>(b) << 16u) |
+    (static_cast<std::uint32_t>(g) << 8u) |
+    static_cast<std::uint32_t>(r);
+}
+
+std::uint32_t rgbaFloatToAbgr(float r, float g, float b, float a) {
+  const auto toByte = [](float value) {
+    return static_cast<std::uint8_t>(std::clamp(value, 0.0f, 1.0f) * 255.0f);
+  };
+
+  return rgbaToAbgr(toByte(r), toByte(g), toByte(b), toByte(a));
+}
+
+std::uint32_t hsvToAbgr(float hue, float saturation, float value, float alpha) {
+  const ImVec4 color = ImColor::HSV(hue, saturation, value, alpha).Value;
+  return rgbaFloatToAbgr(color.x, color.y, color.z, color.w);
+}
+
+void pushLine(
+  std::vector<ColorVertex>& vertices,
+  float ax,
+  float ay,
+  float az,
+  float bx,
+  float by,
+  float bz,
+  std::uint32_t color
+) {
+  vertices.push_back(ColorVertex{ax, ay, az, color});
+  vertices.push_back(ColorVertex{bx, by, bz, color});
 }
 
 ImVec2 addVec2(const ImVec2& a, const ImVec2& b) {
@@ -66,12 +116,62 @@ float distanceSquared(const ImVec2& a, const ImVec2& b) {
 }
 
 struct VisualizationContext {
-  ImDrawList* drawList = nullptr;
-  ImVec2 origin{};
+  VisualizationRenderer* renderer = nullptr;
+  bgfx::ViewId viewId = kVisualizationView;
   ImVec2 size{};
   float deltaSeconds = 1.0f / 60.0f;
   float elapsedSeconds = 0.0f;
 };
+
+enum class ColorPrimitive {
+  Lines,
+  Triangles
+};
+
+void submitColorVertices(
+  const VisualizationRenderer& renderer,
+  bgfx::ViewId viewId,
+  const std::vector<ColorVertex>& vertices,
+  ColorPrimitive primitive
+) {
+  if (vertices.empty() || !bgfx::isValid(renderer.colorProgram.handle)) {
+    return;
+  }
+
+  std::uint32_t vertexCount = static_cast<std::uint32_t>(vertices.size());
+  const std::uint32_t available = bgfx::getAvailTransientVertexBuffer(
+    vertexCount,
+    renderer.colorLayout
+  );
+
+  vertexCount = std::min(vertexCount, available);
+  if (primitive == ColorPrimitive::Lines) {
+    vertexCount -= vertexCount % 2u;
+  } else {
+    vertexCount -= vertexCount % 3u;
+  }
+
+  if (vertexCount == 0) {
+    return;
+  }
+
+  bgfx::TransientVertexBuffer vertexBuffer;
+  bgfx::allocTransientVertexBuffer(&vertexBuffer, vertexCount, renderer.colorLayout);
+  std::memcpy(vertexBuffer.data, vertices.data(), vertexCount * sizeof(ColorVertex));
+
+  std::uint64_t state =
+    BGFX_STATE_WRITE_RGB |
+    BGFX_STATE_WRITE_A |
+    BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_SRC_ALPHA, BGFX_STATE_BLEND_INV_SRC_ALPHA);
+
+  if (primitive == ColorPrimitive::Lines) {
+    state |= BGFX_STATE_PT_LINES;
+  }
+
+  bgfx::setVertexBuffer(0, &vertexBuffer, 0, vertexCount);
+  bgfx::setState(state);
+  bgfx::submit(viewId, renderer.colorProgram.handle);
+}
 
 enum class VisualizationId {
   RandomLines2D,
@@ -154,20 +254,16 @@ struct RandomLinesVisualization {
     }
   }
 
-  void drawGrid(const VisualizationContext& context) {
-    const ImU32 gridColor = IM_COL32(255, 255, 255, 18);
+  void pushGrid(const VisualizationContext& context, std::vector<ColorVertex>& vertices) {
+    const std::uint32_t gridColor = rgbaToAbgr(255, 255, 255, 18);
     constexpr float spacing = 48.0f;
 
     for (float x = 0.0f; x <= context.size.x; x += spacing) {
-      const ImVec2 a = addVec2(context.origin, ImVec2(x, 0.0f));
-      const ImVec2 b = addVec2(context.origin, ImVec2(x, context.size.y));
-      context.drawList->AddLine(a, b, gridColor, 1.0f);
+      pushLine(vertices, x, 0.0f, 0.0f, x, context.size.y, 0.0f, gridColor);
     }
 
     for (float y = 0.0f; y <= context.size.y; y += spacing) {
-      const ImVec2 a = addVec2(context.origin, ImVec2(0.0f, y));
-      const ImVec2 b = addVec2(context.origin, ImVec2(context.size.x, y));
-      context.drawList->AddLine(a, b, gridColor, 1.0f);
+      pushLine(vertices, 0.0f, y, 0.0f, context.size.x, y, 0.0f, gridColor);
     }
   }
 
@@ -179,23 +275,52 @@ struct RandomLinesVisualization {
       reset(context.size);
     }
 
-    const ImVec2 max = addVec2(context.origin, context.size);
-    context.drawList->AddRectFilled(context.origin, max, IM_COL32(7, 9, 15, 255));
-    drawGrid(context);
+    std::vector<ColorVertex> vertices;
+    vertices.reserve(segments.size() * 6u + 96u);
+    pushGrid(context, vertices);
 
     for (Segment& segment : segments) {
       updateEndpoint(segment.a, context.size, context.deltaSeconds);
       updateEndpoint(segment.b, context.size, context.deltaSeconds);
 
       const float hue = std::fmod(segment.hue + context.elapsedSeconds * 0.035f, 1.0f);
-      const ImU32 color = ImColor::HSV(hue, 0.78f, 0.95f, 0.78f);
-      const ImVec2 a = addVec2(context.origin, segment.a.position);
-      const ImVec2 b = addVec2(context.origin, segment.b.position);
+      const std::uint32_t color = hsvToAbgr(hue, 0.78f, 0.95f, 0.78f);
 
-      context.drawList->AddLine(a, b, color, segment.thickness);
-      context.drawList->AddCircleFilled(a, segment.thickness + 1.2f, color);
-      context.drawList->AddCircleFilled(b, segment.thickness + 1.2f, color);
+      pushLine(
+        vertices,
+        segment.a.position.x,
+        segment.a.position.y,
+        0.0f,
+        segment.b.position.x,
+        segment.b.position.y,
+        0.0f,
+        color
+      );
+
+      const float marker = segment.thickness + 2.0f;
+      pushLine(
+        vertices,
+        segment.a.position.x - marker,
+        segment.a.position.y,
+        0.0f,
+        segment.a.position.x + marker,
+        segment.a.position.y,
+        0.0f,
+        color
+      );
+      pushLine(
+        vertices,
+        segment.b.position.x,
+        segment.b.position.y - marker,
+        0.0f,
+        segment.b.position.x,
+        segment.b.position.y + marker,
+        0.0f,
+        color
+      );
     }
+
+    submitColorVertices(*context.renderer, context.viewId, vertices, ColorPrimitive::Lines);
   }
 };
 
@@ -234,17 +359,6 @@ struct StarfieldVisualization {
     }
   }
 
-  bool project(const Star& star, float z, const VisualizationContext& context, ImVec2& out) const {
-    if (z <= 0.05f) {
-      return false;
-    }
-
-    const float focalLength = std::min(context.size.x, context.size.y) * 0.52f;
-    out.x = context.origin.x + context.size.x * 0.5f + (star.x / z) * focalLength;
-    out.y = context.origin.y + context.size.y * 0.5f + (star.y / z) * focalLength;
-    return true;
-  }
-
   void draw(VisualizationContext& context) {
     if (
       stars.empty() ||
@@ -253,12 +367,8 @@ struct StarfieldVisualization {
       reset(context.size);
     }
 
-    const ImVec2 max = addVec2(context.origin, context.size);
-    context.drawList->AddRectFilled(context.origin, max, IM_COL32(2, 4, 10, 255));
-
-    const ImVec2 center = addVec2(context.origin, scaleVec2(context.size, 0.5f));
-    context.drawList->AddCircle(center, std::min(context.size.x, context.size.y) * 0.08f, IM_COL32(80, 120, 255, 26), 48, 1.0f);
-    context.drawList->AddCircle(center, std::min(context.size.x, context.size.y) * 0.18f, IM_COL32(80, 120, 255, 18), 64, 1.0f);
+    std::vector<ColorVertex> vertices;
+    vertices.reserve(stars.size() * 2u + 96u);
 
     for (Star& star : stars) {
       const float previousZ = star.z;
@@ -269,42 +379,50 @@ struct StarfieldVisualization {
         continue;
       }
 
-      ImVec2 current{};
-      ImVec2 previous{};
-      if (!project(star, star.z, context, current) || !project(star, previousZ, context, previous)) {
-        resetStar(star, context.size, false);
-        continue;
-      }
-
-      const float margin = 80.0f;
-      if (
-        current.x < context.origin.x - margin ||
-        current.x > max.x + margin ||
-        current.y < context.origin.y - margin ||
-        current.y > max.y + margin
-      ) {
-        resetStar(star, context.size, false);
-        continue;
-      }
-
       const float depthAlpha = std::clamp(1.0f - star.z / 18.0f, 0.08f, 1.0f);
       const float warm = star.tint > 0.82f ? 1.0f : 0.82f;
       const float cool = star.tint < 0.18f ? 1.0f : 0.86f;
-      const ImU32 color = ImGui::ColorConvertFloat4ToU32(ImVec4(
+      const std::uint32_t color = rgbaFloatToAbgr(
         std::clamp(warm * (0.65f + depthAlpha * 0.45f), 0.0f, 1.0f),
         std::clamp(0.72f + depthAlpha * 0.28f, 0.0f, 1.0f),
         std::clamp(cool, 0.0f, 1.0f),
         std::clamp(depthAlpha, 0.0f, 1.0f)
-      ));
+      );
 
-      const float streak = std::clamp((18.0f - star.z) * 0.08f, 0.4f, 4.5f);
-      const ImVec2 direction = subVec2(current, previous);
-      const ImVec2 tail = subVec2(current, scaleVec2(direction, streak));
-      const float radius = star.radius * (0.4f + depthAlpha * 1.4f);
-
-      context.drawList->AddLine(tail, current, color, std::max(radius * 0.55f, 1.0f));
-      context.drawList->AddCircleFilled(current, radius, color);
+      const float halfWidth = std::max(star.radius * 0.004f * depthAlpha, 0.0012f);
+      pushLine(
+        vertices,
+        star.x - halfWidth,
+        star.y,
+        -previousZ,
+        star.x + halfWidth,
+        star.y,
+        -star.z,
+        color
+      );
     }
+
+    const std::uint32_t tunnelColor = rgbaToAbgr(90, 128, 255, 42);
+    for (float z = 3.0f; z <= 18.0f; z += 3.0f) {
+      constexpr int kRingSegments = 32;
+      const float radius = z * 0.12f;
+      for (int i = 0; i < kRingSegments; ++i) {
+        const float a0 = static_cast<float>(i) / static_cast<float>(kRingSegments) * kPi * 2.0f;
+        const float a1 = static_cast<float>(i + 1) / static_cast<float>(kRingSegments) * kPi * 2.0f;
+        pushLine(
+          vertices,
+          std::cos(a0) * radius,
+          std::sin(a0) * radius,
+          -z,
+          std::cos(a1) * radius,
+          std::sin(a1) * radius,
+          -z,
+          tunnelColor
+        );
+      }
+    }
+
+    submitColorVertices(*context.renderer, context.viewId, vertices, ColorPrimitive::Lines);
   }
 };
 
@@ -363,6 +481,9 @@ struct AppState {
   bool imguiReady = false;
   std::ofstream smokeLog;
   std::chrono::steady_clock::time_point lastFrameTime{};
+  ImVec2 visualizationCanvasOrigin{};
+  ImVec2 visualizationCanvasSize{1280.0f, 720.0f};
+  VisualizationRenderer visualizationRenderer;
   VisualizationHost visualizations;
 
   bgfx::VertexLayout imguiLayout;
@@ -408,6 +529,26 @@ Program loadProgram(const char* vsPath, const char* fsPath) {
   return program;
 }
 
+void initVisualizationRenderer(AppState& state) {
+  state.visualizationRenderer.colorLayout
+    .begin()
+    .add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float)
+    .add(bgfx::Attrib::Color0, 4, bgfx::AttribType::Uint8, true)
+    .end();
+
+  state.visualizationRenderer.colorProgram = loadProgram(
+    "shaders/color_vs.bin",
+    "shaders/color_fs.bin"
+  );
+}
+
+void shutdownVisualizationRenderer(AppState& state) {
+  if (bgfx::isValid(state.visualizationRenderer.colorProgram.handle)) {
+    bgfx::destroy(state.visualizationRenderer.colorProgram.handle);
+    state.visualizationRenderer.colorProgram.handle = BGFX_INVALID_HANDLE;
+  }
+}
+
 void fatalMessage(const char* title, const std::string& message) {
 #ifdef _WIN32
   MessageBoxA(nullptr, message.c_str(), title, MB_OK | MB_ICONERROR);
@@ -438,8 +579,10 @@ void initBgfx(AppState& state) {
   state.bgfxReady = true;
 
   bgfx::setDebug(BGFX_DEBUG_TEXT);
+  bgfx::setViewMode(kVisualizationView, bgfx::ViewMode::Sequential);
+  bgfx::setViewMode(kUiView, bgfx::ViewMode::Sequential);
   bgfx::setViewClear(
-    0,
+    kVisualizationView,
     BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH,
     0x101018ff,
     1.0f,
@@ -582,7 +725,14 @@ void renderImGui(AppState& state, ImDrawData* drawData) {
   );
   float view[16];
   bx::mtxIdentity(view);
-  bgfx::setViewTransform(0, view, ortho);
+  bgfx::setViewTransform(kUiView, view, ortho);
+  bgfx::setViewRect(
+    kUiView,
+    0,
+    0,
+    static_cast<std::uint16_t>(state.width),
+    static_cast<std::uint16_t>(state.height)
+  );
 
   const ImVec2 clipOffset = drawData->DisplayPos;
 
@@ -637,7 +787,7 @@ void renderImGui(AppState& state, ImDrawData* drawData) {
           BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_SRC_ALPHA, BGFX_STATE_BLEND_INV_SRC_ALPHA)
         );
 
-        bgfx::submit(0, state.imguiProgram.handle);
+        bgfx::submit(kUiView, state.imguiProgram.handle);
       }
     }
 
@@ -662,6 +812,7 @@ void handleEvent(AppState& state, const SDL_Event& event) {
         static_cast<std::uint32_t>(state.height),
         BGFX_RESET_VSYNC
       );
+      state.visualizations.resetRequested = true;
       break;
 
     case SDL_EVENT_MOUSE_MOTION:
@@ -695,10 +846,44 @@ void handleEvent(AppState& state, const SDL_Event& event) {
   }
 }
 
+const char* vendorName(std::uint16_t vendorId) {
+  switch (vendorId) {
+    case BGFX_PCI_ID_NVIDIA:
+      return "NVIDIA";
+    case BGFX_PCI_ID_AMD:
+      return "AMD";
+    case BGFX_PCI_ID_INTEL:
+      return "Intel";
+    case BGFX_PCI_ID_MICROSOFT:
+      return "Microsoft";
+    case BGFX_PCI_ID_SOFTWARE_RASTERIZER:
+      return "Software";
+    default:
+      return "Unknown";
+  }
+}
+
+double timerMilliseconds(int64_t begin, int64_t end, int64_t frequency) {
+  if (frequency <= 0 || end <= begin) {
+    return 0.0;
+  }
+
+  return static_cast<double>(end - begin) * 1000.0 / static_cast<double>(frequency);
+}
+
 void drawVisualizationStatus(AppState& state, const ImVec2& canvasOrigin) {
   if (!state.visualizations.showStatus) {
     return;
   }
+
+  const bgfx::Caps* caps = bgfx::getCaps();
+  const bgfx::Stats* stats = bgfx::getStats();
+  const double renderCpuMs = stats
+    ? timerMilliseconds(stats->cpuTimeBegin, stats->cpuTimeEnd, stats->cpuTimerFreq)
+    : 0.0;
+  const double gpuMs = stats
+    ? timerMilliseconds(stats->gpuTimeBegin, stats->gpuTimeEnd, stats->gpuTimerFreq)
+    : 0.0;
 
   ImGui::SetCursorScreenPos(addVec2(canvasOrigin, ImVec2(16.0f, 16.0f)));
   ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
@@ -706,15 +891,36 @@ void drawVisualizationStatus(AppState& state, const ImVec2& canvasOrigin) {
   ImGui::PushStyleColor(ImGuiCol_ChildBg, IM_COL32(8, 10, 18, 218));
   ImGui::BeginChild(
     "VisualizationStatus",
-    ImVec2(310.0f, 104.0f),
+    ImVec2(390.0f, 218.0f),
     ImGuiChildFlags_Borders,
     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse
   );
 
   ImGui::TextUnformatted(visualizationName(state.visualizations.active));
   ImGui::Separator();
-  ImGui::Text("Frame %.2f ms", state.deltaSeconds * 1000.0f);
-  ImGui::Text("Canvas %d x %d", state.width, state.height);
+  if (caps) {
+    ImGui::Text("Renderer: %s", bgfx::getRendererName(caps->rendererType));
+    ImGui::Text(
+      "GPU: %s 0x%04x:0x%04x",
+      vendorName(caps->vendorId),
+      caps->vendorId,
+      caps->deviceId
+    );
+    ImGui::Text("Enumerated GPUs: %u", static_cast<unsigned>(caps->numGPUs));
+    ImGui::Text("Compute shaders: %s", (caps->supported & BGFX_CAPS_COMPUTE) ? "yes" : "no");
+  }
+  ImGui::Text("App frame: %.2f ms", state.deltaSeconds * 1000.0f);
+  ImGui::Text("Render CPU: %.2f ms", renderCpuMs);
+  ImGui::Text("GPU frame: %.2f ms", gpuMs);
+  if (stats) {
+    ImGui::Text("Draw calls: %u", stats->numDraw);
+    ImGui::Text(
+      "Transient VB: %d / %u",
+      stats->transientVbUsed,
+      caps ? caps->limits.maxTransientVbSize : 0u
+    );
+  }
+  ImGui::Text("Canvas: %.0f x %.0f", state.visualizationCanvasSize.x, state.visualizationCanvasSize.y);
 
   if (ImGui::Button("Reset")) {
     state.visualizations.resetRequested = true;
@@ -745,6 +951,7 @@ void drawAppUi(AppState& state) {
     ImGuiWindowFlags_NoCollapse |
     ImGuiWindowFlags_NoBringToFrontOnFocus |
     ImGuiWindowFlags_NoNavFocus |
+    ImGuiWindowFlags_NoBackground |
     ImGuiWindowFlags_MenuBar;
 
   ImGui::Begin("PrappyVisualizationHost", nullptr, windowFlags);
@@ -782,7 +989,7 @@ void drawAppUi(AppState& state) {
     }
 
     if (ImGui::BeginMenu("View")) {
-      ImGui::MenuItem("Status Overlay", nullptr, &state.visualizations.showStatus);
+      ImGui::MenuItem("Renderer Diagnostics", nullptr, &state.visualizations.showStatus);
       ImGui::EndMenu();
     }
 
@@ -798,18 +1005,104 @@ void drawAppUi(AppState& state) {
 
   ImGui::InvisibleButton("VisualizationCanvas", canvasSize);
 
-  VisualizationContext context;
-  context.drawList = ImGui::GetWindowDrawList();
-  context.origin = canvasOrigin;
-  context.size = canvasSize;
-  context.deltaSeconds = state.deltaSeconds;
-  context.elapsedSeconds = state.elapsedSeconds;
-
-  state.visualizations.draw(context);
+  state.visualizationCanvasOrigin = canvasOrigin;
+  state.visualizationCanvasSize = canvasSize;
   drawVisualizationStatus(state, canvasOrigin);
 
   ImGui::End();
   ImGui::PopStyleVar(3);
+}
+
+std::uint32_t visualizationClearColor(VisualizationId id) {
+  switch (id) {
+    case VisualizationId::RandomLines2D:
+      return 0x07090fff;
+    case VisualizationId::Starfield3D:
+      return 0x02040aff;
+  }
+
+  return 0x101018ff;
+}
+
+void renderVisualization(AppState& state) {
+  const int x = std::clamp(
+    static_cast<int>(std::round(state.visualizationCanvasOrigin.x)),
+    0,
+    std::max(state.width - 1, 0)
+  );
+  const int y = std::clamp(
+    static_cast<int>(std::round(state.visualizationCanvasOrigin.y)),
+    0,
+    std::max(state.height - 1, 0)
+  );
+  const int width = std::clamp(
+    static_cast<int>(std::round(state.visualizationCanvasSize.x)),
+    1,
+    std::max(state.width - x, 1)
+  );
+  const int height = std::clamp(
+    static_cast<int>(std::round(state.visualizationCanvasSize.y)),
+    1,
+    std::max(state.height - y, 1)
+  );
+
+  bgfx::setViewRect(
+    kVisualizationView,
+    static_cast<std::uint16_t>(x),
+    static_cast<std::uint16_t>(y),
+    static_cast<std::uint16_t>(width),
+    static_cast<std::uint16_t>(height)
+  );
+  bgfx::setViewClear(
+    kVisualizationView,
+    BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH,
+    visualizationClearColor(state.visualizations.active),
+    1.0f,
+    0
+  );
+
+  const bgfx::Caps* caps = bgfx::getCaps();
+  float view[16];
+  float projection[16];
+
+  if (state.visualizations.active == VisualizationId::Starfield3D) {
+    const bx::Vec3 eye = {0.0f, 0.0f, 0.0f};
+    const bx::Vec3 at = {0.0f, 0.0f, -1.0f};
+    bx::mtxLookAt(view, eye, at);
+    bx::mtxProj(
+      projection,
+      70.0f,
+      static_cast<float>(width) / static_cast<float>(height),
+      0.05f,
+      60.0f,
+      caps->homogeneousDepth
+    );
+  } else {
+    bx::mtxIdentity(view);
+    bx::mtxOrtho(
+      projection,
+      0.0f,
+      static_cast<float>(width),
+      static_cast<float>(height),
+      0.0f,
+      0.0f,
+      100.0f,
+      0.0f,
+      caps->homogeneousDepth
+    );
+  }
+
+  bgfx::setViewTransform(kVisualizationView, view, projection);
+  bgfx::touch(kVisualizationView);
+
+  VisualizationContext context;
+  context.renderer = &state.visualizationRenderer;
+  context.viewId = kVisualizationView;
+  context.size = ImVec2(static_cast<float>(width), static_cast<float>(height));
+  context.deltaSeconds = state.deltaSeconds;
+  context.elapsedSeconds = state.elapsedSeconds;
+
+  state.visualizations.draw(context);
 }
 
 bool hasArg(int argc, char** argv, const char* expected) {
@@ -842,6 +1135,7 @@ void cleanup(AppState& state) {
   }
 
   if (state.bgfxReady) {
+    shutdownVisualizationRenderer(state);
     bgfx::shutdown();
     state.bgfxReady = false;
   }
@@ -888,6 +1182,8 @@ int main(int argc, char** argv) {
 
     logSmoke(state, "smoke: initBgfx");
     initBgfx(state);
+    logSmoke(state, "smoke: initVisualizationRenderer");
+    initVisualizationRenderer(state);
     logSmoke(state, "smoke: initImGui");
     initImGui(state);
     logSmoke(state, "smoke: entering main loop");
@@ -901,18 +1197,20 @@ int main(int argc, char** argv) {
 
       logSmoke(state, "smoke: frame setup");
       bgfx::setViewRect(
-        0,
+        kUiView,
         0,
         0,
         static_cast<std::uint16_t>(state.width),
         static_cast<std::uint16_t>(state.height)
       );
 
-      bgfx::touch(0);
+      bgfx::touch(kUiView);
 
       logSmoke(state, "smoke: imgui frame");
       beginImGuiFrame(state);
       drawAppUi(state);
+      logSmoke(state, "smoke: render visualization");
+      renderVisualization(state);
       ImGui::Render();
       logSmoke(state, "smoke: render imgui");
       renderImGui(state, ImGui::GetDrawData());

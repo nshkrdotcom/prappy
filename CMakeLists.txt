@@ -132,8 +132,12 @@ add_custom_command(
     --type vertex
     --platform windows
     -p s_5_0
+    --varyingdef "${ROOT_DIR}/src/shaders/varying.def.sc"
     -i "${BGFX_DIR}/src"
-  DEPENDS "${BGFX_SHADERC}" "${ROOT_DIR}/src/shaders/imgui.vs.sc"
+  DEPENDS
+    "${BGFX_SHADERC}"
+    "${ROOT_DIR}/src/shaders/imgui.vs.sc"
+    "${ROOT_DIR}/src/shaders/varying.def.sc"
   VERBATIM
 )
 
@@ -145,8 +149,46 @@ add_custom_command(
     --type fragment
     --platform windows
     -p s_5_0
+    --varyingdef "${ROOT_DIR}/src/shaders/varying.def.sc"
     -i "${BGFX_DIR}/src"
-  DEPENDS "${BGFX_SHADERC}" "${ROOT_DIR}/src/shaders/imgui.fs.sc"
+  DEPENDS
+    "${BGFX_SHADERC}"
+    "${ROOT_DIR}/src/shaders/imgui.fs.sc"
+    "${ROOT_DIR}/src/shaders/varying.def.sc"
+  VERBATIM
+)
+
+add_custom_command(
+  OUTPUT "${SHADER_OUT_DIR}/color_vs.bin"
+  COMMAND "${BGFX_SHADERC}"
+    -f "${ROOT_DIR}/src/shaders/color.vs.sc"
+    -o "${SHADER_OUT_DIR}/color_vs.bin"
+    --type vertex
+    --platform windows
+    -p s_5_0
+    --varyingdef "${ROOT_DIR}/src/shaders/visualization_varying.def.sc"
+    -i "${BGFX_DIR}/src"
+  DEPENDS
+    "${BGFX_SHADERC}"
+    "${ROOT_DIR}/src/shaders/color.vs.sc"
+    "${ROOT_DIR}/src/shaders/visualization_varying.def.sc"
+  VERBATIM
+)
+
+add_custom_command(
+  OUTPUT "${SHADER_OUT_DIR}/color_fs.bin"
+  COMMAND "${BGFX_SHADERC}"
+    -f "${ROOT_DIR}/src/shaders/color.fs.sc"
+    -o "${SHADER_OUT_DIR}/color_fs.bin"
+    --type fragment
+    --platform windows
+    -p s_5_0
+    --varyingdef "${ROOT_DIR}/src/shaders/visualization_varying.def.sc"
+    -i "${BGFX_DIR}/src"
+  DEPENDS
+    "${BGFX_SHADERC}"
+    "${ROOT_DIR}/src/shaders/color.fs.sc"
+    "${ROOT_DIR}/src/shaders/visualization_varying.def.sc"
   VERBATIM
 )
 
@@ -154,6 +196,8 @@ add_custom_target(shaders ALL
   DEPENDS
     "${SHADER_OUT_DIR}/imgui_vs.bin"
     "${SHADER_OUT_DIR}/imgui_fs.bin"
+    "${SHADER_OUT_DIR}/color_vs.bin"
+    "${SHADER_OUT_DIR}/color_fs.bin"
 )
 
 add_dependencies(prappy_native shaders)
@@ -166,4 +210,10 @@ add_custom_command(TARGET prappy_native POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${SHADER_OUT_DIR}/imgui_fs.bin"
     "$<TARGET_FILE_DIR:prappy_native>/shaders/imgui_fs.bin"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${SHADER_OUT_DIR}/color_vs.bin"
+    "$<TARGET_FILE_DIR:prappy_native>/shaders/color_vs.bin"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${SHADER_OUT_DIR}/color_fs.bin"
+    "$<TARGET_FILE_DIR:prappy_native>/shaders/color_fs.bin"
 )
