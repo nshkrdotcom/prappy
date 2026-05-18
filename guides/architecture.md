@@ -23,6 +23,7 @@ into the corresponding viewport rectangle.
 The core internal types are:
 
 - `VisualizationDescriptor`: metadata consumed by the menu, command bar, inspector, and diagnostics.
+- `VisualizationPresetDescriptor`: named presentation states for demos, captures, and repeatable debugging.
 - `IVisualizationModule`: reset, draw, and inspector contract.
 - `VisualizationHost`: owns modules, active selection, reset lifecycle, and camera state.
 - `VisualizationContext`: per-frame rendering context passed into modules.
@@ -46,12 +47,13 @@ src\platform\screenshot.*
 
 ## Renderer Layer
 
-Visualizations submit custom bgfx vertex buffers. Current primitives include:
+Visualizations submit custom bgfx vertex buffers and shaders. Current primitives
+include:
 
 - Screen-space line lists.
 - 3D line lists.
 - Particle streak line lists.
-- Terrain triangles.
+- Retained indexed Oahu terrain mesh.
 - Coastline and diagnostic line overlays.
 
 The renderer abstraction is intentionally bgfx-level, not CUDA-level. That keeps
@@ -83,6 +85,12 @@ and writes a BMP file under `captures\`.
 validates the generated Oahu topology header, runs all visualizations, captures
 screenshots, verifies BMP dimensions, checks for nonblank pixels, captures a
 top-down Oahu diagnostic layer view, and smoke-tests a D3D11 renderer override.
+
+Presentation presets can also be smoke-tested directly, for example:
+
+```powershell
+pwsh scripts\run.ps1 -Preset OahuCenteredTopDown -SmokeTest -ScreenshotSmoke
+```
 
 ## Oahu Data Isolation
 

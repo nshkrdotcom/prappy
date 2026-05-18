@@ -17,6 +17,10 @@ param(
     [string]$OahuDiagnostic = "Default",
 
     [Parameter()]
+    [ValidateSet("Default", "RandomLinesHero", "StarfieldHero", "OahuFlyover", "OahuCenteredTopDown", "OahuDebugMesh", "ParticlesHero")]
+    [string]$Preset = "Default",
+
+    [Parameter()]
     [switch]$OahuTopDown,
 
     [Parameter()]
@@ -54,6 +58,10 @@ if ($Visualization) {
 
 if ($OahuDiagnostic -ne "Default") {
     $parameters.OahuDiagnostic = $OahuDiagnostic
+}
+
+if ($Preset -ne "Default") {
+    $parameters.Preset = $Preset
 }
 
 if ($OahuTopDown) {

@@ -2,8 +2,64 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string_view>
 
 namespace prappy {
+
+namespace {
+
+const VisualizationPresetDescriptor kPresetDescriptors[] = {
+  {
+    VisualizationPresetId::RandomLinesHero,
+    VisualizationId::RandomLines2D,
+    "Random Lines / Hero",
+    "Hero",
+    "random-lines-hero",
+    "Dense 2D line field framed for screenshots and demos"
+  },
+  {
+    VisualizationPresetId::StarfieldHero,
+    VisualizationId::Starfield3D,
+    "Starfield / Hero",
+    "Hero",
+    "starfield-hero",
+    "Forward-facing infinite travel view"
+  },
+  {
+    VisualizationPresetId::OahuFlyover,
+    VisualizationId::OahuFlyover,
+    "Oahu / Flyover",
+    "Flyover",
+    "oahu-flyover",
+    "Low bird-flight route over terrain with ocean horizon"
+  },
+  {
+    VisualizationPresetId::OahuCenteredTopDown,
+    VisualizationId::OahuFlyover,
+    "Oahu / Centered Top Down",
+    "Centered",
+    "oahu-centered-top-down",
+    "North-up terrain composition centered in the canvas"
+  },
+  {
+    VisualizationPresetId::OahuDebugMesh,
+    VisualizationId::OahuFlyover,
+    "Oahu / Debug Mesh",
+    "Debug Mesh",
+    "oahu-debug-mesh",
+    "North-up topology view with grid and landmark controls"
+  },
+  {
+    VisualizationPresetId::ParticleFieldHero,
+    VisualizationId::ParticleField,
+    "Particles / Hero",
+    "Hero",
+    "particles-hero",
+    "Orbiting particle field framed as a GPU demo"
+  }
+};
+
+} // namespace
 
 const VisualizationDescriptor& visualizationDescriptor(VisualizationId id) {
   static const VisualizationDescriptor descriptors[] = {
@@ -66,6 +122,52 @@ const char* visualizationSpaceLabel(VisualizationId id) {
   return visualizationDescriptor(id).spaceLabel;
 }
 
+const VisualizationPresetDescriptor& visualizationPresetDescriptor(VisualizationPresetId id) {
+  for (const VisualizationPresetDescriptor& descriptor : kPresetDescriptors) {
+    if (descriptor.id == id) {
+      return descriptor;
+    }
+  }
+
+  return kPresetDescriptors[0];
+}
+
+std::vector<VisualizationPresetDescriptor> visualizationPresetsFor(VisualizationId id) {
+  std::vector<VisualizationPresetDescriptor> presets;
+  for (const VisualizationPresetDescriptor& descriptor : kPresetDescriptors) {
+    if (descriptor.visualization == id) {
+      presets.push_back(descriptor);
+    }
+  }
+  return presets;
+}
+
+VisualizationPresetId defaultVisualizationPreset(VisualizationId id) {
+  switch (id) {
+    case VisualizationId::RandomLines2D:
+      return VisualizationPresetId::RandomLinesHero;
+    case VisualizationId::Starfield3D:
+      return VisualizationPresetId::StarfieldHero;
+    case VisualizationId::OahuFlyover:
+      return VisualizationPresetId::OahuFlyover;
+    case VisualizationId::ParticleField:
+      return VisualizationPresetId::ParticleFieldHero;
+  }
+
+  return VisualizationPresetId::RandomLinesHero;
+}
+
+bool tryParseVisualizationPreset(std::string_view slug, VisualizationPresetId& preset) {
+  for (const VisualizationPresetDescriptor& descriptor : kPresetDescriptors) {
+    if (slug == descriptor.slug) {
+      preset = descriptor.id;
+      return true;
+    }
+  }
+
+  return false;
+}
+
 void CameraRig::resetFor(VisualizationId id) {
   manual = false;
   routeSpeed = 1.0f;
@@ -98,6 +200,46 @@ void CameraRig::resetFor(VisualizationId id) {
       distance = 7.0f;
       fovDegrees = 68.0f;
       target = {0.0f, 0.0f, -4.5f};
+      break;
+  }
+}
+
+void CameraRig::applyPreset(VisualizationPresetId id) {
+  resetFor(visualizationPresetDescriptor(id).visualization);
+
+  switch (id) {
+    case VisualizationPresetId::RandomLinesHero:
+      break;
+    case VisualizationPresetId::StarfieldHero:
+      manual = false;
+      fovDegrees = 66.0f;
+      target = {0.0f, 0.0f, -1.0f};
+      break;
+    case VisualizationPresetId::OahuFlyover:
+      manual = false;
+      routeSpeed = 0.82f;
+      fovDegrees = 60.0f;
+      target = {0.0f, 0.55f, -0.6f};
+      break;
+    case VisualizationPresetId::OahuCenteredTopDown:
+      manual = false;
+      routeSpeed = 1.0f;
+      fovDegrees = 58.0f;
+      target = {0.0f, 0.0f, 0.0f};
+      break;
+    case VisualizationPresetId::OahuDebugMesh:
+      manual = false;
+      routeSpeed = 1.0f;
+      fovDegrees = 58.0f;
+      target = {0.0f, 0.0f, 0.0f};
+      break;
+    case VisualizationPresetId::ParticleFieldHero:
+      manual = true;
+      yaw = -0.34f;
+      pitch = 0.22f;
+      distance = 7.4f;
+      fovDegrees = 62.0f;
+      target = {0.0f, 0.0f, -4.8f};
       break;
   }
 }
@@ -146,7 +288,7 @@ void CameraRig::zoom(VisualizationId id, float wheel) {
 }
 
 VisualizationHost::VisualizationHost() {
-  camera.resetFor(active);
+  camera.applyPreset(activePreset);
   modules.push_back(createRandomLinesVisualization());
   modules.push_back(createStarfieldVisualization());
   modules.push_back(createOahuFlyoverVisualization());
@@ -184,9 +326,18 @@ const IVisualizationModule& VisualizationHost::activeModule() const {
 void VisualizationHost::setActive(VisualizationId next) {
   if (active != next) {
     active = next;
+    activePreset = defaultVisualizationPreset(active);
     resetRequested = true;
-    camera.resetFor(active);
+    camera.applyPreset(activePreset);
   }
+}
+
+void VisualizationHost::setPreset(VisualizationPresetId preset) {
+  const VisualizationPresetDescriptor& presetDescriptor = visualizationPresetDescriptor(preset);
+  active = presetDescriptor.visualization;
+  activePreset = preset;
+  camera.applyPreset(preset);
+  resetRequested = true;
 }
 
 void VisualizationHost::resetActive(const ImVec2& size) {
@@ -200,6 +351,12 @@ void VisualizationHost::draw(VisualizationContext& context) {
   }
 
   activeModule().draw(context);
+}
+
+void VisualizationHost::shutdown() {
+  for (const std::unique_ptr<IVisualizationModule>& module : modules) {
+    module->shutdown();
+  }
 }
 
 } // namespace prappy

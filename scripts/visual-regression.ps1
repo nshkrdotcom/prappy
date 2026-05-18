@@ -15,6 +15,7 @@ $configName = $Config.ToLowerInvariant()
 $buildDir = Join-Path $root "build\windows-msvc-$configName"
 $captureDir = Join-Path $buildDir "captures"
 $visualizations = @("RandomLines", "Starfield", "Oahu", "ParticleField")
+$presets = @("RandomLinesHero", "StarfieldHero", "OahuFlyover", "OahuCenteredTopDown", "OahuDebugMesh", "ParticlesHero")
 
 $python = Get-Command python -ErrorAction SilentlyContinue
 if ($python) {
@@ -138,6 +139,11 @@ if (
 
 $diagnosticInfo = Read-BmpInfo $afterDiagnostic.FullName
 Write-Host ("[OK] OahuDiagnostic: {0}x{1} {2}bpp -> {3}" -f $diagnosticInfo.Width, $diagnosticInfo.Height, $diagnosticInfo.BitsPerPixel, $afterDiagnostic.FullName) -ForegroundColor Green
+
+foreach ($preset in $presets) {
+    & (Join-Path $PSScriptRoot "run.ps1") -Config $Config -Preset $preset -NoOverlay -SmokeTest
+    Write-Host "[OK] Preset smoke: $preset" -ForegroundColor Green
+}
 
 & (Join-Path $PSScriptRoot "run.ps1") -Config $Config -Renderer D3D11 -Visualization ParticleField -SmokeTest
 Write-Host "[OK] Renderer override: D3D11 ParticleField smoke" -ForegroundColor Green

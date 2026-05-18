@@ -2,14 +2,67 @@
 #include "../oahu_topology.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <memory>
 #include <vector>
 
 namespace prappy {
 namespace {
 
+struct OahuTerrainVertex {
+  float x = 0.0f;
+  float y = 0.0f;
+  float z = 0.0f;
+  float nx = 0.0f;
+  float ny = 1.0f;
+  float nz = 0.0f;
+  std::uint32_t abgr = 0xffffffffu;
+};
+
+bx::Vec3 addVec3(const bx::Vec3& a, const bx::Vec3& b) {
+  return {a.x + b.x, a.y + b.y, a.z + b.z};
+}
+
+bx::Vec3 subVec3(const bx::Vec3& a, const bx::Vec3& b) {
+  return {a.x - b.x, a.y - b.y, a.z - b.z};
+}
+
+bx::Vec3 crossVec3(const bx::Vec3& a, const bx::Vec3& b) {
+  return {
+    a.y * b.z - a.z * b.y,
+    a.z * b.x - a.x * b.z,
+    a.x * b.y - a.y * b.x
+  };
+}
+
+bx::Vec3 normalizeVec3(const bx::Vec3& value) {
+  const float length = std::sqrt(value.x * value.x + value.y * value.y + value.z * value.z);
+  if (length <= 1.0e-5f) {
+    return {0.0f, 1.0f, 0.0f};
+  }
+
+  const float scale = 1.0f / length;
+  return {value.x * scale, value.y * scale, value.z * scale};
+}
+
+bx::Vec3 terrainFaceNormal(const bx::Vec3& a, const bx::Vec3& b, const bx::Vec3& c) {
+  bx::Vec3 normal = crossVec3(subVec3(b, a), subVec3(c, a));
+  if (normal.y < 0.0f) {
+    normal = {-normal.x, -normal.y, -normal.z};
+  }
+  return normalizeVec3(normal);
+}
+
 struct OahuFlyoverVisualization final : IVisualizationModule {
   ImVec2 lastSize{};
+  bgfx::VertexLayout terrainLayout;
+  Program terrainProgram;
+  bgfx::VertexBufferHandle terrainVertexBuffer = BGFX_INVALID_HANDLE;
+  bgfx::IndexBufferHandle terrainIndexBuffer = BGFX_INVALID_HANDLE;
+  std::uint32_t terrainVertexCount = 0;
+  std::uint32_t terrainIndexCount = 0;
 
   const VisualizationDescriptor& descriptor() const override {
     return visualizationDescriptor(VisualizationId::OahuFlyover);
@@ -59,19 +112,143 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
     return static_cast<int>(a.land) + static_cast<int>(b.land) + static_cast<int>(c.land) >= 2;
   }
 
-  void pushTerrainTriangle(
-    std::vector<ColorVertex>& vertices,
-    const OahuTerrainSample& a,
-    const OahuTerrainSample& b,
-    const OahuTerrainSample& c
+  void addTerrainTriangleNormal(
+    std::vector<bx::Vec3>& normals,
+    const std::vector<bx::Vec3>& positions,
+    std::uint16_t ia,
+    std::uint16_t ib,
+    std::uint16_t ic
   ) const {
-    const bx::Vec3 pa = terrainPosition(a);
-    const bx::Vec3 pb = terrainPosition(b);
-    const bx::Vec3 pc = terrainPosition(c);
+    const bx::Vec3 normal = terrainFaceNormal(
+      positions[ia],
+      positions[ib],
+      positions[ic]
+    );
+    normals[ia] = addVec3(normals[ia], normal);
+    normals[ib] = addVec3(normals[ib], normal);
+    normals[ic] = addVec3(normals[ic], normal);
+  }
 
-    vertices.push_back(ColorVertex{pa.x, pa.y, pa.z, terrainColor(a.elevationMeters)});
-    vertices.push_back(ColorVertex{pb.x, pb.y, pb.z, terrainColor(b.elevationMeters)});
-    vertices.push_back(ColorVertex{pc.x, pc.y, pc.z, terrainColor(c.elevationMeters)});
+  void appendTerrainTriangle(
+    std::vector<std::uint16_t>& indices,
+    std::vector<bx::Vec3>& normals,
+    const std::vector<bx::Vec3>& positions,
+    std::uint16_t ia,
+    std::uint16_t ib,
+    std::uint16_t ic
+  ) const {
+    indices.push_back(ia);
+    indices.push_back(ib);
+    indices.push_back(ic);
+    addTerrainTriangleNormal(normals, positions, ia, ib, ic);
+  }
+
+  void ensureTerrainMesh() {
+    if (
+      bgfx::isValid(terrainVertexBuffer) &&
+      bgfx::isValid(terrainIndexBuffer) &&
+      bgfx::isValid(terrainProgram.handle)
+    ) {
+      return;
+    }
+
+    shutdown();
+
+    terrainLayout
+      .begin()
+      .add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float)
+      .add(bgfx::Attrib::Normal, 3, bgfx::AttribType::Float)
+      .add(bgfx::Attrib::Color0, 4, bgfx::AttribType::Uint8, true)
+      .end();
+
+    terrainProgram = loadProgram("shaders/oahu_terrain_vs.bin", "shaders/oahu_terrain_fs.bin");
+
+    constexpr std::uint32_t vertexCount = kOahuGridWidth * kOahuGridHeight;
+    static_assert(vertexCount <= 0xffffu, "Oahu terrain uses 16-bit indices");
+
+    std::vector<OahuTerrainVertex> vertices(vertexCount);
+    std::vector<bx::Vec3> positions(vertexCount, bx::Vec3{0.0f, 0.0f, 0.0f});
+    std::vector<bx::Vec3> normals(vertexCount, bx::Vec3{0.0f, 0.0f, 0.0f});
+    std::vector<std::uint16_t> indices;
+    indices.reserve((kOahuGridWidth - 1) * (kOahuGridHeight - 1) * 6);
+
+    for (int row = 0; row < kOahuGridHeight; ++row) {
+      for (int col = 0; col < kOahuGridWidth; ++col) {
+        const std::uint32_t index = static_cast<std::uint32_t>(row * kOahuGridWidth + col);
+        const OahuTerrainSample& sample = sampleAt(col, row);
+        const bx::Vec3 position = terrainPosition(sample);
+        positions[index] = position;
+        vertices[index].x = position.x;
+        vertices[index].y = position.y;
+        vertices[index].z = position.z;
+        vertices[index].abgr = terrainColor(sample.elevationMeters);
+      }
+    }
+
+    for (int row = 0; row < kOahuGridHeight - 1; ++row) {
+      for (int col = 0; col < kOahuGridWidth - 1; ++col) {
+        const OahuTerrainSample& a = sampleAt(col, row);
+        const OahuTerrainSample& b = sampleAt(col + 1, row);
+        const OahuTerrainSample& c = sampleAt(col, row + 1);
+        const OahuTerrainSample& d = sampleAt(col + 1, row + 1);
+        const std::uint16_t ia = static_cast<std::uint16_t>(row * kOahuGridWidth + col);
+        const std::uint16_t ib = static_cast<std::uint16_t>(row * kOahuGridWidth + col + 1);
+        const std::uint16_t ic = static_cast<std::uint16_t>((row + 1) * kOahuGridWidth + col);
+        const std::uint16_t id = static_cast<std::uint16_t>((row + 1) * kOahuGridWidth + col + 1);
+
+        if (triangleTouchesLand(a, b, c)) {
+          appendTerrainTriangle(indices, normals, positions, ia, ib, ic);
+        }
+        if (triangleTouchesLand(b, d, c)) {
+          appendTerrainTriangle(indices, normals, positions, ib, id, ic);
+        }
+      }
+    }
+
+    for (std::uint32_t index = 0; index < vertexCount; ++index) {
+      const bx::Vec3 normal = normalizeVec3(normals[index]);
+      vertices[index].nx = normal.x;
+      vertices[index].ny = normal.y;
+      vertices[index].nz = normal.z;
+    }
+
+    terrainVertexCount = static_cast<std::uint32_t>(vertices.size());
+    terrainIndexCount = static_cast<std::uint32_t>(indices.size());
+
+    const bgfx::Memory* vertexMemory = bgfx::copy(
+      vertices.data(),
+      static_cast<std::uint32_t>(vertices.size() * sizeof(OahuTerrainVertex))
+    );
+    terrainVertexBuffer = bgfx::createVertexBuffer(vertexMemory, terrainLayout);
+
+    const bgfx::Memory* indexMemory = bgfx::copy(
+      indices.data(),
+      static_cast<std::uint32_t>(indices.size() * sizeof(std::uint16_t))
+    );
+    terrainIndexBuffer = bgfx::createIndexBuffer(indexMemory);
+  }
+
+  void submitTerrainMesh(bgfx::ViewId viewId) {
+    ensureTerrainMesh();
+
+    if (
+      !bgfx::isValid(terrainVertexBuffer) ||
+      !bgfx::isValid(terrainIndexBuffer) ||
+      !bgfx::isValid(terrainProgram.handle) ||
+      terrainIndexCount == 0
+    ) {
+      return;
+    }
+
+    bgfx::setVertexBuffer(0, terrainVertexBuffer, 0, terrainVertexCount);
+    bgfx::setIndexBuffer(terrainIndexBuffer, 0, terrainIndexCount);
+    bgfx::setState(
+      BGFX_STATE_WRITE_RGB |
+      BGFX_STATE_WRITE_A |
+      BGFX_STATE_WRITE_Z |
+      BGFX_STATE_DEPTH_TEST_LESS
+    );
+    bgfx::submit(viewId, terrainProgram.handle);
   }
 
   void pushOcean(std::vector<ColorVertex>& vertices) const {
@@ -129,6 +306,26 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
     lastSize = size;
   }
 
+  void shutdown() override {
+    if (bgfx::isValid(terrainIndexBuffer)) {
+      bgfx::destroy(terrainIndexBuffer);
+      terrainIndexBuffer = BGFX_INVALID_HANDLE;
+    }
+
+    if (bgfx::isValid(terrainVertexBuffer)) {
+      bgfx::destroy(terrainVertexBuffer);
+      terrainVertexBuffer = BGFX_INVALID_HANDLE;
+    }
+
+    if (bgfx::isValid(terrainProgram.handle)) {
+      bgfx::destroy(terrainProgram.handle);
+      terrainProgram.handle = BGFX_INVALID_HANDLE;
+    }
+
+    terrainVertexCount = 0;
+    terrainIndexCount = 0;
+  }
+
   void draw(VisualizationContext& context) override {
     lastSize = context.size;
     const OahuDiagnosticSettings defaults;
@@ -144,24 +341,7 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
     }
 
     if (diagnostics.showFilledTerrain) {
-      std::vector<ColorVertex> terrain;
-      terrain.reserve((kOahuGridWidth - 1) * (kOahuGridHeight - 1) * 6);
-      for (int row = 0; row < kOahuGridHeight - 1; ++row) {
-        for (int col = 0; col < kOahuGridWidth - 1; ++col) {
-          const OahuTerrainSample& a = sampleAt(col, row);
-          const OahuTerrainSample& b = sampleAt(col + 1, row);
-          const OahuTerrainSample& c = sampleAt(col, row + 1);
-          const OahuTerrainSample& d = sampleAt(col + 1, row + 1);
-
-          if (triangleTouchesLand(a, b, c)) {
-            pushTerrainTriangle(terrain, a, b, c);
-          }
-          if (triangleTouchesLand(b, d, c)) {
-            pushTerrainTriangle(terrain, b, d, c);
-          }
-        }
-      }
-      submitColorVertices(*context.renderer, context.viewId, terrain, ColorPrimitive::Triangles, true, true);
+      submitTerrainMesh(context.viewId);
     }
 
     std::vector<ColorVertex> lines;
@@ -219,6 +399,9 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
     ImGui::Text("Grid: %d", kOahuGridWidth * kOahuGridHeight);
     ImGui::Text("Land samples: %d", landSamples);
     ImGui::Text("Coast points: %d", kOahuCoastlinePointCount);
+    ImGui::Text("Terrain vertices: %u", terrainVertexCount);
+    ImGui::Text("Terrain indices: %u", terrainIndexCount);
+    ImGui::TextUnformatted("Terrain pass: retained indexed bgfx mesh");
     ImGui::Text("Source points: %d", kOahuSourceCoastlinePointCount);
     ImGui::Text("Smoothing passes: %d", kOahuElevationSmoothingPasses);
     ImGui::Text("Landmarks: %d", kOahuLandmarkCount);

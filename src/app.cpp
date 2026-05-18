@@ -700,6 +700,9 @@ void drawLibraryModule(
   ImGui::PopStyleColor();
 }
 
+void applyOahuDiagnosticPreset(OahuDiagnosticSettings& diagnostics, const std::string& preset);
+void applyVisualizationPreset(AppState& state, VisualizationPresetId preset);
+
 void drawVisualizationSelector(AppState& state) {
   const float available = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
   const float gap = 6.0f;
@@ -711,7 +714,7 @@ void drawVisualizationSelector(AppState& state) {
     state.visualizations.active == VisualizationId::RandomLines2D,
     size
   )) {
-    state.visualizations.setActive(VisualizationId::RandomLines2D);
+    applyVisualizationPreset(state, defaultVisualizationPreset(VisualizationId::RandomLines2D));
   }
   ImGui::SameLine(0.0f, gap);
   if (drawModeButton(
@@ -719,7 +722,7 @@ void drawVisualizationSelector(AppState& state) {
     state.visualizations.active == VisualizationId::Starfield3D,
     size
   )) {
-    state.visualizations.setActive(VisualizationId::Starfield3D);
+    applyVisualizationPreset(state, defaultVisualizationPreset(VisualizationId::Starfield3D));
   }
   ImGui::SameLine(0.0f, gap);
   if (drawModeButton(
@@ -727,7 +730,7 @@ void drawVisualizationSelector(AppState& state) {
     state.visualizations.active == VisualizationId::OahuFlyover,
     size
   )) {
-    state.visualizations.setActive(VisualizationId::OahuFlyover);
+    applyVisualizationPreset(state, defaultVisualizationPreset(VisualizationId::OahuFlyover));
   }
   ImGui::SameLine(0.0f, gap);
   if (drawModeButton(
@@ -735,11 +738,44 @@ void drawVisualizationSelector(AppState& state) {
     state.visualizations.active == VisualizationId::ParticleField,
     size
   )) {
-    state.visualizations.setActive(VisualizationId::ParticleField);
+    applyVisualizationPreset(state, defaultVisualizationPreset(VisualizationId::ParticleField));
   }
 }
 
-void applyOahuDiagnosticPreset(OahuDiagnosticSettings& diagnostics, const std::string& preset);
+void drawPresetCombo(AppState& state, const char* label, float width) {
+  const VisualizationPresetDescriptor& activePreset = visualizationPresetDescriptor(
+    state.visualizations.activePreset
+  );
+  const VisualizationPresetDescriptor& fallbackPreset = visualizationPresetDescriptor(
+    defaultVisualizationPreset(state.visualizations.active)
+  );
+  const VisualizationPresetDescriptor& visiblePreset =
+    activePreset.visualization == state.visualizations.active
+      ? activePreset
+      : fallbackPreset;
+
+  if (width > 0.0f) {
+    ImGui::SetNextItemWidth(width);
+  }
+
+  if (ImGui::BeginCombo(label, visiblePreset.name)) {
+    const std::vector<VisualizationPresetDescriptor> presets =
+      visualizationPresetsFor(state.visualizations.active);
+    for (const VisualizationPresetDescriptor& preset : presets) {
+      const bool selected = preset.id == state.visualizations.activePreset;
+      if (ImGui::Selectable(preset.name, selected)) {
+        applyVisualizationPreset(state, preset.id);
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s", preset.description);
+      }
+      if (selected) {
+        ImGui::SetItemDefaultFocus();
+      }
+    }
+    ImGui::EndCombo();
+  }
+}
 
 void drawOahuQuickControls(AppState& state) {
   if (state.visualizations.active != VisualizationId::OahuFlyover) {
@@ -755,16 +791,16 @@ void drawOahuQuickControls(AppState& state) {
     applyOahuDiagnosticPreset(diagnostics, "coastline");
   }
   ImGui::SameLine();
-  if (ImGui::Button("Mesh", ImVec2(62.0f, 26.0f))) {
-    applyOahuDiagnosticPreset(diagnostics, "mesh");
+  if (ImGui::Button("Centered", ImVec2(82.0f, 26.0f))) {
+    applyVisualizationPreset(state, VisualizationPresetId::OahuCenteredTopDown);
   }
   ImGui::SameLine();
-  if (ImGui::Button("All", ImVec2(54.0f, 26.0f))) {
-    applyOahuDiagnosticPreset(diagnostics, "all");
+  if (ImGui::Button("Mesh", ImVec2(62.0f, 26.0f))) {
+    applyVisualizationPreset(state, VisualizationPresetId::OahuDebugMesh);
   }
   ImGui::SameLine();
   if (ImGui::Button("Flyover", ImVec2(72.0f, 26.0f))) {
-    applyOahuDiagnosticPreset(diagnostics, "flyover");
+    applyVisualizationPreset(state, VisualizationPresetId::OahuFlyover);
   }
   ImGui::SameLine();
   if (ImGui::Button("Panel", ImVec2(62.0f, 26.0f))) {
@@ -803,16 +839,16 @@ void drawOahuCanvasControls(AppState& state, const ImVec2& canvasOrigin, const I
     applyOahuDiagnosticPreset(diagnostics, "coastline");
   }
   ImGui::SameLine();
-  if (ImGui::Button("Mesh", ImVec2(56.0f, 26.0f))) {
-    applyOahuDiagnosticPreset(diagnostics, "mesh");
+  if (ImGui::Button("Center", ImVec2(64.0f, 26.0f))) {
+    applyVisualizationPreset(state, VisualizationPresetId::OahuCenteredTopDown);
   }
   ImGui::SameLine();
-  if (ImGui::Button("All", ImVec2(46.0f, 26.0f))) {
-    applyOahuDiagnosticPreset(diagnostics, "all");
+  if (ImGui::Button("Mesh", ImVec2(56.0f, 26.0f))) {
+    applyVisualizationPreset(state, VisualizationPresetId::OahuDebugMesh);
   }
   ImGui::SameLine();
   if (ImGui::Button("Flyover", ImVec2(70.0f, 26.0f))) {
-    applyOahuDiagnosticPreset(diagnostics, "flyover");
+    applyVisualizationPreset(state, VisualizationPresetId::OahuFlyover);
   }
   ImGui::SameLine();
   if (ImGui::Button("Panel", ImVec2(58.0f, 26.0f))) {
@@ -830,7 +866,7 @@ void drawCommandBar(AppState& state) {
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f, 10.0f));
   ImGui::BeginChild(
     "CommandBar",
-    ImVec2(0.0f, showOahuControls ? 102.0f : 66.0f),
+    ImVec2(0.0f, showOahuControls ? 132.0f : 96.0f),
     ImGuiChildFlags_Borders,
     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse
   );
@@ -847,6 +883,8 @@ void drawCommandBar(AppState& state) {
 
     ImGui::TableSetColumnIndex(1);
     drawVisualizationSelector(state);
+    drawPresetCombo(state, "##CommandPreset", 236.0f);
+    ImGui::SameLine();
     ImGui::TextDisabled("%s", visualizationSpaceLabel(state.visualizations.active));
 
     ImGui::TableSetColumnIndex(2);
@@ -913,7 +951,7 @@ void drawStackPanel(AppState& state) {
     "bgfx",
     "renderer",
     bgfxPrimary,
-    stats ? "custom transient vertex passes" : "initializing",
+    stats ? "retained mesh + transient overlays" : "initializing",
     ImVec4(0.58f, 0.84f, 0.46f, 1.0f)
   );
   drawLibraryModule(
@@ -1020,7 +1058,7 @@ void drawCameraControls(AppState& state) {
   }
 
   if (ImGui::Button("Reset Camera", ImVec2(-1.0f, 30.0f))) {
-    camera.resetFor(state.visualizations.active);
+    camera.applyPreset(state.visualizations.activePreset);
   }
 }
 
@@ -1040,6 +1078,9 @@ void drawOahuDiagnosticControls(AppState& state) {
 
 void drawVisualizationTab(AppState& state) {
   drawVisualizationSelector(state);
+  ImGui::Separator();
+  drawPresetCombo(state, "Presentation preset", -1.0f);
+  ImGui::TextWrapped("%s", visualizationPresetDescriptor(state.visualizations.activePreset).description);
   ImGui::Separator();
   drawKeyValue("Active", visualizationName(state.visualizations.active));
   drawKeyValue("Space", visualizationSpaceLabel(state.visualizations.active));
@@ -1280,7 +1321,7 @@ void drawAppUi(AppState& state) {
         state.visualizations.resetRequested = true;
       }
       if (ImGui::MenuItem("Reset Camera")) {
-        state.visualizations.camera.resetFor(state.visualizations.active);
+        state.visualizations.camera.applyPreset(state.visualizations.activePreset);
       }
       if (ImGui::MenuItem("Capture Visualization")) {
         requestScreenshot(state);
@@ -1298,7 +1339,7 @@ void drawAppUi(AppState& state) {
         nullptr,
         state.visualizations.active == VisualizationId::RandomLines2D
       )) {
-        state.visualizations.setActive(VisualizationId::RandomLines2D);
+        applyVisualizationPreset(state, defaultVisualizationPreset(VisualizationId::RandomLines2D));
       }
 
       if (ImGui::MenuItem(
@@ -1306,7 +1347,7 @@ void drawAppUi(AppState& state) {
         nullptr,
         state.visualizations.active == VisualizationId::Starfield3D
       )) {
-        state.visualizations.setActive(VisualizationId::Starfield3D);
+        applyVisualizationPreset(state, defaultVisualizationPreset(VisualizationId::Starfield3D));
       }
 
       if (ImGui::MenuItem(
@@ -1314,7 +1355,7 @@ void drawAppUi(AppState& state) {
         nullptr,
         state.visualizations.active == VisualizationId::OahuFlyover
       )) {
-        state.visualizations.setActive(VisualizationId::OahuFlyover);
+        applyVisualizationPreset(state, defaultVisualizationPreset(VisualizationId::OahuFlyover));
       }
 
       if (ImGui::MenuItem(
@@ -1322,13 +1363,51 @@ void drawAppUi(AppState& state) {
         nullptr,
         state.visualizations.active == VisualizationId::ParticleField
       )) {
-        state.visualizations.setActive(VisualizationId::ParticleField);
+        applyVisualizationPreset(state, defaultVisualizationPreset(VisualizationId::ParticleField));
+      }
+
+      ImGui::Separator();
+      if (ImGui::BeginMenu("Preset")) {
+        const std::vector<VisualizationPresetDescriptor> presets =
+          visualizationPresetsFor(state.visualizations.active);
+        for (const VisualizationPresetDescriptor& preset : presets) {
+          if (ImGui::MenuItem(
+            preset.name,
+            nullptr,
+            state.visualizations.activePreset == preset.id
+          )) {
+            applyVisualizationPreset(state, preset.id);
+          }
+        }
+        ImGui::EndMenu();
       }
 
       ImGui::EndMenu();
     }
 
     if (state.visualizations.active == VisualizationId::OahuFlyover && ImGui::BeginMenu("Oahu")) {
+      if (ImGui::MenuItem(
+        "Flyover Preset",
+        nullptr,
+        state.visualizations.activePreset == VisualizationPresetId::OahuFlyover
+      )) {
+        applyVisualizationPreset(state, VisualizationPresetId::OahuFlyover);
+      }
+      if (ImGui::MenuItem(
+        "Centered Top Down Preset",
+        nullptr,
+        state.visualizations.activePreset == VisualizationPresetId::OahuCenteredTopDown
+      )) {
+        applyVisualizationPreset(state, VisualizationPresetId::OahuCenteredTopDown);
+      }
+      if (ImGui::MenuItem(
+        "Debug Mesh Preset",
+        nullptr,
+        state.visualizations.activePreset == VisualizationPresetId::OahuDebugMesh
+      )) {
+        applyVisualizationPreset(state, VisualizationPresetId::OahuDebugMesh);
+      }
+      ImGui::Separator();
       ImGui::MenuItem("Top Down", nullptr, &state.oahuDiagnostics.topDown);
       ImGui::Separator();
       if (ImGui::MenuItem("Coastline Only")) {
@@ -1723,7 +1802,48 @@ void applyOahuDiagnosticPreset(OahuDiagnosticSettings& diagnostics, const std::s
   }
 }
 
+void applyVisualizationPreset(AppState& state, VisualizationPresetId preset) {
+  state.visualizations.setPreset(preset);
+
+  switch (preset) {
+    case VisualizationPresetId::RandomLinesHero:
+    case VisualizationPresetId::StarfieldHero:
+    case VisualizationPresetId::ParticleFieldHero:
+      break;
+    case VisualizationPresetId::OahuFlyover:
+      applyOahuDiagnosticPreset(state.oahuDiagnostics, "flyover");
+      break;
+    case VisualizationPresetId::OahuCenteredTopDown:
+      state.oahuDiagnostics.topDown = true;
+      state.oahuDiagnostics.showBackground = false;
+      state.oahuDiagnostics.showFilledTerrain = true;
+      state.oahuDiagnostics.showCoastline = true;
+      state.oahuDiagnostics.showGrid = false;
+      state.oahuDiagnostics.showRidges = true;
+      state.oahuDiagnostics.showLandmarks = false;
+      break;
+    case VisualizationPresetId::OahuDebugMesh:
+      state.oahuDiagnostics.topDown = true;
+      state.oahuDiagnostics.showBackground = false;
+      state.oahuDiagnostics.showFilledTerrain = true;
+      state.oahuDiagnostics.showCoastline = true;
+      state.oahuDiagnostics.showGrid = true;
+      state.oahuDiagnostics.showRidges = false;
+      state.oahuDiagnostics.showLandmarks = true;
+      break;
+  }
+}
+
 void applyRuntimeArgs(AppState& state, int argc, char** argv) {
+  const std::string presentationPreset = argumentValue(argc, argv, "--preset=");
+  if (!presentationPreset.empty()) {
+    VisualizationPresetId preset;
+    if (!tryParseVisualizationPreset(presentationPreset, preset)) {
+      throw std::runtime_error(std::string("Unknown visualization preset: ") + presentationPreset);
+    }
+    applyVisualizationPreset(state, preset);
+  }
+
   if (hasArg(argc, argv, "--oahu-topdown")) {
     state.oahuDiagnostics.topDown = true;
   }
@@ -1749,6 +1869,7 @@ void cleanup(AppState& state) {
   }
 
   if (state.bgfxReady) {
+    state.visualizations.shutdown();
     shutdownVisualizationRenderer(state);
     bgfx::shutdown();
     state.bgfxReady = false;
@@ -1768,13 +1889,14 @@ int runApp(int argc, char** argv) {
   state.screenshotSmoke = hasArg(argc, argv, "--screenshot-smoke");
   state.requestedRenderer = rendererFromArgs(argc, argv);
   state.visualizations.setActive(visualizationFromArgs(argc, argv));
-  applyRuntimeArgs(state, argc, argv);
   if (state.smokeTest) {
     state.smokeLog.open("prappy_smoke.log", std::ios::out | std::ios::trunc);
     logSmoke(state, "smoke: start");
   }
 
   try {
+    applyRuntimeArgs(state, argc, argv);
+
     logSmoke(state, "smoke: SDL_SetMainReady");
     SDL_SetMainReady();
     SDL_SetAppMetadata("Prappy", "0.1.0", "com.nshkr.prappy");

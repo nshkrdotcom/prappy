@@ -36,6 +36,13 @@ pwsh scripts\run.ps1 -Visualization Oahu -SmokeTest
 pwsh scripts\run.ps1 -Visualization ParticleField -SmokeTest
 ```
 
+Named presentation presets can be smoke-tested the same way:
+
+```powershell
+pwsh scripts\run.ps1 -Preset OahuCenteredTopDown -SmokeTest -ScreenshotSmoke
+pwsh scripts\run.ps1 -Preset OahuDebugMesh -SmokeTest -ScreenshotSmoke
+```
+
 The smoke log is written beside the executable, for example:
 
 ```text
@@ -82,12 +89,12 @@ resampling, terrain mesh fill, or camera perspective:
 python tools\fetch_oahu_topology.py
 python tools\validate_oahu_topology.py --require-debug-artifacts
 pwsh scripts\run.ps1 -Visualization Oahu -OahuDiagnostic Coastline -Focus -NoOverlay
-pwsh scripts\run.ps1 -Visualization Oahu -OahuDiagnostic Mesh -Focus -NoOverlay
-pwsh scripts\run.ps1 -Visualization Oahu -OahuDiagnostic All -Focus -NoOverlay
+pwsh scripts\run.ps1 -Preset OahuDebugMesh -Focus -NoOverlay
+pwsh scripts\run.ps1 -Preset OahuCenteredTopDown -Focus -NoOverlay
 ```
 
 The generator writes external inspection files under `build\oahu_debug\`.
-Use `pwsh scripts\run.ps1 -Visualization Oahu -Focus` when you want the
+Use `pwsh scripts\run.ps1 -Preset OahuCenteredTopDown -Focus` when you want the
 interactive Oahu controls visible inside the canvas. `-NoOverlay` is for clean
 captures and hides that focus-mode control strip.
 

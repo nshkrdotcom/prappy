@@ -97,15 +97,15 @@ Use the app's top-down diagnostic mode to separate the problem layer:
 
 ```powershell
 pwsh scripts\run.ps1 -Visualization Oahu -OahuDiagnostic Coastline -Focus -NoOverlay
-pwsh scripts\run.ps1 -Visualization Oahu -OahuDiagnostic Mesh -Focus -NoOverlay
-pwsh scripts\run.ps1 -Visualization Oahu -OahuDiagnostic All -Focus -NoOverlay
+pwsh scripts\run.ps1 -Preset OahuDebugMesh -Focus -NoOverlay
+pwsh scripts\run.ps1 -Preset OahuCenteredTopDown -Focus -NoOverlay
 ```
 
 For interactive checking, run without `-NoOverlay`. Focus mode then shows the
 Oahu canvas controls in the top-right corner:
 
 ```powershell
-pwsh scripts\run.ps1 -Visualization Oahu -Focus
+pwsh scripts\run.ps1 -Preset OahuCenteredTopDown -Focus
 ```
 
 The same controls are also available from the normal command bar and the `Oahu`
