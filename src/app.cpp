@@ -1416,12 +1416,12 @@ void renderVisualization(AppState& state) {
         halfHeight = halfWidth / viewAspect;
       }
 
-      // Looking up the Y axis keeps east on the right in bgfx's view handedness.
+      // Looking down from above with Z-up in screen space keeps north at top.
       bx::mtxLookAt(
         view,
-        bx::Vec3{0.0f, -14.0f, 0.0f},
+        bx::Vec3{0.0f, 14.0f, 0.0f},
         bx::Vec3{0.0f, 0.0f, 0.0f},
-        bx::Vec3{0.0f, 0.0f, -1.0f}
+        bx::Vec3{0.0f, 0.0f, 1.0f}
       );
       bx::mtxOrtho(
         projection,

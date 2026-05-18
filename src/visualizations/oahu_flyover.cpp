@@ -22,8 +22,9 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
   bx::Vec3 terrainPosition(float xValue, float yValue, float elevationMeters) const {
     constexpr float zSpan = 8.2f;
     constexpr float xSpan = zSpan * kOahuMapAspect;
+    // World axes: X east, Y elevation, Z north.
     const float x = (xValue - 0.5f) * xSpan;
-    const float z = (0.5f - yValue) * zSpan;
+    const float z = (yValue - 0.5f) * zSpan;
     const float y = std::max(elevationMeters, 0.0f) / kOahuMaxElevationMeters * 1.85f;
     return {x, y, z};
   }

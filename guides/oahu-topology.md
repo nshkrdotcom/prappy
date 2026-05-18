@@ -36,6 +36,18 @@ east-west/north-south aspect instead of stretching raw longitude and latitude.
 The elevation pass can take several minutes because it samples every generated
 land grid point before writing `src\oahu_topology.h`.
 
+## Coordinate Assumptions
+
+The data and renderer use these conventions:
+
+- Source longitude/latitude is projected into meters with X increasing east and
+  Y increasing north.
+- Generated header coordinates are normalized with X increasing west-to-east and
+  Y increasing south-to-north.
+- Render-space terrain uses X as east, Y as elevation, and Z as north.
+- The top-down camera uses render-space Z as screen-up, so north stays at the
+  top and east stays on the right.
+
 The generator also writes debug artifacts under:
 
 ```text
@@ -58,7 +70,8 @@ python tools\validate_oahu_topology.py --require-debug-artifacts
 ```
 
 That check verifies the source, sample count, Oahu bounds, aspect ratio, source
-area, grid density, elevation smoothing, and sampled elevation range.
+area, grid density, elevation smoothing, sampled elevation range, landmark
+axis ordering, peak placement, and the render-space north-axis convention.
 
 ## When To Regenerate
 
