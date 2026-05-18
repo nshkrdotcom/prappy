@@ -635,11 +635,98 @@ void drawVisualizationSelector(AppState& state) {
   }
 }
 
+void applyOahuDiagnosticPreset(OahuDiagnosticSettings& diagnostics, const std::string& preset);
+
+void drawOahuQuickControls(AppState& state) {
+  if (state.visualizations.active != VisualizationId::OahuFlyover) {
+    return;
+  }
+
+  OahuDiagnosticSettings& diagnostics = state.oahuDiagnostics;
+  ImGui::TextDisabled("Oahu view");
+  ImGui::SameLine();
+  ImGui::Checkbox("Top down", &diagnostics.topDown);
+  ImGui::SameLine();
+  if (ImGui::Button("Coast", ImVec2(62.0f, 26.0f))) {
+    applyOahuDiagnosticPreset(diagnostics, "coastline");
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Mesh", ImVec2(62.0f, 26.0f))) {
+    applyOahuDiagnosticPreset(diagnostics, "mesh");
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("All", ImVec2(54.0f, 26.0f))) {
+    applyOahuDiagnosticPreset(diagnostics, "all");
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Flyover", ImVec2(72.0f, 26.0f))) {
+    applyOahuDiagnosticPreset(diagnostics, "flyover");
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Panel", ImVec2(62.0f, 26.0f))) {
+    state.focusMode = false;
+    state.showInspectorPanel = true;
+  }
+}
+
+void drawOahuCanvasControls(AppState& state, const ImVec2& canvasOrigin, const ImVec2& canvasSize) {
+  if (
+    state.visualizations.active != VisualizationId::OahuFlyover ||
+    !state.focusMode ||
+    !state.visualizations.showStatus
+  ) {
+    return;
+  }
+
+  const float panelWidth = std::min(520.0f, std::max(1.0f, canvasSize.x - 32.0f));
+  ImGui::SetCursorScreenPos(addVec2(canvasOrigin, ImVec2(canvasSize.x - panelWidth - 16.0f, 16.0f)));
+  ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 10.0f));
+  ImGui::PushStyleColor(ImGuiCol_ChildBg, IM_COL32(8, 10, 18, 218));
+  ImGui::BeginChild(
+    "OahuCanvasControls",
+    ImVec2(panelWidth, 56.0f),
+    ImGuiChildFlags_Borders,
+    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse
+  );
+
+  OahuDiagnosticSettings& diagnostics = state.oahuDiagnostics;
+  ImGui::TextUnformatted("Oahu");
+  ImGui::SameLine();
+  ImGui::Checkbox("Top Down", &diagnostics.topDown);
+  ImGui::SameLine();
+  if (ImGui::Button("Coast", ImVec2(58.0f, 26.0f))) {
+    applyOahuDiagnosticPreset(diagnostics, "coastline");
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Mesh", ImVec2(56.0f, 26.0f))) {
+    applyOahuDiagnosticPreset(diagnostics, "mesh");
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("All", ImVec2(46.0f, 26.0f))) {
+    applyOahuDiagnosticPreset(diagnostics, "all");
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Flyover", ImVec2(70.0f, 26.0f))) {
+    applyOahuDiagnosticPreset(diagnostics, "flyover");
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Panel", ImVec2(58.0f, 26.0f))) {
+    state.focusMode = false;
+    state.showInspectorPanel = true;
+  }
+
+  ImGui::EndChild();
+  ImGui::PopStyleColor();
+  ImGui::PopStyleVar(2);
+}
+
 void drawCommandBar(AppState& state) {
+  const bool showOahuControls = state.visualizations.active == VisualizationId::OahuFlyover;
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f, 10.0f));
   ImGui::BeginChild(
     "CommandBar",
-    ImVec2(0.0f, 66.0f),
+    ImVec2(0.0f, showOahuControls ? 102.0f : 66.0f),
     ImGuiChildFlags_Borders,
     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse
   );
@@ -676,6 +763,8 @@ void drawCommandBar(AppState& state) {
 
     ImGui::EndTable();
   }
+
+  drawOahuQuickControls(state);
 
   ImGui::EndChild();
   ImGui::PopStyleVar();
@@ -1133,6 +1222,35 @@ void drawAppUi(AppState& state) {
       ImGui::EndMenu();
     }
 
+    if (state.visualizations.active == VisualizationId::OahuFlyover && ImGui::BeginMenu("Oahu")) {
+      ImGui::MenuItem("Top Down", nullptr, &state.oahuDiagnostics.topDown);
+      ImGui::Separator();
+      if (ImGui::MenuItem("Coastline Only")) {
+        applyOahuDiagnosticPreset(state.oahuDiagnostics, "coastline");
+      }
+      if (ImGui::MenuItem("Mesh Debug")) {
+        applyOahuDiagnosticPreset(state.oahuDiagnostics, "mesh");
+      }
+      if (ImGui::MenuItem("All Layers")) {
+        applyOahuDiagnosticPreset(state.oahuDiagnostics, "all");
+      }
+      if (ImGui::MenuItem("Flyover")) {
+        applyOahuDiagnosticPreset(state.oahuDiagnostics, "flyover");
+      }
+      ImGui::Separator();
+      ImGui::MenuItem("Background", nullptr, &state.oahuDiagnostics.showBackground);
+      ImGui::MenuItem("Filled Terrain", nullptr, &state.oahuDiagnostics.showFilledTerrain);
+      ImGui::MenuItem("Coastline", nullptr, &state.oahuDiagnostics.showCoastline);
+      ImGui::MenuItem("Terrain Grid", nullptr, &state.oahuDiagnostics.showGrid);
+      ImGui::MenuItem("Ridge Lines", nullptr, &state.oahuDiagnostics.showRidges);
+      ImGui::MenuItem("Landmarks", nullptr, &state.oahuDiagnostics.showLandmarks);
+      if (ImGui::MenuItem("Show Inspector Panel")) {
+        state.focusMode = false;
+        state.showInspectorPanel = true;
+      }
+      ImGui::EndMenu();
+    }
+
     if (ImGui::BeginMenu("View")) {
       ImGui::MenuItem("Renderer Diagnostics", nullptr, &state.visualizations.showStatus);
       ImGui::MenuItem("Focus Mode", nullptr, &state.focusMode);
@@ -1204,6 +1322,7 @@ void drawAppUi(AppState& state) {
 
     state.visualizationCanvasOrigin = canvasOrigin;
     state.visualizationCanvasSize = canvasSize;
+    drawOahuCanvasControls(state, canvasOrigin, canvasSize);
     drawVisualizationStatus(state, canvasOrigin);
 
     ImGui::EndChild();
@@ -1486,6 +1605,14 @@ void applyOahuDiagnosticPreset(OahuDiagnosticSettings& diagnostics, const std::s
     diagnostics.showGrid = false;
     diagnostics.showRidges = false;
     diagnostics.showLandmarks = true;
+  } else if (preset == "flyover") {
+    diagnostics.topDown = false;
+    diagnostics.showBackground = true;
+    diagnostics.showFilledTerrain = true;
+    diagnostics.showCoastline = true;
+    diagnostics.showGrid = false;
+    diagnostics.showRidges = true;
+    diagnostics.showLandmarks = false;
   }
 }
 

@@ -232,6 +232,7 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
     ImGui::Text("Land samples: %d", landSamples);
     ImGui::Text("Coast points: %d", kOahuCoastlinePointCount);
     ImGui::Text("Source points: %d", kOahuSourceCoastlinePointCount);
+    ImGui::Text("Smoothing passes: %d", kOahuElevationSmoothingPasses);
     ImGui::Text("Landmarks: %d", kOahuLandmarkCount);
     ImGui::Text("Aspect: %.3f", kOahuMapAspect);
     ImGui::Text("Max elevation: %.0f m", kOahuMaxElevationMeters);

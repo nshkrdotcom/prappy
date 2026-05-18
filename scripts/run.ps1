@@ -13,7 +13,7 @@ param(
     [string]$Renderer = "Auto",
 
     [Parameter()]
-    [ValidateSet("Default", "All", "Coastline", "Mesh", "Landmarks")]
+    [ValidateSet("Default", "All", "Coastline", "Mesh", "Landmarks", "Flyover")]
     [string]$OahuDiagnostic = "Default",
 
     [Parameter()]

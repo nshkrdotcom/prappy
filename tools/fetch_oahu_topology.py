@@ -14,9 +14,10 @@ OUT = ROOT / "src" / "oahu_topology.h"
 DEBUG_DIR = ROOT / "build" / "oahu_debug"
 USER_AGENT = "prappy-native-oahu-data/1.1 (local development)"
 
-GRID_WIDTH = 61
-GRID_HEIGHT = 45
-COASTLINE_POINTS = 512
+GRID_WIDTH = 241
+GRID_HEIGHT = 181
+COASTLINE_POINTS = 4096
+ELEVATION_SMOOTHING_PASSES = 2
 BOUND_PADDING_FRACTION = 0.06
 EARTH_RADIUS_METERS = 6371008.8
 
@@ -217,7 +218,7 @@ def fetch_elevation_meters(lon: float, lat: float) -> float:
 def build_grid(outer, holes, bounds, origin_lon, origin_lat):
     samples = []
     jobs = {}
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=16) as executor:
         for row in range(GRID_HEIGHT):
             for col in range(GRID_WIDTH):
                 x = bounds[0] + (bounds[2] - bounds[0]) * col / (GRID_WIDTH - 1)
@@ -242,8 +243,46 @@ def build_grid(outer, holes, bounds, origin_lon, origin_lat):
         for future in as_completed(jobs):
             jobs[future]["elevation"] = future.result()
             completed += 1
-            if completed % 100 == 0 or completed == total:
+            if completed % 250 == 0 or completed == total:
                 print(f"elevation samples: {completed}/{total}")
+
+    return samples
+
+
+def smooth_elevations(samples):
+    for _ in range(ELEVATION_SMOOTHING_PASSES):
+        source = [sample["elevation"] for sample in samples]
+        for row in range(GRID_HEIGHT):
+            for col in range(GRID_WIDTH):
+                index = row * GRID_WIDTH + col
+                sample = samples[index]
+                if not sample["land"]:
+                    continue
+
+                weighted_total = 0.0
+                weight_sum = 0.0
+                for dy in (-1, 0, 1):
+                    for dx in (-1, 0, 1):
+                        neighbor_row = row + dy
+                        neighbor_col = col + dx
+                        if (
+                            neighbor_row < 0
+                            or neighbor_row >= GRID_HEIGHT
+                            or neighbor_col < 0
+                            or neighbor_col >= GRID_WIDTH
+                        ):
+                            continue
+
+                        neighbor_index = neighbor_row * GRID_WIDTH + neighbor_col
+                        if not samples[neighbor_index]["land"]:
+                            continue
+
+                        weight = 4.0 if dx == 0 and dy == 0 else 2.0 if dx == 0 or dy == 0 else 1.0
+                        weighted_total += source[neighbor_index] * weight
+                        weight_sum += weight
+
+                if weight_sum > 0.0:
+                    sample["elevation"] = weighted_total / weight_sum
 
     return samples
 
@@ -367,6 +406,7 @@ def write_debug_artifacts(feature, outer, bounds, coastline, samples, landmarks,
         "resampledPointCount": len(coastline),
         "gridWidth": GRID_WIDTH,
         "gridHeight": GRID_HEIGHT,
+        "elevationSmoothingPasses": ELEVATION_SMOOTHING_PASSES,
         "landSamples": sum(1 for sample in samples if sample["land"]),
         "landmarks": landmarks,
     }
@@ -400,6 +440,7 @@ def write_header(feature, lonlat_bounds, metric_bounds, coastline, samples, land
         f"// Source feature: isle=Oahu, sqmi={sqmi:.3f}.",
         f"// Source coastline points: {source_point_count}. Interior rings: {hole_count}.",
         f"// Grid land samples: {land_count}.",
+        f"// Elevation smoothing passes: {ELEVATION_SMOOTHING_PASSES}.",
         "",
         "struct OahuTopologyPoint {",
         "  float x;",
@@ -428,6 +469,7 @@ def write_header(feature, lonlat_bounds, metric_bounds, coastline, samples, land
         f"constexpr int kOahuLandmarkCount = {len(landmarks)};",
         f"constexpr int kOahuSourceCoastlinePointCount = {source_point_count};",
         f"constexpr int kOahuInteriorRingCount = {hole_count};",
+        f"constexpr int kOahuElevationSmoothingPasses = {ELEVATION_SMOOTHING_PASSES};",
         f"constexpr float kOahuMinLongitude = {lonlat_bounds[0]:.7f}f;",
         f"constexpr float kOahuMinLatitude = {lonlat_bounds[1]:.7f}f;",
         f"constexpr float kOahuMaxLongitude = {lonlat_bounds[2]:.7f}f;",
@@ -493,7 +535,7 @@ def main():
     bounds = projected_bounds(outer)
     coastline = sample_closed_ring(outer, COASTLINE_POINTS, bounds)
     landmarks = build_landmarks(bounds, origin_lon, origin_lat, outer, holes)
-    samples = build_grid(outer, holes, bounds, origin_lon, origin_lat)
+    samples = smooth_elevations(build_grid(outer, holes, bounds, origin_lon, origin_lat))
     write_debug_artifacts(feature, outer, bounds, coastline, samples, landmarks, origin_lon, origin_lat)
     write_header(
         feature,

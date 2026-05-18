@@ -7,7 +7,13 @@ src\oahu_topology.h
 ```
 
 That header stores coastline points and sampled elevation data in a static C++
-data structure so the app can run without fetching data at startup.
+data structure so the app can run without fetching data at startup. The current
+checked-in data uses:
+
+- 4,096 resampled coastline points.
+- A 241 x 181 terrain grid.
+- 15,567 land elevation samples.
+- Two deterministic smoothing passes over land elevations.
 
 ## Refresh The Data
 
@@ -27,6 +33,8 @@ The coastline layer is exposed by the State GIS ArcGIS service as GeoJSON and
 is derived from USGS Digital Line Graphs. The generator keeps the source ring in
 projected meters before normalizing it, so the rendered island preserves the
 east-west/north-south aspect instead of stretching raw longitude and latitude.
+The elevation pass can take several minutes because it samples every generated
+land grid point before writing `src\oahu_topology.h`.
 
 The generator also writes debug artifacts under:
 
@@ -50,7 +58,7 @@ python tools\validate_oahu_topology.py --require-debug-artifacts
 ```
 
 That check verifies the source, sample count, Oahu bounds, aspect ratio, source
-area, grid density, and sampled elevation range.
+area, grid density, elevation smoothing, and sampled elevation range.
 
 ## When To Regenerate
 
@@ -79,6 +87,16 @@ pwsh scripts\run.ps1 -Visualization Oahu -OahuDiagnostic Coastline -Focus -NoOve
 pwsh scripts\run.ps1 -Visualization Oahu -OahuDiagnostic Mesh -Focus -NoOverlay
 pwsh scripts\run.ps1 -Visualization Oahu -OahuDiagnostic All -Focus -NoOverlay
 ```
+
+For interactive checking, run without `-NoOverlay`. Focus mode then shows the
+Oahu canvas controls in the top-right corner:
+
+```powershell
+pwsh scripts\run.ps1 -Visualization Oahu -Focus
+```
+
+The same controls are also available from the normal command bar and the `Oahu`
+menu when the app is not in focus mode.
 
 Interpretation:
 

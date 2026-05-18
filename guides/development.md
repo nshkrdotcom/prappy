@@ -87,6 +87,9 @@ pwsh scripts\run.ps1 -Visualization Oahu -OahuDiagnostic All -Focus -NoOverlay
 ```
 
 The generator writes external inspection files under `build\oahu_debug\`.
+Use `pwsh scripts\run.ps1 -Visualization Oahu -Focus` when you want the
+interactive Oahu controls visible inside the canvas. `-NoOverlay` is for clean
+captures and hides that focus-mode control strip.
 
 ## Clean Build
 

@@ -80,6 +80,13 @@ distortion:
 pwsh scripts\run.ps1 -Visualization Oahu -OahuDiagnostic All -Focus -NoOverlay
 ```
 
+For interactive Oahu work, run without `-NoOverlay` so the focus-mode canvas
+shows the `Top Down`, `Coast`, `Mesh`, `All`, and `Flyover` controls:
+
+```powershell
+pwsh scripts\run.ps1 -Visualization Oahu -Focus
+```
+
 ## Guides
 
 - [Setup](guides/setup.md)
@@ -100,3 +107,7 @@ pwsh scripts\run.ps1 -Visualization Oahu -OahuDiagnostic All -Focus -NoOverlay
 The app has a reusable visualization module contract, shared camera controls for
 3D modules, renderer diagnostics, renderer override support, and a bgfx-backed
 screenshot export path.
+
+The Oahu visualization is generated from committed topology data: 4,096
+coastline samples, a 241 x 181 terrain grid, and two smoothing passes over
+USGS elevation samples.

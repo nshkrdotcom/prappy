@@ -33,7 +33,7 @@ def main() -> int:
         ),
         (
             "coastline samples",
-            read_const(text, "kOahuCoastlinePointCount", "int") >= 512,
+            read_const(text, "kOahuCoastlinePointCount", "int") >= 4096,
         ),
         (
             "source detail",
@@ -41,7 +41,11 @@ def main() -> int:
         ),
         (
             "grid density",
-            read_const(text, "kOahuGridWidth", "int") * read_const(text, "kOahuGridHeight", "int") >= 2500,
+            read_const(text, "kOahuGridWidth", "int") * read_const(text, "kOahuGridHeight", "int") >= 43000,
+        ),
+        (
+            "elevation smoothing",
+            read_const(text, "kOahuElevationSmoothingPasses", "int") >= 2,
         ),
         (
             "longitude bounds",
