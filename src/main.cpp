@@ -8,6 +8,8 @@
 
 #include <bx/math.h>
 
+#include "oahu_topology.h"
+
 #include <imgui.h>
 
 #include <algorithm>
@@ -132,7 +134,9 @@ void submitColorVertices(
   const VisualizationRenderer& renderer,
   bgfx::ViewId viewId,
   const std::vector<ColorVertex>& vertices,
-  ColorPrimitive primitive
+  ColorPrimitive primitive,
+  bool depthTest = false,
+  bool depthWrite = false
 ) {
   if (vertices.empty() || !bgfx::isValid(renderer.colorProgram.handle)) {
     return;
@@ -168,6 +172,14 @@ void submitColorVertices(
     state |= BGFX_STATE_PT_LINES;
   }
 
+  if (depthTest) {
+    state |= BGFX_STATE_DEPTH_TEST_LESS;
+  }
+
+  if (depthWrite) {
+    state |= BGFX_STATE_WRITE_Z;
+  }
+
   bgfx::setVertexBuffer(0, &vertexBuffer, 0, vertexCount);
   bgfx::setState(state);
   bgfx::submit(viewId, renderer.colorProgram.handle);
@@ -175,7 +187,8 @@ void submitColorVertices(
 
 enum class VisualizationId {
   RandomLines2D,
-  Starfield3D
+  Starfield3D,
+  OahuFlyover
 };
 
 const char* visualizationName(VisualizationId id) {
@@ -184,6 +197,8 @@ const char* visualizationName(VisualizationId id) {
       return "Random Lines 2D";
     case VisualizationId::Starfield3D:
       return "Infinite Starfield";
+    case VisualizationId::OahuFlyover:
+      return "Oahu Flyover";
   }
 
   return "Unknown";
@@ -426,12 +441,141 @@ struct StarfieldVisualization {
   }
 };
 
+struct OahuFlyoverVisualization {
+  ImVec2 lastSize{};
+
+  const OahuTerrainSample& sampleAt(int col, int row) const {
+    return kOahuTerrain[static_cast<std::size_t>(row * kOahuGridWidth + col)];
+  }
+
+  bx::Vec3 terrainPosition(const OahuTerrainSample& sample) const {
+    const float x = (sample.x - 0.5f) * 12.0f;
+    const float z = (0.5f - sample.y) * 8.2f;
+    const float y = std::max(sample.elevationMeters, 0.0f) / kOahuMaxElevationMeters * 1.85f;
+    return {x, y, z};
+  }
+
+  std::uint32_t terrainColor(float elevationMeters) const {
+    const float t = std::clamp(elevationMeters / kOahuMaxElevationMeters, 0.0f, 1.0f);
+    if (t < 0.08f) {
+      return rgbaFloatToAbgr(0.72f, 0.67f, 0.45f, 1.0f);
+    }
+    if (t < 0.38f) {
+      const float k = t / 0.38f;
+      return rgbaFloatToAbgr(0.16f + k * 0.17f, 0.48f + k * 0.25f, 0.21f + k * 0.08f, 1.0f);
+    }
+    if (t < 0.72f) {
+      const float k = (t - 0.38f) / 0.34f;
+      return rgbaFloatToAbgr(0.33f + k * 0.21f, 0.54f + k * 0.10f, 0.29f + k * 0.05f, 1.0f);
+    }
+
+    const float k = (t - 0.72f) / 0.28f;
+    return rgbaFloatToAbgr(0.54f + k * 0.22f, 0.51f + k * 0.18f, 0.42f + k * 0.20f, 1.0f);
+  }
+
+  void pushTerrainTriangle(
+    std::vector<ColorVertex>& vertices,
+    const OahuTerrainSample& a,
+    const OahuTerrainSample& b,
+    const OahuTerrainSample& c
+  ) const {
+    const bx::Vec3 pa = terrainPosition(a);
+    const bx::Vec3 pb = terrainPosition(b);
+    const bx::Vec3 pc = terrainPosition(c);
+
+    vertices.push_back(ColorVertex{pa.x, pa.y, pa.z, terrainColor(a.elevationMeters)});
+    vertices.push_back(ColorVertex{pb.x, pb.y, pb.z, terrainColor(b.elevationMeters)});
+    vertices.push_back(ColorVertex{pc.x, pc.y, pc.z, terrainColor(c.elevationMeters)});
+  }
+
+  void pushOcean(std::vector<ColorVertex>& vertices) const {
+    const std::uint32_t nearOcean = rgbaToAbgr(26, 128, 176, 255);
+    const std::uint32_t farOcean = rgbaToAbgr(96, 181, 221, 255);
+    const float y = -0.035f;
+    vertices.push_back(ColorVertex{-36.0f, y, -42.0f, farOcean});
+    vertices.push_back(ColorVertex{36.0f, y, -42.0f, farOcean});
+    vertices.push_back(ColorVertex{36.0f, y, 24.0f, nearOcean});
+    vertices.push_back(ColorVertex{-36.0f, y, -42.0f, farOcean});
+    vertices.push_back(ColorVertex{36.0f, y, 24.0f, nearOcean});
+    vertices.push_back(ColorVertex{-36.0f, y, 24.0f, nearOcean});
+  }
+
+  void pushHorizon(std::vector<ColorVertex>& vertices) const {
+    const std::uint32_t skyTop = rgbaToAbgr(88, 176, 239, 255);
+    const std::uint32_t horizon = rgbaToAbgr(204, 235, 246, 255);
+    const float z = -42.0f;
+    vertices.push_back(ColorVertex{-42.0f, 0.0f, z, horizon});
+    vertices.push_back(ColorVertex{42.0f, 0.0f, z, horizon});
+    vertices.push_back(ColorVertex{42.0f, 20.0f, z, skyTop});
+    vertices.push_back(ColorVertex{-42.0f, 0.0f, z, horizon});
+    vertices.push_back(ColorVertex{42.0f, 20.0f, z, skyTop});
+    vertices.push_back(ColorVertex{-42.0f, 20.0f, z, skyTop});
+  }
+
+  void draw(VisualizationContext& context) {
+    lastSize = context.size;
+
+    std::vector<ColorVertex> background;
+    background.reserve(12);
+    pushHorizon(background);
+    pushOcean(background);
+    submitColorVertices(*context.renderer, context.viewId, background, ColorPrimitive::Triangles, false, false);
+
+    std::vector<ColorVertex> terrain;
+    terrain.reserve((kOahuGridWidth - 1) * (kOahuGridHeight - 1) * 6);
+    for (int row = 0; row < kOahuGridHeight - 1; ++row) {
+      for (int col = 0; col < kOahuGridWidth - 1; ++col) {
+        const OahuTerrainSample& a = sampleAt(col, row);
+        const OahuTerrainSample& b = sampleAt(col + 1, row);
+        const OahuTerrainSample& c = sampleAt(col, row + 1);
+        const OahuTerrainSample& d = sampleAt(col + 1, row + 1);
+
+        if (a.land && b.land && c.land) {
+          pushTerrainTriangle(terrain, a, b, c);
+        }
+        if (b.land && d.land && c.land) {
+          pushTerrainTriangle(terrain, b, d, c);
+        }
+      }
+    }
+    submitColorVertices(*context.renderer, context.viewId, terrain, ColorPrimitive::Triangles, true, true);
+
+    std::vector<ColorVertex> lines;
+    lines.reserve(kOahuCoastlinePointCount * 2 + (kOahuGridWidth + kOahuGridHeight) * 2);
+    const std::uint32_t coastColor = rgbaToAbgr(247, 228, 159, 255);
+    for (int i = 0; i < kOahuCoastlinePointCount; ++i) {
+      const OahuTopologyPoint& a = kOahuCoastline[static_cast<std::size_t>(i)];
+      const OahuTopologyPoint& b = kOahuCoastline[static_cast<std::size_t>((i + 1) % kOahuCoastlinePointCount)];
+      const OahuTerrainSample sa{a.x, a.y, 18.0f, 1};
+      const OahuTerrainSample sb{b.x, b.y, 18.0f, 1};
+      const bx::Vec3 pa = terrainPosition(sa);
+      const bx::Vec3 pb = terrainPosition(sb);
+      pushLine(lines, pa.x, pa.y + 0.015f, pa.z, pb.x, pb.y + 0.015f, pb.z, coastColor);
+    }
+
+    const std::uint32_t ridgeColor = rgbaToAbgr(255, 255, 255, 48);
+    for (int row = 2; row < kOahuGridHeight - 2; row += 3) {
+      for (int col = 1; col < kOahuGridWidth - 1; ++col) {
+        const OahuTerrainSample& a = sampleAt(col - 1, row);
+        const OahuTerrainSample& b = sampleAt(col, row);
+        if (a.land && b.land && a.elevationMeters > 140.0f && b.elevationMeters > 140.0f) {
+          const bx::Vec3 pa = terrainPosition(a);
+          const bx::Vec3 pb = terrainPosition(b);
+          pushLine(lines, pa.x, pa.y + 0.025f, pa.z, pb.x, pb.y + 0.025f, pb.z, ridgeColor);
+        }
+      }
+    }
+    submitColorVertices(*context.renderer, context.viewId, lines, ColorPrimitive::Lines, true, false);
+  }
+};
+
 struct VisualizationHost {
   VisualizationId active = VisualizationId::RandomLines2D;
   bool showStatus = true;
   bool resetRequested = true;
   RandomLinesVisualization randomLines;
   StarfieldVisualization starfield;
+  OahuFlyoverVisualization oahuFlyover;
 
   void setActive(VisualizationId next) {
     if (active != next) {
@@ -448,6 +592,9 @@ struct VisualizationHost {
       case VisualizationId::Starfield3D:
         starfield.reset(size);
         break;
+      case VisualizationId::OahuFlyover:
+        oahuFlyover.lastSize = {};
+        break;
     }
     resetRequested = false;
   }
@@ -463,6 +610,9 @@ struct VisualizationHost {
         break;
       case VisualizationId::Starfield3D:
         starfield.draw(context);
+        break;
+      case VisualizationId::OahuFlyover:
+        oahuFlyover.draw(context);
         break;
     }
   }
@@ -920,6 +1070,14 @@ void drawVisualizationStatus(AppState& state, const ImVec2& canvasOrigin) {
       caps ? caps->limits.maxTransientVbSize : 0u
     );
   }
+  if (state.visualizations.active == VisualizationId::OahuFlyover) {
+    ImGui::Text(
+      "Oahu grid: %d x %d, max %.0f m",
+      kOahuGridWidth,
+      kOahuGridHeight,
+      kOahuMaxElevationMeters
+    );
+  }
   ImGui::Text("Canvas: %.0f x %.0f", state.visualizationCanvasSize.x, state.visualizationCanvasSize.y);
 
   if (ImGui::Button("Reset")) {
@@ -985,6 +1143,14 @@ void drawAppUi(AppState& state) {
         state.visualizations.setActive(VisualizationId::Starfield3D);
       }
 
+      if (ImGui::MenuItem(
+        "Oahu Flyover",
+        nullptr,
+        state.visualizations.active == VisualizationId::OahuFlyover
+      )) {
+        state.visualizations.setActive(VisualizationId::OahuFlyover);
+      }
+
       ImGui::EndMenu();
     }
 
@@ -1019,6 +1185,8 @@ std::uint32_t visualizationClearColor(VisualizationId id) {
       return 0x07090fff;
     case VisualizationId::Starfield3D:
       return 0x02040aff;
+    case VisualizationId::OahuFlyover:
+      return 0x78c7efff;
   }
 
   return 0x101018ff;
@@ -1065,7 +1233,22 @@ void renderVisualization(AppState& state) {
   float view[16];
   float projection[16];
 
-  if (state.visualizations.active == VisualizationId::Starfield3D) {
+  if (state.visualizations.active == VisualizationId::OahuFlyover) {
+    const float cycle = std::fmod(state.elapsedSeconds * 0.025f, 1.0f);
+    const float route = cycle * 2.0f - 1.0f;
+    const float sway = std::sin(state.elapsedSeconds * 0.35f) * 0.55f;
+    const bx::Vec3 eye = {sway, 2.65f, 7.4f - route * 8.5f};
+    const bx::Vec3 at = {sway * 0.25f, 0.42f, 4.1f - route * 8.5f};
+    bx::mtxLookAt(view, eye, at);
+    bx::mtxProj(
+      projection,
+      62.0f,
+      static_cast<float>(width) / static_cast<float>(height),
+      0.05f,
+      80.0f,
+      caps->homogeneousDepth
+    );
+  } else if (state.visualizations.active == VisualizationId::Starfield3D) {
     const bx::Vec3 eye = {0.0f, 0.0f, 0.0f};
     const bx::Vec3 at = {0.0f, 0.0f, -1.0f};
     bx::mtxLookAt(view, eye, at);
@@ -1123,6 +1306,9 @@ VisualizationId visualizationFromArgs(int argc, char** argv) {
     }
     if (arg == "--visualization=random-lines" || arg == "--random-lines") {
       return VisualizationId::RandomLines2D;
+    }
+    if (arg == "--visualization=oahu" || arg == "--oahu") {
+      return VisualizationId::OahuFlyover;
     }
   }
 

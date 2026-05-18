@@ -71,6 +71,7 @@ Launch a specific visualization from the script:
 ```powershell
 pwsh scripts\run.ps1 -Visualization RandomLines
 pwsh scripts\run.ps1 -Visualization Starfield
+pwsh scripts\run.ps1 -Visualization Oahu
 ```
 
 The smoke test writes its log under the active build directory, for example:
@@ -142,6 +143,19 @@ After a successful dependency sync, the exact commits are written to
 `native-deps.lock.json`. Commit that lock file when dependency versions change.
 
 `external\` is intentionally ignored by git.
+
+## Refresh Oahu Topology Data
+
+The Oahu flyover uses generated topology data in `src\oahu_topology.h`.
+
+To refresh the coastline and elevation samples:
+
+```powershell
+python tools\fetch_oahu_topology.py
+```
+
+The generator pulls the coastline from OpenStreetMap through Nominatim and
+land elevations from the USGS National Map Elevation Point Query Service.
 
 ## Regenerate From Dotfiles
 

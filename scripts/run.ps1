@@ -5,7 +5,7 @@ param(
     [string]$Config = "Release",
 
     [Parameter()]
-    [ValidateSet("RandomLines", "Starfield")]
+    [ValidateSet("RandomLines", "Starfield", "Oahu")]
     [string]$Visualization,
 
     [Parameter()]
