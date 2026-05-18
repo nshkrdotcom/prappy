@@ -15,11 +15,19 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <ctime>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
+#include <iomanip>
+#include <memory>
+#include <mutex>
 #include <random>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -191,20 +199,77 @@ enum class VisualizationId {
   OahuFlyover
 };
 
-const char* visualizationName(VisualizationId id) {
-  switch (id) {
-    case VisualizationId::RandomLines2D:
-      return "Random Lines 2D";
-    case VisualizationId::Starfield3D:
-      return "Infinite Starfield";
-    case VisualizationId::OahuFlyover:
-      return "Oahu Flyover";
+struct VisualizationDescriptor {
+  VisualizationId id;
+  const char* name;
+  const char* shortName;
+  const char* spaceLabel;
+  const char* primitiveLabel;
+  bool usesCamera;
+  bool hasAutoCamera;
+};
+
+const VisualizationDescriptor& visualizationDescriptor(VisualizationId id) {
+  static const VisualizationDescriptor descriptors[] = {
+    {
+      VisualizationId::RandomLines2D,
+      "Random Lines 2D",
+      "Lines",
+      "2D screen-space line pass",
+      "line list",
+      false,
+      false
+    },
+    {
+      VisualizationId::Starfield3D,
+      "Infinite Starfield",
+      "Starfield",
+      "3D line pass",
+      "depth lines",
+      true,
+      false
+    },
+    {
+      VisualizationId::OahuFlyover,
+      "Oahu Flyover",
+      "Oahu",
+      "3D terrain pass",
+      "triangles + coastline lines",
+      true,
+      true
+    }
+  };
+
+  for (const VisualizationDescriptor& descriptor : descriptors) {
+    if (descriptor.id == id) {
+      return descriptor;
+    }
   }
 
-  return "Unknown";
+  return descriptors[0];
 }
 
-struct RandomLinesVisualization {
+const char* visualizationName(VisualizationId id) {
+  return visualizationDescriptor(id).name;
+}
+
+const char* visualizationShortName(VisualizationId id) {
+  return visualizationDescriptor(id).shortName;
+}
+
+const char* visualizationSpaceLabel(VisualizationId id) {
+  return visualizationDescriptor(id).spaceLabel;
+}
+
+struct IVisualizationModule {
+  virtual ~IVisualizationModule() = default;
+  virtual const VisualizationDescriptor& descriptor() const = 0;
+  virtual void reset(const ImVec2& size) = 0;
+  virtual void draw(VisualizationContext& context) = 0;
+  virtual void drawInspector() const = 0;
+};
+
+struct RandomLinesVisualization final : IVisualizationModule {
   struct Endpoint {
     ImVec2 position{};
     ImVec2 velocity{};
@@ -221,6 +286,10 @@ struct RandomLinesVisualization {
   std::vector<Segment> segments;
   ImVec2 lastSize{};
 
+  const VisualizationDescriptor& descriptor() const override {
+    return visualizationDescriptor(VisualizationId::RandomLines2D);
+  }
+
   Endpoint makeEndpoint(const ImVec2& size) {
     const float angle = randomFloat(rng, 0.0f, kPi * 2.0f);
     const float speed = randomFloat(rng, 70.0f, 260.0f);
@@ -234,7 +303,7 @@ struct RandomLinesVisualization {
     return endpoint;
   }
 
-  void reset(const ImVec2& size) {
+  void reset(const ImVec2& size) override {
     segments.clear();
     segments.reserve(72);
     lastSize = size;
@@ -282,7 +351,7 @@ struct RandomLinesVisualization {
     }
   }
 
-  void draw(VisualizationContext& context) {
+  void draw(VisualizationContext& context) override {
     if (
       segments.empty() ||
       distanceSquared(context.size, lastSize) > 48.0f * 48.0f
@@ -337,9 +406,15 @@ struct RandomLinesVisualization {
 
     submitColorVertices(*context.renderer, context.viewId, vertices, ColorPrimitive::Lines);
   }
+
+  void drawInspector() const override {
+    ImGui::Text("Segments: %d", static_cast<int>(segments.size()));
+    ImGui::TextUnformatted("Primitive: line list");
+    ImGui::TextUnformatted("Coordinates: screen pixels");
+  }
 };
 
-struct StarfieldVisualization {
+struct StarfieldVisualization final : IVisualizationModule {
   struct Star {
     float x = 0.0f;
     float y = 0.0f;
@@ -353,6 +428,10 @@ struct StarfieldVisualization {
   std::vector<Star> stars;
   ImVec2 lastSize{};
 
+  const VisualizationDescriptor& descriptor() const override {
+    return visualizationDescriptor(VisualizationId::Starfield3D);
+  }
+
   void resetStar(Star& star, const ImVec2& size, bool spreadDepth) {
     const float aspect = std::max(size.x / std::max(size.y, 1.0f), 1.0f);
 
@@ -364,7 +443,7 @@ struct StarfieldVisualization {
     star.tint = randomFloat(rng, 0.0f, 1.0f);
   }
 
-  void reset(const ImVec2& size) {
+  void reset(const ImVec2& size) override {
     stars.clear();
     stars.resize(900);
     lastSize = size;
@@ -374,7 +453,7 @@ struct StarfieldVisualization {
     }
   }
 
-  void draw(VisualizationContext& context) {
+  void draw(VisualizationContext& context) override {
     if (
       stars.empty() ||
       distanceSquared(context.size, lastSize) > 64.0f * 64.0f
@@ -439,10 +518,20 @@ struct StarfieldVisualization {
 
     submitColorVertices(*context.renderer, context.viewId, vertices, ColorPrimitive::Lines);
   }
+
+  void drawInspector() const override {
+    ImGui::Text("Stars: %d", static_cast<int>(stars.size()));
+    ImGui::TextUnformatted("Primitive: depth lines");
+    ImGui::TextUnformatted("Camera: perspective");
+  }
 };
 
-struct OahuFlyoverVisualization {
+struct OahuFlyoverVisualization final : IVisualizationModule {
   ImVec2 lastSize{};
+
+  const VisualizationDescriptor& descriptor() const override {
+    return visualizationDescriptor(VisualizationId::OahuFlyover);
+  }
 
   const OahuTerrainSample& sampleAt(int col, int row) const {
     return kOahuTerrain[static_cast<std::size_t>(row * kOahuGridWidth + col)];
@@ -512,7 +601,11 @@ struct OahuFlyoverVisualization {
     vertices.push_back(ColorVertex{-42.0f, 20.0f, z, skyTop});
   }
 
-  void draw(VisualizationContext& context) {
+  void reset(const ImVec2& size) override {
+    lastSize = size;
+  }
+
+  void draw(VisualizationContext& context) override {
     lastSize = context.size;
 
     std::vector<ColorVertex> background;
@@ -567,35 +660,156 @@ struct OahuFlyoverVisualization {
     }
     submitColorVertices(*context.renderer, context.viewId, lines, ColorPrimitive::Lines, true, false);
   }
+
+  void drawInspector() const override {
+    int landSamples = 0;
+    for (const OahuTerrainSample& sample : kOahuTerrain) {
+      if (sample.land) {
+        ++landSamples;
+      }
+    }
+
+    ImGui::Text("Grid: %d", kOahuGridWidth * kOahuGridHeight);
+    ImGui::Text("Land samples: %d", landSamples);
+    ImGui::Text("Coast points: %d", kOahuCoastlinePointCount);
+    ImGui::Text("Max elevation: %.0f m", kOahuMaxElevationMeters);
+  }
+};
+
+struct CameraRig {
+  bool manual = false;
+  float yaw = 0.0f;
+  float pitch = 0.0f;
+  float distance = 10.0f;
+  float fovDegrees = 70.0f;
+  float routeSpeed = 1.0f;
+  bx::Vec3 target = {0.0f, 0.0f, 0.0f};
+
+  void resetFor(VisualizationId id) {
+    manual = false;
+    routeSpeed = 1.0f;
+
+    switch (id) {
+      case VisualizationId::RandomLines2D:
+        yaw = 0.0f;
+        pitch = 0.0f;
+        distance = 10.0f;
+        fovDegrees = 70.0f;
+        target = {0.0f, 0.0f, 0.0f};
+        break;
+      case VisualizationId::Starfield3D:
+        yaw = 0.0f;
+        pitch = 0.0f;
+        distance = 1.0f;
+        fovDegrees = 70.0f;
+        target = {0.0f, 0.0f, -1.0f};
+        break;
+      case VisualizationId::OahuFlyover:
+        yaw = 0.0f;
+        pitch = 0.25f;
+        distance = 10.0f;
+        fovDegrees = 62.0f;
+        target = {0.0f, 0.55f, -0.6f};
+        break;
+    }
+  }
+
+  bx::Vec3 lookDirection() const {
+    const float cp = std::cos(pitch);
+    return {
+      std::sin(yaw) * cp,
+      std::sin(pitch),
+      -std::cos(yaw) * cp
+    };
+  }
+
+  bx::Vec3 orbitEye() const {
+    const float cp = std::cos(pitch);
+    return {
+      target.x + std::sin(yaw) * cp * distance,
+      target.y + std::sin(pitch) * distance,
+      target.z + std::cos(yaw) * cp * distance
+    };
+  }
+
+  void orbit(const ImVec2& delta) {
+    yaw -= delta.x * 0.008f;
+    pitch = std::clamp(pitch - delta.y * 0.006f, -1.15f, 1.25f);
+    manual = true;
+  }
+
+  void pan(const ImVec2& delta) {
+    const float scale = std::max(distance, 1.0f) * 0.0018f;
+    const bx::Vec3 right = {std::cos(yaw), 0.0f, std::sin(yaw)};
+    target.x -= right.x * delta.x * scale;
+    target.z -= right.z * delta.x * scale;
+    target.y += delta.y * scale;
+    target.y = std::clamp(target.y, -1.0f, 4.0f);
+    manual = true;
+  }
+
+  void zoom(VisualizationId id, float wheel) {
+    if (id == VisualizationId::Starfield3D) {
+      fovDegrees = std::clamp(fovDegrees - wheel * 4.0f, 38.0f, 96.0f);
+    } else {
+      distance = std::clamp(distance * std::pow(0.86f, wheel), 2.2f, 34.0f);
+    }
+    manual = true;
+  }
 };
 
 struct VisualizationHost {
   VisualizationId active = VisualizationId::RandomLines2D;
   bool showStatus = true;
   bool resetRequested = true;
-  RandomLinesVisualization randomLines;
-  StarfieldVisualization starfield;
-  OahuFlyoverVisualization oahuFlyover;
+  CameraRig camera;
+  std::vector<std::unique_ptr<IVisualizationModule>> modules;
+
+  VisualizationHost() {
+    camera.resetFor(active);
+    modules.push_back(std::make_unique<RandomLinesVisualization>());
+    modules.push_back(std::make_unique<StarfieldVisualization>());
+    modules.push_back(std::make_unique<OahuFlyoverVisualization>());
+  }
+
+  IVisualizationModule& module(VisualizationId id) {
+    for (const std::unique_ptr<IVisualizationModule>& candidate : modules) {
+      if (candidate->descriptor().id == id) {
+        return *candidate;
+      }
+    }
+
+    return *modules.front();
+  }
+
+  const IVisualizationModule& module(VisualizationId id) const {
+    for (const std::unique_ptr<IVisualizationModule>& candidate : modules) {
+      if (candidate->descriptor().id == id) {
+        return *candidate;
+      }
+    }
+
+    return *modules.front();
+  }
+
+  IVisualizationModule& activeModule() {
+    return module(active);
+  }
+
+  const IVisualizationModule& activeModule() const {
+    return module(active);
+  }
 
   void setActive(VisualizationId next) {
     if (active != next) {
       active = next;
       resetRequested = true;
+      camera.resetFor(active);
     }
   }
 
   void resetActive(const ImVec2& size) {
-    switch (active) {
-      case VisualizationId::RandomLines2D:
-        randomLines.reset(size);
-        break;
-      case VisualizationId::Starfield3D:
-        starfield.reset(size);
-        break;
-      case VisualizationId::OahuFlyover:
-        oahuFlyover.lastSize = {};
-        break;
-    }
+    activeModule().reset(size);
     resetRequested = false;
   }
 
@@ -604,18 +818,238 @@ struct VisualizationHost {
       resetActive(context.size);
     }
 
-    switch (active) {
-      case VisualizationId::RandomLines2D:
-        randomLines.draw(context);
-        break;
-      case VisualizationId::Starfield3D:
-        starfield.draw(context);
-        break;
-      case VisualizationId::OahuFlyover:
-        oahuFlyover.draw(context);
-        break;
+    activeModule().draw(context);
+  }
+};
+
+#pragma pack(push, 1)
+struct BmpInfoHeader {
+  std::uint32_t size = 40;
+  std::int32_t width = 0;
+  std::int32_t height = 0;
+  std::uint16_t planes = 1;
+  std::uint16_t bitCount = 32;
+  std::uint32_t compression = 0;
+  std::uint32_t imageSize = 0;
+  std::int32_t xPixelsPerMeter = 0;
+  std::int32_t yPixelsPerMeter = 0;
+  std::uint32_t colorsUsed = 0;
+  std::uint32_t importantColors = 0;
+};
+
+struct BmpFileHeader {
+  std::uint16_t type = 0x4d42;
+  std::uint32_t size = 0;
+  std::uint16_t reserved1 = 0;
+  std::uint16_t reserved2 = 0;
+  std::uint32_t offset = 0;
+};
+#pragma pack(pop)
+
+struct ScreenshotCapture {
+  std::filesystem::path path;
+  int x = 0;
+  int y = 0;
+  int width = 0;
+  int height = 0;
+  bool pending = false;
+};
+
+class PrappyBgfxCallback final : public bgfx::CallbackI {
+public:
+  void queueScreenshot(const std::filesystem::path& path, const ImVec2& origin, const ImVec2& size) {
+    std::lock_guard<std::mutex> lock(mutex);
+    capture.path = path;
+    capture.x = std::max(static_cast<int>(std::round(origin.x)), 0);
+    capture.y = std::max(static_cast<int>(std::round(origin.y)), 0);
+    capture.width = std::max(static_cast<int>(std::round(size.x)), 1);
+    capture.height = std::max(static_cast<int>(std::round(size.y)), 1);
+    capture.pending = true;
+    hasCompletedMessage = false;
+    completedMessage.clear();
+  }
+
+  bool consumeScreenshotStatus(std::string& message) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (!hasCompletedMessage) {
+      return false;
+    }
+
+    message = completedMessage;
+    hasCompletedMessage = false;
+    completedMessage.clear();
+    return true;
+  }
+
+  void fatal(
+    const char* filePath,
+    std::uint16_t line,
+    bgfx::Fatal::Enum code,
+    const char* message
+  ) override {
+    std::fprintf(stderr, "bgfx fatal %s:%u: %s\n", filePath, line, message);
+    if (code != bgfx::Fatal::DebugCheck) {
+      std::abort();
     }
   }
+
+  void traceVargs(
+    const char* filePath,
+    std::uint16_t line,
+    const char* format,
+    va_list args
+  ) override {
+    (void)filePath;
+    (void)line;
+    (void)format;
+    (void)args;
+  }
+
+  void profilerBegin(
+    const char*,
+    std::uint32_t,
+    const char*,
+    std::uint16_t
+  ) override {}
+
+  void profilerBeginLiteral(
+    const char*,
+    std::uint32_t,
+    const char*,
+    std::uint16_t
+  ) override {}
+
+  void profilerEnd() override {}
+  std::uint32_t cacheReadSize(std::uint64_t) override { return 0; }
+  bool cacheRead(std::uint64_t, void*, std::uint32_t) override { return false; }
+  void cacheWrite(std::uint64_t, const void*, std::uint32_t) override {}
+
+  void screenShot(
+    const char* filePath,
+    std::uint32_t width,
+    std::uint32_t height,
+    std::uint32_t pitch,
+    bgfx::TextureFormat::Enum format,
+    const void* data,
+    std::uint32_t,
+    bool yflip
+  ) override {
+    ScreenshotCapture request;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      request = capture;
+      capture.pending = false;
+    }
+
+    if (request.path.empty() && filePath) {
+      request.path = filePath;
+    }
+    if (request.width <= 0 || request.height <= 0) {
+      request.x = 0;
+      request.y = 0;
+      request.width = static_cast<int>(width);
+      request.height = static_cast<int>(height);
+    }
+
+    std::string error;
+    const bool ok = writeBmp(request, width, height, pitch, format, data, yflip, error);
+
+    std::lock_guard<std::mutex> lock(mutex);
+    completedMessage = ok
+      ? std::string("Saved ") + request.path.string()
+      : error;
+    hasCompletedMessage = true;
+  }
+
+  void captureBegin(
+    std::uint32_t,
+    std::uint32_t,
+    std::uint32_t,
+    bgfx::TextureFormat::Enum,
+    bool
+  ) override {}
+
+  void captureEnd() override {}
+  void captureFrame(const void*, std::uint32_t) override {}
+
+private:
+  bool writeBmp(
+    const ScreenshotCapture& request,
+    std::uint32_t sourceWidth,
+    std::uint32_t sourceHeight,
+    std::uint32_t pitch,
+    bgfx::TextureFormat::Enum format,
+    const void* data,
+    bool yflip,
+    std::string& error
+  ) const {
+    if (data == nullptr || sourceWidth == 0 || sourceHeight == 0) {
+      error = "capture failed: empty framebuffer";
+      return false;
+    }
+
+    if (format != bgfx::TextureFormat::BGRA8 && format != bgfx::TextureFormat::RGBA8) {
+      error = "capture failed: unsupported framebuffer format";
+      return false;
+    }
+
+    const int frameWidth = static_cast<int>(sourceWidth);
+    const int frameHeight = static_cast<int>(sourceHeight);
+    const int x = std::clamp(request.x, 0, frameWidth - 1);
+    const int y = std::clamp(request.y, 0, frameHeight - 1);
+    const int cropWidth = std::clamp(request.width, 1, frameWidth - x);
+    const int cropHeight = std::clamp(request.height, 1, frameHeight - y);
+
+    BmpInfoHeader info;
+    info.width = cropWidth;
+    info.height = -cropHeight;
+    info.imageSize = static_cast<std::uint32_t>(cropWidth * cropHeight * 4);
+
+    BmpFileHeader file;
+    file.offset = sizeof(BmpFileHeader) + sizeof(BmpInfoHeader);
+    file.size = file.offset + info.imageSize;
+
+    std::ofstream output(request.path, std::ios::binary);
+    if (!output) {
+      error = "capture failed: could not open output file";
+      return false;
+    }
+
+    output.write(reinterpret_cast<const char*>(&file), sizeof(file));
+    output.write(reinterpret_cast<const char*>(&info), sizeof(info));
+
+    const auto* source = static_cast<const std::uint8_t*>(data);
+    std::vector<std::uint8_t> row(static_cast<std::size_t>(cropWidth) * 4u);
+
+    for (int rowIndex = 0; rowIndex < cropHeight; ++rowIndex) {
+      const int logicalY = y + rowIndex;
+      const int sourceY = yflip ? (frameHeight - 1 - logicalY) : logicalY;
+      const std::uint8_t* sourceRow =
+        source + static_cast<std::size_t>(sourceY) * pitch + static_cast<std::size_t>(x) * 4u;
+
+      if (format == bgfx::TextureFormat::BGRA8) {
+        std::memcpy(row.data(), sourceRow, row.size());
+      } else {
+        for (int col = 0; col < cropWidth; ++col) {
+          const std::uint8_t* rgba = sourceRow + static_cast<std::size_t>(col) * 4u;
+          std::uint8_t* bgra = row.data() + static_cast<std::size_t>(col) * 4u;
+          bgra[0] = rgba[2];
+          bgra[1] = rgba[1];
+          bgra[2] = rgba[0];
+          bgra[3] = rgba[3];
+        }
+      }
+
+      output.write(reinterpret_cast<const char*>(row.data()), static_cast<std::streamsize>(row.size()));
+    }
+
+    return true;
+  }
+
+  mutable std::mutex mutex;
+  ScreenshotCapture capture;
+  std::string completedMessage;
+  bool hasCompletedMessage = false;
 };
 
 struct AppState {
@@ -624,19 +1058,24 @@ struct AppState {
   int height = 720;
   bool running = true;
   bool smokeTest = false;
+  bool screenshotSmoke = false;
   bool focusMode = false;
   bool showStackPanel = true;
   bool showInspectorPanel = true;
   bool showStatusStrip = true;
+  bool screenshotRequested = false;
   int frameCount = 0;
   float deltaSeconds = 1.0f / 60.0f;
   float elapsedSeconds = 0.0f;
+  float screenshotStatusSeconds = 0.0f;
+  std::string screenshotStatus;
   bool bgfxReady = false;
   bool imguiReady = false;
   std::ofstream smokeLog;
   std::chrono::steady_clock::time_point lastFrameTime{};
   ImVec2 visualizationCanvasOrigin{};
   ImVec2 visualizationCanvasSize{1280.0f, 720.0f};
+  PrappyBgfxCallback bgfxCallback;
   VisualizationRenderer visualizationRenderer;
   VisualizationHost visualizations;
 
@@ -650,6 +1089,73 @@ void logSmoke(AppState& state, const char* message) {
   if (state.smokeLog.is_open()) {
     state.smokeLog << message << '\n';
     state.smokeLog.flush();
+  }
+}
+
+void setScreenshotStatus(AppState& state, const std::string& message, float seconds = 5.0f) {
+  state.screenshotStatus = message;
+  state.screenshotStatusSeconds = seconds;
+}
+
+std::filesystem::path nextScreenshotPath() {
+  const std::filesystem::path captureDir = std::filesystem::current_path() / "captures";
+  std::filesystem::create_directories(captureDir);
+
+  const auto now = std::chrono::system_clock::now();
+  const std::time_t time = std::chrono::system_clock::to_time_t(now);
+  std::tm localTime{};
+#ifdef _WIN32
+  localtime_s(&localTime, &time);
+#else
+  localtime_r(&time, &localTime);
+#endif
+
+  std::ostringstream filename;
+  filename << "prappy_" << std::put_time(&localTime, "%Y%m%d_%H%M%S") << ".bmp";
+  return captureDir / filename.str();
+}
+
+void requestScreenshot(AppState& state) {
+  state.screenshotRequested = true;
+  setScreenshotStatus(state, "Capture queued", 2.0f);
+}
+
+bool queueVisualizationCanvasCapture(AppState& state, std::filesystem::path& outputPath, std::string& error) {
+  const int width = static_cast<int>(std::round(state.visualizationCanvasSize.x));
+  const int height = static_cast<int>(std::round(state.visualizationCanvasSize.y));
+  if (width <= 0 || height <= 0) {
+    error = "capture failed: visualization canvas is empty";
+    return false;
+  }
+
+  outputPath = nextScreenshotPath();
+  state.bgfxCallback.queueScreenshot(outputPath, state.visualizationCanvasOrigin, state.visualizationCanvasSize);
+
+  const bgfx::FrameBufferHandle backbuffer = BGFX_INVALID_HANDLE;
+  const std::string bgfxPath = outputPath.string();
+  bgfx::requestScreenShot(backbuffer, bgfxPath.c_str());
+  return true;
+}
+
+void processScreenshotRequest(AppState& state) {
+  if (!state.screenshotRequested) {
+    return;
+  }
+
+  state.screenshotRequested = false;
+  std::filesystem::path outputPath;
+  std::string error;
+  if (queueVisualizationCanvasCapture(state, outputPath, error)) {
+    setScreenshotStatus(state, std::string("Capture queued: ") + outputPath.string(), 3.0f);
+  } else {
+    setScreenshotStatus(state, error, 7.0f);
+  }
+}
+
+void pollScreenshotStatus(AppState& state) {
+  std::string message;
+  if (state.bgfxCallback.consumeScreenshotStatus(message)) {
+    setScreenshotStatus(state, message, 7.0f);
   }
 }
 
@@ -727,6 +1233,7 @@ void initBgfx(AppState& state) {
   init.resolution.height = static_cast<std::uint32_t>(state.height);
   init.resolution.reset = BGFX_RESET_VSYNC;
   init.platformData = pd;
+  init.callback = &state.bgfxCallback;
 
   if (!bgfx::init(init)) {
     throw std::runtime_error("bgfx::init failed");
@@ -833,6 +1340,12 @@ void beginImGuiFrame(AppState& state) {
   }
   state.lastFrameTime = now;
   state.elapsedSeconds += state.deltaSeconds;
+  if (state.screenshotStatusSeconds > 0.0f) {
+    state.screenshotStatusSeconds = std::max(0.0f, state.screenshotStatusSeconds - state.deltaSeconds);
+    if (state.screenshotStatusSeconds == 0.0f) {
+      state.screenshotStatus.clear();
+    }
+  }
 
   ImGuiIO& io = ImGui::GetIO();
   io.DisplaySize = ImVec2(static_cast<float>(state.width), static_cast<float>(state.height));
@@ -1097,29 +1610,6 @@ const char* compilerLabel() {
 #endif
 }
 
-int oahuLandSampleCount() {
-  int count = 0;
-  for (const OahuTerrainSample& sample : kOahuTerrain) {
-    if (sample.land) {
-      ++count;
-    }
-  }
-  return count;
-}
-
-const char* visualizationSpaceLabel(VisualizationId id) {
-  switch (id) {
-    case VisualizationId::RandomLines2D:
-      return "2D screen-space line pass";
-    case VisualizationId::Starfield3D:
-      return "3D line pass";
-    case VisualizationId::OahuFlyover:
-      return "3D terrain pass";
-  }
-
-  return "Unknown";
-}
-
 bool drawModeButton(const char* label, bool active, const ImVec2& size) {
   if (active) {
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.38f, 0.43f, 1.0f));
@@ -1190,15 +1680,27 @@ void drawVisualizationSelector(AppState& state) {
   const float width = std::clamp((available - gap * 2.0f) / 3.0f, 92.0f, 154.0f);
   const ImVec2 size(width, 30.0f);
 
-  if (drawModeButton("Lines", state.visualizations.active == VisualizationId::RandomLines2D, size)) {
+  if (drawModeButton(
+    visualizationShortName(VisualizationId::RandomLines2D),
+    state.visualizations.active == VisualizationId::RandomLines2D,
+    size
+  )) {
     state.visualizations.setActive(VisualizationId::RandomLines2D);
   }
   ImGui::SameLine(0.0f, gap);
-  if (drawModeButton("Starfield", state.visualizations.active == VisualizationId::Starfield3D, size)) {
+  if (drawModeButton(
+    visualizationShortName(VisualizationId::Starfield3D),
+    state.visualizations.active == VisualizationId::Starfield3D,
+    size
+  )) {
     state.visualizations.setActive(VisualizationId::Starfield3D);
   }
   ImGui::SameLine(0.0f, gap);
-  if (drawModeButton("Oahu", state.visualizations.active == VisualizationId::OahuFlyover, size)) {
+  if (drawModeButton(
+    visualizationShortName(VisualizationId::OahuFlyover),
+    state.visualizations.active == VisualizationId::OahuFlyover,
+    size
+  )) {
     state.visualizations.setActive(VisualizationId::OahuFlyover);
   }
 }
@@ -1215,7 +1717,7 @@ void drawCommandBar(AppState& state) {
   if (ImGui::BeginTable("CommandBarLayout", 3, ImGuiTableFlags_SizingStretchProp)) {
     ImGui::TableSetupColumn("Brand", ImGuiTableColumnFlags_WidthFixed, 210.0f);
     ImGui::TableSetupColumn("Modes", ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, 310.0f);
+    ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, 410.0f);
     ImGui::TableNextRow();
 
     ImGui::TableSetColumnIndex(0);
@@ -1233,6 +1735,10 @@ void drawCommandBar(AppState& state) {
     ImGui::SameLine();
     if (ImGui::Button("Reset", ImVec2(82.0f, 30.0f))) {
       state.visualizations.resetRequested = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Capture", ImVec2(92.0f, 30.0f))) {
+      requestScreenshot(state);
     }
     ImGui::SameLine();
     ImGui::Checkbox("Diagnostics", &state.visualizations.showStatus);
@@ -1347,36 +1853,65 @@ void drawRendererTab(AppState& state) {
   }
 }
 
+void drawCameraControls(AppState& state) {
+  const VisualizationDescriptor& descriptor = visualizationDescriptor(state.visualizations.active);
+  if (!descriptor.usesCamera) {
+    ImGui::TextDisabled("Camera: not used by this module");
+    return;
+  }
+
+  CameraRig& camera = state.visualizations.camera;
+  ImGui::SeparatorText("Camera");
+
+  if (descriptor.hasAutoCamera) {
+    bool autoCamera = !camera.manual;
+    if (ImGui::Checkbox("Auto route", &autoCamera)) {
+      camera.manual = !autoCamera;
+    }
+    ImGui::SliderFloat("Route speed", &camera.routeSpeed, 0.15f, 3.0f, "%.2f");
+  } else {
+    ImGui::Checkbox("Manual look", &camera.manual);
+  }
+
+  ImGui::SliderFloat("FOV", &camera.fovDegrees, 38.0f, 96.0f, "%.0f");
+
+  if (camera.manual) {
+    ImGui::SliderFloat("Yaw", &camera.yaw, -kPi, kPi, "%.2f");
+    ImGui::SliderFloat("Pitch", &camera.pitch, -1.15f, 1.25f, "%.2f");
+
+    if (state.visualizations.active == VisualizationId::OahuFlyover) {
+      ImGui::SliderFloat("Distance", &camera.distance, 2.2f, 34.0f, "%.1f");
+      ImGui::SliderFloat("Target X", &camera.target.x, -8.0f, 8.0f, "%.2f");
+      ImGui::SliderFloat("Target Y", &camera.target.y, -1.0f, 4.0f, "%.2f");
+      ImGui::SliderFloat("Target Z", &camera.target.z, -8.0f, 8.0f, "%.2f");
+    }
+  }
+
+  if (ImGui::Button("Reset Camera", ImVec2(-1.0f, 30.0f))) {
+    camera.resetFor(state.visualizations.active);
+  }
+}
+
 void drawVisualizationTab(AppState& state) {
   drawVisualizationSelector(state);
   ImGui::Separator();
   drawKeyValue("Active", visualizationName(state.visualizations.active));
   drawKeyValue("Space", visualizationSpaceLabel(state.visualizations.active));
-
-  switch (state.visualizations.active) {
-    case VisualizationId::RandomLines2D:
-      drawKeyValueNumber("Segments", static_cast<int>(state.visualizations.randomLines.segments.size()));
-      drawKeyValue("Primitive", "line list");
-      drawKeyValue("Coordinates", "screen pixels");
-      break;
-    case VisualizationId::Starfield3D:
-      drawKeyValueNumber("Stars", static_cast<int>(state.visualizations.starfield.stars.size()));
-      drawKeyValue("Primitive", "depth lines");
-      drawKeyValue("Camera", "perspective");
-      break;
-    case VisualizationId::OahuFlyover:
-      drawKeyValueNumber("Grid", kOahuGridWidth * kOahuGridHeight);
-      drawKeyValueNumber("Land samples", oahuLandSampleCount());
-      drawKeyValueNumber("Coast points", kOahuCoastlinePointCount);
-      drawKeyValueFloat("Max elevation", kOahuMaxElevationMeters, " m");
-      break;
-  }
+  drawKeyValue("Primitive", visualizationDescriptor(state.visualizations.active).primitiveLabel);
+  state.visualizations.activeModule().drawInspector();
+  drawCameraControls(state);
 
   ImGui::Separator();
   ImGui::Checkbox("Renderer overlay", &state.visualizations.showStatus);
   ImGui::Checkbox("Focus mode", &state.focusMode);
   if (ImGui::Button("Reset Active Visualization", ImVec2(-1.0f, 30.0f))) {
     state.visualizations.resetRequested = true;
+  }
+  if (ImGui::Button("Capture Screenshot", ImVec2(-1.0f, 30.0f))) {
+    requestScreenshot(state);
+  }
+  if (!state.screenshotStatus.empty()) {
+    ImGui::TextWrapped("%s", state.screenshotStatus.c_str());
   }
 }
 
@@ -1444,8 +1979,40 @@ void drawStatusStrip(AppState& state) {
     stats ? stats->numDraw : 0u,
     state.focusMode ? "focus" : "workspace"
   );
+  if (!state.screenshotStatus.empty()) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("| %s", state.screenshotStatus.c_str());
+  }
   ImGui::EndChild();
   ImGui::PopStyleVar();
+}
+
+void handleVisualizationCanvasInput(AppState& state) {
+  const VisualizationDescriptor& descriptor = visualizationDescriptor(state.visualizations.active);
+  if (!descriptor.usesCamera) {
+    return;
+  }
+
+  const bool hovered = ImGui::IsItemHovered();
+  const bool active = ImGui::IsItemActive();
+  if (!hovered && !active) {
+    return;
+  }
+
+  ImGuiIO& io = ImGui::GetIO();
+  CameraRig& camera = state.visualizations.camera;
+
+  if (hovered && std::abs(io.MouseWheel) > 0.001f) {
+    camera.zoom(state.visualizations.active, io.MouseWheel);
+  }
+
+  if (active && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
+    camera.orbit(io.MouseDelta);
+  }
+
+  if (hovered && ImGui::IsMouseDragging(ImGuiMouseButton_Right, 0.0f)) {
+    camera.pan(io.MouseDelta);
+  }
 }
 
 void drawVisualizationStatus(AppState& state, const ImVec2& canvasOrigin) {
@@ -1555,6 +2122,12 @@ void drawAppUi(AppState& state) {
       if (ImGui::MenuItem("Reset Visualization")) {
         state.visualizations.resetRequested = true;
       }
+      if (ImGui::MenuItem("Reset Camera")) {
+        state.visualizations.camera.resetFor(state.visualizations.active);
+      }
+      if (ImGui::MenuItem("Capture Visualization")) {
+        requestScreenshot(state);
+      }
       ImGui::Separator();
       if (ImGui::MenuItem("Quit")) {
         state.running = false;
@@ -1657,6 +2230,7 @@ void drawAppUi(AppState& state) {
     canvasSize.y = std::max(canvasSize.y, 1.0f);
 
     ImGui::InvisibleButton("VisualizationCanvas", canvasSize);
+    handleVisualizationCanvasInput(state);
 
     state.visualizationCanvasOrigin = canvasOrigin;
     state.visualizationCanvasSize = canvasSize;
@@ -1734,19 +2308,27 @@ void renderVisualization(AppState& state) {
   );
 
   const bgfx::Caps* caps = bgfx::getCaps();
+  const CameraRig& camera = state.visualizations.camera;
   float view[16];
   float projection[16];
 
   if (state.visualizations.active == VisualizationId::OahuFlyover) {
-    const float cycle = std::fmod(state.elapsedSeconds * 0.025f, 1.0f);
-    const float route = cycle * 2.0f - 1.0f;
-    const float sway = std::sin(state.elapsedSeconds * 0.35f) * 0.55f;
-    const bx::Vec3 eye = {sway, 2.65f, 7.4f - route * 8.5f};
-    const bx::Vec3 at = {sway * 0.25f, 0.42f, 4.1f - route * 8.5f};
+    bx::Vec3 eye = {0.0f, 0.0f, 0.0f};
+    bx::Vec3 at = {0.0f, 0.0f, 0.0f};
+    if (camera.manual) {
+      eye = camera.orbitEye();
+      at = camera.target;
+    } else {
+      const float cycle = std::fmod(state.elapsedSeconds * 0.025f * camera.routeSpeed, 1.0f);
+      const float route = cycle * 2.0f - 1.0f;
+      const float sway = std::sin(state.elapsedSeconds * 0.35f) * 0.55f;
+      eye = {sway, 2.65f, 7.4f - route * 8.5f};
+      at = {sway * 0.25f, 0.42f, 4.1f - route * 8.5f};
+    }
     bx::mtxLookAt(view, eye, at);
     bx::mtxProj(
       projection,
-      62.0f,
+      camera.fovDegrees,
       static_cast<float>(width) / static_cast<float>(height),
       0.05f,
       80.0f,
@@ -1754,11 +2336,12 @@ void renderVisualization(AppState& state) {
     );
   } else if (state.visualizations.active == VisualizationId::Starfield3D) {
     const bx::Vec3 eye = {0.0f, 0.0f, 0.0f};
-    const bx::Vec3 at = {0.0f, 0.0f, -1.0f};
+    const bx::Vec3 direction = camera.manual ? camera.lookDirection() : bx::Vec3{0.0f, 0.0f, -1.0f};
+    const bx::Vec3 at = {direction.x, direction.y, direction.z};
     bx::mtxLookAt(view, eye, at);
     bx::mtxProj(
       projection,
-      70.0f,
+      camera.fovDegrees,
       static_cast<float>(width) / static_cast<float>(height),
       0.05f,
       60.0f,
@@ -1843,6 +2426,7 @@ void cleanup(AppState& state) {
 int main(int argc, char** argv) {
   AppState state{};
   state.smokeTest = hasArg(argc, argv, "--smoke-test");
+  state.screenshotSmoke = hasArg(argc, argv, "--screenshot-smoke");
   state.visualizations.setActive(visualizationFromArgs(argc, argv));
   if (state.smokeTest) {
     state.smokeLog.open("prappy_smoke.log", std::ios::out | std::ios::trunc);
@@ -1905,8 +2489,14 @@ int main(int argc, char** argv) {
       logSmoke(state, "smoke: render imgui");
       renderImGui(state, ImGui::GetDrawData());
 
+      if (state.screenshotSmoke && state.frameCount == 1) {
+        requestScreenshot(state);
+      }
+
+      processScreenshotRequest(state);
       logSmoke(state, "smoke: bgfx frame");
       bgfx::frame();
+      pollScreenshotStatus(state);
 
       ++state.frameCount;
       if (state.smokeTest && state.frameCount >= 3) {

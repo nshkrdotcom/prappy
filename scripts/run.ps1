@@ -9,7 +9,10 @@ param(
     [string]$Visualization,
 
     [Parameter()]
-    [switch]$SmokeTest
+    [switch]$SmokeTest,
+
+    [Parameter()]
+    [switch]$ScreenshotSmoke
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,6 +24,10 @@ $parameters = @{
 
 if ($SmokeTest) {
     $parameters.SmokeTest = $true
+}
+
+if ($ScreenshotSmoke) {
+    $parameters.ScreenshotSmoke = $true
 }
 
 if ($Visualization) {
