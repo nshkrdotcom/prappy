@@ -88,6 +88,13 @@ Those commands render fixed-size captures through bgfx, not desktop screen
 grabs. Defaults are `1280 x 720` for flyover/hero captures and `1024 x 1024`
 for the top-down Oahu map.
 
+To watch the same full-window presentation profile interactively instead of
+capturing and exiting, add `-Live`:
+
+```powershell
+pwsh scripts\present.ps1 -Presentation OahuFlyoverHero -Live
+```
+
 Use the Oahu isolation view when checking coastline shape, mesh fill, or camera
 distortion:
 

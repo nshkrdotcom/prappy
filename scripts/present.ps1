@@ -18,6 +18,9 @@ param(
     [string]$Output,
 
     [Parameter()]
+    [switch]$Live,
+
+    [Parameter()]
     [switch]$SkipBuild
 )
 
@@ -28,6 +31,7 @@ $parameters = @{
     Config = $Config
     Presentation = $Presentation
     SkipBuild = $SkipBuild
+    Live = $Live
 }
 
 if ($Width -gt 0) {

@@ -52,6 +52,9 @@ param(
     [switch]$NoOverlay,
 
     [Parameter()]
+    [switch]$StayOpen,
+
+    [Parameter()]
     [switch]$SmokeTest,
 
     [Parameter()]
@@ -124,6 +127,10 @@ if ($Focus) {
 
 if ($NoOverlay) {
     $parameters.NoOverlay = $true
+}
+
+if ($StayOpen) {
+    $parameters.StayOpen = $true
 }
 
 Invoke-PrappyNativeTool "run.ps1" $parameters

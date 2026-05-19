@@ -59,6 +59,13 @@ the frame size and output path when needed:
 pwsh scripts\present.ps1 -Presentation OahuFlyoverHero -Width 1920 -Height 1080 -Output build\captures\oahu-hero.bmp
 ```
 
+The default behavior captures and exits. Use `-Live` when you want the same
+presentation profile to stay open:
+
+```powershell
+pwsh scripts\present.ps1 -Presentation OahuFlyoverHero -Live
+```
+
 ## Controls
 
 The 3D visualizations share a camera rig:

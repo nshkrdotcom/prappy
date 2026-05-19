@@ -2143,6 +2143,13 @@ void applyRuntimeArgs(AppState& state, int argc, char** argv) {
     state.screenshotSmoke = true;
   }
 
+  if (hasArg(argc, argv, "--stay-open")) {
+    state.smokeTest = false;
+    state.screenshotSmoke = false;
+    state.screenshotRequested = false;
+    state.screenshotOutputPath.clear();
+  }
+
   if (state.screenshotSmoke && state.exitFrame <= state.screenshotFrame) {
     state.exitFrame = state.screenshotFrame + 3;
   }

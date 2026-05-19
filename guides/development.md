@@ -82,6 +82,13 @@ The script builds unless `-SkipBuild` is provided, runs the app in presentation
 mode with a fixed timestep, queues a bgfx screenshot callback, validates that
 the requested BMP exists, and exits.
 
+For visual inspection instead of capture, add `-Live`; the same profile stays
+open until the window is closed:
+
+```powershell
+pwsh scripts\present.ps1 -Presentation OahuFlyoverHero -Live
+```
+
 ## Renderer Override
 
 Use this when checking backend-specific behavior:
