@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -61,7 +62,12 @@ bool queueVisualizationCanvasCapture(AppState& state, std::filesystem::path& out
     return false;
   }
 
-  outputPath = nextScreenshotPath();
+  outputPath = state.screenshotOutputPath.empty()
+    ? nextScreenshotPath()
+    : state.screenshotOutputPath;
+  if (!outputPath.parent_path().empty()) {
+    std::filesystem::create_directories(outputPath.parent_path());
+  }
   state.bgfxCallback.queueScreenshot(outputPath, state.visualizationCanvasOrigin, state.visualizationCanvasSize);
 
   const bgfx::FrameBufferHandle backbuffer = BGFX_INVALID_HANDLE;
@@ -287,7 +293,9 @@ void shutdownImGui(AppState& state) {
 
 void beginImGuiFrame(AppState& state) {
   const auto now = std::chrono::steady_clock::now();
-  if (state.lastFrameTime.time_since_epoch().count() != 0) {
+  if (state.fixedDeltaSeconds > 0.0f) {
+    state.deltaSeconds = state.fixedDeltaSeconds;
+  } else if (state.lastFrameTime.time_since_epoch().count() != 0) {
     const std::chrono::duration<float> elapsed = now - state.lastFrameTime;
     state.deltaSeconds = std::clamp(elapsed.count(), 1.0f / 240.0f, 1.0f / 15.0f);
   }
@@ -1090,6 +1098,60 @@ void drawOahuDiagnosticControls(AppState& state) {
   ImGui::Checkbox("Landmarks", &diagnostics.showLandmarks);
 }
 
+void drawOahuRenderControls(AppState& state) {
+  OahuRenderSettings& settings = state.oahuRenderSettings;
+
+  ImGui::SeparatorText("Oahu Atmosphere");
+  ImGui::ColorEdit3("Water near", &settings.environment.waterNear.x);
+  ImGui::ColorEdit3("Water far", &settings.environment.waterFar.x);
+  ImGui::ColorEdit3("Horizon haze", &settings.environment.horizon.x);
+  ImGui::SliderFloat("Haze start", &settings.environment.hazeStart, 1.0f, 22.0f, "%.1f");
+  ImGui::SliderFloat("Haze end", &settings.environment.hazeEnd, 8.0f, 70.0f, "%.1f");
+  ImGui::SliderFloat("Haze density", &settings.environment.hazeDensity, 0.0f, 1.3f, "%.2f");
+  ImGui::SliderFloat("Wave strength", &settings.environment.waveStrength, 0.0f, 0.12f, "%.3f");
+  if (settings.environment.hazeEnd <= settings.environment.hazeStart + 1.0f) {
+    settings.environment.hazeEnd = settings.environment.hazeStart + 1.0f;
+  }
+
+  ImGui::SeparatorText("Oahu Lighting");
+  ImGui::SliderFloat("Sun yaw", &settings.lighting.sunYaw, -kPi, kPi, "%.2f");
+  ImGui::SliderFloat("Sun pitch", &settings.lighting.sunPitch, 0.15f, 1.35f, "%.2f");
+  ImGui::SliderFloat("Ambient", &settings.lighting.ambient, 0.02f, 1.0f, "%.2f");
+  ImGui::SliderFloat("Diffuse", &settings.lighting.diffuse, 0.0f, 1.6f, "%.2f");
+  ImGui::SliderFloat("Terrain contrast", &settings.lighting.contrast, 0.55f, 1.8f, "%.2f");
+
+  ImGui::SeparatorText("Oahu Height Ramp");
+  ImGui::ColorEdit3("Beach", &settings.colorRamp.beach.x);
+  ImGui::ColorEdit3("Lowland", &settings.colorRamp.lowland.x);
+  ImGui::ColorEdit3("Ridge", &settings.colorRamp.ridge.x);
+  ImGui::ColorEdit3("Peak", &settings.colorRamp.peak.x);
+  ImGui::SliderFloat("Lowland start", &settings.colorRamp.lowlandStart, 0.01f, 0.30f, "%.2f");
+  ImGui::SliderFloat("Ridge start", &settings.colorRamp.ridgeStart, 0.12f, 0.70f, "%.2f");
+  ImGui::SliderFloat("Peak start", &settings.colorRamp.peakStart, 0.32f, 0.96f, "%.2f");
+  settings.colorRamp.lowlandStart = std::clamp(settings.colorRamp.lowlandStart, 0.01f, 0.30f);
+  settings.colorRamp.ridgeStart = std::clamp(
+    settings.colorRamp.ridgeStart,
+    settings.colorRamp.lowlandStart + 0.03f,
+    0.70f
+  );
+  settings.colorRamp.peakStart = std::clamp(
+    settings.colorRamp.peakStart,
+    settings.colorRamp.ridgeStart + 0.03f,
+    0.96f
+  );
+
+  ImGui::SeparatorText("Oahu Flyover Path");
+  ImGui::SliderFloat("Altitude", &settings.cameraPath.altitude, 1.35f, 5.20f, "%.2f");
+  ImGui::SliderFloat("Path speed", &settings.cameraPath.routeSpeed, 0.10f, 3.0f, "%.2f");
+  ImGui::SliderFloat("Lookahead", &settings.cameraPath.lookahead, 1.20f, 8.0f, "%.2f");
+  ImGui::SliderFloat("Bank", &settings.cameraPath.bankStrength, 0.0f, 0.85f, "%.2f");
+  ImGui::SliderFloat("Lateral sway", &settings.cameraPath.lateralSway, 0.0f, 1.45f, "%.2f");
+
+  if (ImGui::Button("Reset Oahu Atmosphere Defaults", ImVec2(-1.0f, 30.0f))) {
+    state.oahuRenderSettings = OahuRenderSettings{};
+  }
+}
+
 void drawVisualizationTab(AppState& state) {
   drawVisualizationSelector(state);
   ImGui::Separator();
@@ -1102,6 +1164,7 @@ void drawVisualizationTab(AppState& state) {
   state.visualizations.activeModule().drawInspector();
   if (state.visualizations.active == VisualizationId::OahuFlyover) {
     drawOahuDiagnosticControls(state);
+    drawOahuRenderControls(state);
   }
   drawCameraControls(state);
 
@@ -1572,6 +1635,67 @@ std::uint32_t visualizationClearColor(VisualizationId id) {
   return 0x101018ff;
 }
 
+bx::Vec3 addVec3Local(const bx::Vec3& a, const bx::Vec3& b) {
+  return {a.x + b.x, a.y + b.y, a.z + b.z};
+}
+
+bx::Vec3 subVec3Local(const bx::Vec3& a, const bx::Vec3& b) {
+  return {a.x - b.x, a.y - b.y, a.z - b.z};
+}
+
+bx::Vec3 scaleVec3Local(const bx::Vec3& value, float scale) {
+  return {value.x * scale, value.y * scale, value.z * scale};
+}
+
+bx::Vec3 normalizeVec3Local(const bx::Vec3& value) {
+  const float length = std::sqrt(value.x * value.x + value.y * value.y + value.z * value.z);
+  if (length <= 1.0e-5f) {
+    return {0.0f, 1.0f, 0.0f};
+  }
+
+  const float invLength = 1.0f / length;
+  return scaleVec3Local(value, invLength);
+}
+
+bx::Vec3 oahuRouteRight(const bx::Vec3& forward) {
+  return normalizeVec3Local({forward.z, 0.0f, -forward.x});
+}
+
+struct OahuCameraFrame {
+  bx::Vec3 eye;
+  bx::Vec3 at;
+  bx::Vec3 up;
+};
+
+OahuCameraFrame buildOahuRouteCamera(const AppState& state) {
+  const OahuCameraPathSettings& path = state.oahuRenderSettings.cameraPath;
+  const CameraRig& camera = state.visualizations.camera;
+  const float speed = std::max(0.01f, path.routeSpeed * camera.routeSpeed);
+  const float cycle = std::fmod(state.elapsedSeconds * 0.025f * speed + 0.18f, 1.0f);
+  const float route = cycle * 2.0f - 1.0f;
+  const float swayPhase = state.elapsedSeconds * 0.35f * speed;
+  const float sway = std::sin(swayPhase) * path.lateralSway;
+  const float curve = std::cos(swayPhase) * path.lateralSway;
+
+  const bx::Vec3 eye = {
+    sway,
+    path.altitude,
+    -7.6f + route * 8.6f
+  };
+  const bx::Vec3 at = {
+    sway * 0.22f + curve * 0.12f,
+    0.40f,
+    eye.z + path.lookahead
+  };
+
+  const bx::Vec3 forward = normalizeVec3Local(subVec3Local(at, eye));
+  const bx::Vec3 right = oahuRouteRight(forward);
+  const float bank = std::clamp(curve * path.bankStrength, -0.58f, 0.58f);
+  const bx::Vec3 up = normalizeVec3Local(addVec3Local({0.0f, 1.0f, 0.0f}, scaleVec3Local(right, bank)));
+
+  return OahuCameraFrame{eye, at, up};
+}
+
 void renderVisualization(AppState& state) {
   const int x = std::clamp(
     static_cast<int>(std::round(state.visualizationCanvasOrigin.x)),
@@ -1651,14 +1775,13 @@ void renderVisualization(AppState& state) {
       if (camera.manual) {
         eye = camera.orbitEye();
         at = camera.target;
+        bx::mtxLookAt(view, eye, at);
       } else {
-        const float cycle = std::fmod(state.elapsedSeconds * 0.025f * camera.routeSpeed, 1.0f);
-        const float route = cycle * 2.0f - 1.0f;
-        const float sway = std::sin(state.elapsedSeconds * 0.35f) * 0.55f;
-        eye = {sway, 2.65f, -7.4f + route * 8.5f};
-        at = {sway * 0.25f, 0.42f, -4.1f + route * 8.5f};
+        const OahuCameraFrame routeCamera = buildOahuRouteCamera(state);
+        eye = routeCamera.eye;
+        at = routeCamera.at;
+        bx::mtxLookAt(view, eye, at, routeCamera.up);
       }
-      bx::mtxLookAt(view, eye, at);
       bx::mtxProj(
         projection,
         camera.fovDegrees,
@@ -1718,6 +1841,7 @@ void renderVisualization(AppState& state) {
   context.deltaSeconds = state.deltaSeconds;
   context.elapsedSeconds = state.elapsedSeconds;
   context.oahuDiagnostics = &state.oahuDiagnostics;
+  context.oahuRenderSettings = &state.oahuRenderSettings;
 
   state.visualizations.draw(context);
 }
@@ -1782,6 +1906,37 @@ std::string argumentValue(int argc, char** argv, const char* prefix) {
   }
 
   return {};
+}
+
+int parsePositiveInt(const std::string& value, const char* label) {
+  char* end = nullptr;
+  const long parsed = std::strtol(value.c_str(), &end, 10);
+  if (value.empty() || end == value.c_str() || *end != '\0' || parsed <= 0 || parsed > 16384) {
+    throw std::runtime_error(std::string("Invalid positive integer for ") + label + ": " + value);
+  }
+
+  return static_cast<int>(parsed);
+}
+
+float parsePositiveFloat(const std::string& value, const char* label) {
+  char* end = nullptr;
+  const float parsed = std::strtof(value.c_str(), &end);
+  if (value.empty() || end == value.c_str() || *end != '\0' || parsed <= 0.0f) {
+    throw std::runtime_error(std::string("Invalid positive float for ") + label + ": " + value);
+  }
+
+  return parsed;
+}
+
+bool parseWindowSize(const std::string& value, int& width, int& height) {
+  const std::size_t separator = value.find_first_of("xX");
+  if (separator == std::string::npos) {
+    return false;
+  }
+
+  width = parsePositiveInt(value.substr(0, separator), "--window-size width");
+  height = parsePositiveInt(value.substr(separator + 1), "--window-size height");
+  return true;
 }
 
 void applyOahuDiagnosticPreset(OahuDiagnosticSettings& diagnostics, const std::string& preset) {
@@ -1860,6 +2015,64 @@ void applyVisualizationPreset(AppState& state, VisualizationPresetId preset) {
   }
 }
 
+void activatePresentationMode(AppState& state) {
+  state.presentationMode = true;
+  state.smokeTest = true;
+  state.screenshotSmoke = true;
+  state.focusMode = true;
+  state.showStackPanel = false;
+  state.showInspectorPanel = false;
+  state.showStatusStrip = false;
+  state.visualizations.showStatus = false;
+  if (state.fixedDeltaSeconds <= 0.0f) {
+    state.fixedDeltaSeconds = 1.0f / 60.0f;
+  }
+  state.screenshotFrame = std::max(state.screenshotFrame, 2);
+  state.exitFrame = std::max(state.exitFrame, state.screenshotFrame + 3);
+}
+
+void applyPresentationProfile(AppState& state, const std::string& profile) {
+  activatePresentationMode(state);
+
+  if (profile == "oahu-flyover-hero") {
+    applyVisualizationPreset(state, VisualizationPresetId::OahuFlyover);
+    applyOahuDiagnosticPreset(state.oahuDiagnostics, "flyover");
+    state.visualizations.camera.fovDegrees = 58.0f;
+    state.oahuRenderSettings.cameraPath.altitude = 2.55f;
+    state.oahuRenderSettings.cameraPath.lookahead = 3.9f;
+    state.oahuRenderSettings.cameraPath.lateralSway = 0.45f;
+    state.oahuRenderSettings.cameraPath.bankStrength = 0.18f;
+    return;
+  }
+
+  if (profile == "oahu-top-down-map") {
+    applyVisualizationPreset(state, VisualizationPresetId::OahuCenteredTopDown);
+    state.oahuDiagnostics.showBackground = false;
+    state.oahuDiagnostics.showCoastline = true;
+    state.oahuDiagnostics.showRidges = true;
+    state.oahuDiagnostics.showLandmarks = false;
+    state.visualizations.camera.fovDegrees = 58.0f;
+    return;
+  }
+
+  if (profile == "particles-hero") {
+    applyVisualizationPreset(state, VisualizationPresetId::ParticleFieldHero);
+    return;
+  }
+
+  if (profile == "starfield-hero") {
+    applyVisualizationPreset(state, VisualizationPresetId::StarfieldHero);
+    return;
+  }
+
+  if (profile == "random-lines-hero") {
+    applyVisualizationPreset(state, VisualizationPresetId::RandomLinesHero);
+    return;
+  }
+
+  throw std::runtime_error(std::string("Unknown presentation profile: ") + profile);
+}
+
 void applyRuntimeArgs(AppState& state, int argc, char** argv) {
   const std::string presentationPreset = argumentValue(argc, argv, "--preset=");
   if (!presentationPreset.empty()) {
@@ -1868,6 +2081,11 @@ void applyRuntimeArgs(AppState& state, int argc, char** argv) {
       throw std::runtime_error(std::string("Unknown visualization preset: ") + presentationPreset);
     }
     applyVisualizationPreset(state, preset);
+  }
+
+  const std::string presentationProfile = argumentValue(argc, argv, "--presentation=");
+  if (!presentationProfile.empty()) {
+    applyPresentationProfile(state, presentationProfile);
   }
 
   if (hasArg(argc, argv, "--oahu-topdown")) {
@@ -1886,6 +2104,47 @@ void applyRuntimeArgs(AppState& state, int argc, char** argv) {
   if (hasArg(argc, argv, "--no-overlay")) {
     state.visualizations.showStatus = false;
     state.showStatusStrip = false;
+  }
+
+  const std::string windowSize = argumentValue(argc, argv, "--window-size=");
+  if (!windowSize.empty() && !parseWindowSize(windowSize, state.width, state.height)) {
+    throw std::runtime_error(std::string("Invalid window size: ") + windowSize);
+  }
+
+  const std::string captureWidth = argumentValue(argc, argv, "--capture-width=");
+  if (!captureWidth.empty()) {
+    state.width = parsePositiveInt(captureWidth, "--capture-width");
+  }
+
+  const std::string captureHeight = argumentValue(argc, argv, "--capture-height=");
+  if (!captureHeight.empty()) {
+    state.height = parsePositiveInt(captureHeight, "--capture-height");
+  }
+
+  const std::string fixedDelta = argumentValue(argc, argv, "--fixed-delta=");
+  if (!fixedDelta.empty()) {
+    state.fixedDeltaSeconds = parsePositiveFloat(fixedDelta, "--fixed-delta");
+  }
+
+  const std::string captureFrame = argumentValue(argc, argv, "--capture-frame=");
+  if (!captureFrame.empty()) {
+    state.screenshotFrame = parsePositiveInt(captureFrame, "--capture-frame");
+  }
+
+  const std::string exitFrame = argumentValue(argc, argv, "--exit-frame=");
+  if (!exitFrame.empty()) {
+    state.exitFrame = parsePositiveInt(exitFrame, "--exit-frame");
+  }
+
+  const std::string captureOutput = argumentValue(argc, argv, "--capture-output=");
+  if (!captureOutput.empty()) {
+    state.screenshotOutputPath = std::filesystem::path(captureOutput);
+    state.smokeTest = true;
+    state.screenshotSmoke = true;
+  }
+
+  if (state.screenshotSmoke && state.exitFrame <= state.screenshotFrame) {
+    state.exitFrame = state.screenshotFrame + 3;
   }
 }
 
@@ -1985,14 +2244,24 @@ int runApp(int argc, char** argv) {
 
       logSmoke(state, "smoke: imgui frame");
       beginImGuiFrame(state);
-      drawAppUi(state);
+      if (state.presentationMode) {
+        state.visualizationCanvasOrigin = ImVec2(0.0f, 0.0f);
+        state.visualizationCanvasSize = ImVec2(
+          static_cast<float>(state.width),
+          static_cast<float>(state.height)
+        );
+      } else {
+        drawAppUi(state);
+      }
       logSmoke(state, "smoke: render visualization");
       renderVisualization(state);
       ImGui::Render();
       logSmoke(state, "smoke: render imgui");
-      renderImGui(state, ImGui::GetDrawData());
+      if (!state.presentationMode) {
+        renderImGui(state, ImGui::GetDrawData());
+      }
 
-      if (state.screenshotSmoke && state.frameCount == 1) {
+      if (state.screenshotSmoke && state.frameCount == state.screenshotFrame) {
         requestScreenshot(state);
       }
 
@@ -2002,7 +2271,7 @@ int runApp(int argc, char** argv) {
       pollScreenshotStatus(state);
 
       ++state.frameCount;
-      if (state.smokeTest && state.frameCount >= 3) {
+      if (state.smokeTest && state.frameCount >= state.exitFrame) {
         state.running = false;
       }
     }

@@ -65,8 +65,22 @@ build\windows-msvc-release\captures\
 
 The regression script validates the generated Oahu topology header, runs all
 visualizations, verifies 32-bit BMP dimensions, checks that captures are
-nonblank, captures an Oahu top-down diagnostic frame, and does a D3D11 renderer
-override smoke.
+nonblank, captures an Oahu top-down diagnostic frame, validates deterministic
+presentation captures, and does a D3D11 renderer override smoke.
+
+## Presentation Capture Loop
+
+Use this path for repeatable demo shots and render-output checks:
+
+```powershell
+pwsh scripts\present.ps1 -Presentation OahuFlyoverHero
+pwsh scripts\present.ps1 -Presentation OahuTopDownMap
+pwsh scripts\present.ps1 -Presentation ParticlesHero
+```
+
+The script builds unless `-SkipBuild` is provided, runs the app in presentation
+mode with a fixed timestep, queues a bgfx screenshot callback, validates that
+the requested BMP exists, and exits.
 
 ## Renderer Override
 

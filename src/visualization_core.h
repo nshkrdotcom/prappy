@@ -19,6 +19,7 @@ struct VisualizationContext {
   float deltaSeconds = 1.0f / 60.0f;
   float elapsedSeconds = 0.0f;
   const struct OahuDiagnosticSettings* oahuDiagnostics = nullptr;
+  const struct OahuRenderSettings* oahuRenderSettings = nullptr;
 };
 
 enum class VisualizationId {
@@ -64,6 +65,49 @@ struct OahuDiagnosticSettings {
   bool showGrid = false;
   bool showRidges = true;
   bool showLandmarks = false;
+};
+
+struct OahuEnvironmentSettings {
+  ImVec4 waterNear = ImVec4(0.04f, 0.39f, 0.62f, 1.0f);
+  ImVec4 waterFar = ImVec4(0.52f, 0.80f, 0.90f, 1.0f);
+  ImVec4 horizon = ImVec4(0.72f, 0.88f, 0.95f, 1.0f);
+  float hazeStart = 7.0f;
+  float hazeEnd = 34.0f;
+  float hazeDensity = 0.58f;
+  float waveStrength = 0.035f;
+};
+
+struct OahuLightingSettings {
+  float sunYaw = -0.72f;
+  float sunPitch = 0.92f;
+  float ambient = 0.36f;
+  float diffuse = 0.68f;
+  float contrast = 1.10f;
+};
+
+struct OahuColorRampSettings {
+  ImVec4 beach = ImVec4(0.72f, 0.67f, 0.45f, 1.0f);
+  ImVec4 lowland = ImVec4(0.20f, 0.58f, 0.25f, 1.0f);
+  ImVec4 ridge = ImVec4(0.47f, 0.58f, 0.33f, 1.0f);
+  ImVec4 peak = ImVec4(0.72f, 0.68f, 0.58f, 1.0f);
+  float lowlandStart = 0.08f;
+  float ridgeStart = 0.38f;
+  float peakStart = 0.72f;
+};
+
+struct OahuCameraPathSettings {
+  float altitude = 2.70f;
+  float routeSpeed = 0.82f;
+  float lookahead = 3.35f;
+  float bankStrength = 0.24f;
+  float lateralSway = 0.55f;
+};
+
+struct OahuRenderSettings {
+  OahuEnvironmentSettings environment;
+  OahuLightingSettings lighting;
+  OahuColorRampSettings colorRamp;
+  OahuCameraPathSettings cameraPath;
 };
 
 const VisualizationDescriptor& visualizationDescriptor(VisualizationId id);

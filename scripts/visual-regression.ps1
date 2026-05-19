@@ -14,12 +14,25 @@ $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $configName = $Config.ToLowerInvariant()
 $buildDir = Join-Path $root "build\windows-msvc-$configName"
 $captureDir = Join-Path $buildDir "captures"
+$presentationDir = Join-Path $captureDir "presentation"
 $visualizations = @("RandomLines", "Starfield", "Oahu", "ParticleField")
 $presets = @("RandomLinesHero", "StarfieldHero", "OahuFlyover", "OahuCenteredTopDown", "OahuDebugMesh", "ParticlesHero")
+
+$requiredShaderFiles = @(
+    "src\shaders\oahu_terrain.vs.sc",
+    "src\shaders\oahu_terrain.fs.sc",
+    "src\shaders\oahu_terrain_varying.def.sc",
+    "src\shaders\oahu_ocean.vs.sc",
+    "src\shaders\oahu_ocean.fs.sc",
+    "src\shaders\oahu_ocean_varying.def.sc"
+)
 
 $python = Get-Command python -ErrorAction SilentlyContinue
 if ($python) {
     & python (Join-Path $root "tools\validate_oahu_topology.py")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Oahu topology validation failed with exit code $LASTEXITCODE."
+    }
 } else {
     Write-Warning "Python was not found; skipping generated Oahu topology validation."
 }
@@ -79,11 +92,39 @@ function Read-BmpInfo {
     }
 }
 
+function Assert-BmpDimensions {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Path,
+
+        [Parameter(Mandatory=$true)]
+        [int]$ExpectedWidth,
+
+        [Parameter(Mandatory=$true)]
+        [int]$ExpectedHeight
+    )
+
+    $info = Read-BmpInfo $Path
+    if ($info.Width -ne $ExpectedWidth -or $info.Height -ne $ExpectedHeight) {
+        throw "Expected $ExpectedWidth x $ExpectedHeight capture, got $($info.Width) x $($info.Height): $Path"
+    }
+
+    return $info
+}
+
+foreach ($shaderFile in $requiredShaderFiles) {
+    $shaderPath = Join-Path $root $shaderFile
+    if (-not (Test-Path $shaderPath)) {
+        throw "Missing required shader source: $shaderFile"
+    }
+}
+
 if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot "build.ps1") -Config $Config
 }
 
 New-Item -ItemType Directory -Force -Path $captureDir | Out-Null
+New-Item -ItemType Directory -Force -Path $presentationDir | Out-Null
 
 foreach ($visualization in $visualizations) {
     $before = Get-ChildItem $captureDir -Filter *.bmp -ErrorAction SilentlyContinue |
@@ -143,6 +184,34 @@ Write-Host ("[OK] OahuDiagnostic: {0}x{1} {2}bpp -> {3}" -f $diagnosticInfo.Widt
 foreach ($preset in $presets) {
     & (Join-Path $PSScriptRoot "run.ps1") -Config $Config -Preset $preset -NoOverlay -SmokeTest
     Write-Host "[OK] Preset smoke: $preset" -ForegroundColor Green
+}
+
+$presentationCaptures = @(
+    @{
+        Presentation = "OahuFlyoverHero"
+        Width = 1280
+        Height = 720
+    },
+    @{
+        Presentation = "OahuTopDownMap"
+        Width = 1024
+        Height = 1024
+    }
+)
+
+foreach ($capture in $presentationCaptures) {
+    $presentation = $capture.Presentation
+    $output = Join-Path $presentationDir "$presentation.bmp"
+    & (Join-Path $PSScriptRoot "present.ps1") `
+        -Config $Config `
+        -Presentation $presentation `
+        -Width $capture.Width `
+        -Height $capture.Height `
+        -Output $output `
+        -SkipBuild
+
+    $info = Assert-BmpDimensions $output $capture.Width $capture.Height
+    Write-Host ("[OK] Presentation {0}: {1}x{2} {3}bpp -> {4}" -f $presentation, $info.Width, $info.Height, $info.BitsPerPixel, $output) -ForegroundColor Green
 }
 
 & (Join-Path $PSScriptRoot "run.ps1") -Config $Config -Renderer D3D11 -Visualization ParticleField -SmokeTest

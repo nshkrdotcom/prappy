@@ -77,6 +77,17 @@ Screenshots from the capture path are written below the active build directory:
 build\windows-msvc-release\captures\
 ```
 
+Create deterministic presentation captures without opening the workspace UI:
+
+```powershell
+pwsh scripts\present.ps1 -Presentation OahuFlyoverHero
+pwsh scripts\present.ps1 -Presentation OahuTopDownMap
+```
+
+Those commands render fixed-size captures through bgfx, not desktop screen
+grabs. Defaults are `1280 x 720` for flyover/hero captures and `1024 x 1024`
+for the top-down Oahu map.
+
 Use the Oahu isolation view when checking coastline shape, mesh fill, or camera
 distortion:
 
@@ -130,6 +141,7 @@ particle shaders, using the shared shader/buffer/pass lifecycle helpers.
 
 The Oahu visualization is generated from committed topology data: 4,096
 coastline samples, a 241 x 181 terrain grid, and two smoothing passes over
-USGS elevation samples. Its filled terrain now renders through a retained bgfx
-indexed mesh with dedicated terrain shaders; coastline, ridge, grid, and
-landmark layers remain available as diagnostic overlays.
+USGS elevation samples. Its filled terrain and ocean are retained bgfx indexed
+passes with dedicated shaders for height ramp coloring, lighting, horizon haze,
+and water atmosphere; coastline, ridge, grid, and landmark layers remain
+available as diagnostic overlays.

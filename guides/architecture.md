@@ -97,13 +97,19 @@ and writes a BMP file under `captures\`.
 `scripts\visual-regression.ps1` is the first behavior-level test layer. It
 validates the generated Oahu topology header, runs all visualizations, captures
 screenshots, verifies BMP dimensions, checks for nonblank pixels, captures a
-top-down Oahu diagnostic layer view, and smoke-tests a D3D11 renderer override.
+top-down Oahu diagnostic layer view, validates exact-size presentation captures,
+and smoke-tests a D3D11 renderer override.
 
 Presentation presets can also be smoke-tested directly, for example:
 
 ```powershell
 pwsh scripts\run.ps1 -Preset OahuCenteredTopDown -SmokeTest -ScreenshotSmoke
 ```
+
+Presentation mode is runtime-only: scripts pass fixed timestep, window size,
+profile, capture path, capture frame, and exit frame arguments to the normal
+executable. That keeps captures reproducible without adding a gallery or a
+second rendering entry point.
 
 ## Oahu Data Isolation
 

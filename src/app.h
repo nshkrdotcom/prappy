@@ -7,6 +7,7 @@
 #include <SDL3/SDL.h>
 
 #include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <string>
 
@@ -20,15 +21,20 @@ struct AppState {
   bool smokeTest = false;
   bool screenshotSmoke = false;
   bool focusMode = false;
+  bool presentationMode = false;
   bool showStackPanel = true;
   bool showInspectorPanel = true;
   bool showStatusStrip = true;
   bool screenshotRequested = false;
   int frameCount = 0;
+  int screenshotFrame = 1;
+  int exitFrame = 3;
   float deltaSeconds = 1.0f / 60.0f;
+  float fixedDeltaSeconds = 0.0f;
   float elapsedSeconds = 0.0f;
   float screenshotStatusSeconds = 0.0f;
   std::string screenshotStatus;
+  std::filesystem::path screenshotOutputPath;
   bool bgfxReady = false;
   bool imguiReady = false;
   std::ofstream smokeLog;
@@ -40,6 +46,7 @@ struct AppState {
   VisualizationRenderer visualizationRenderer;
   VisualizationHost visualizations;
   OahuDiagnosticSettings oahuDiagnostics;
+  OahuRenderSettings oahuRenderSettings;
 
   bgfx::VertexLayout imguiLayout;
   Program imguiProgram;

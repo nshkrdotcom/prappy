@@ -259,6 +259,40 @@ add_custom_command(
 )
 
 add_custom_command(
+  OUTPUT "${SHADER_OUT_DIR}/oahu_ocean_vs.bin"
+  COMMAND "${BGFX_SHADERC}"
+    -f "${ROOT_DIR}/src/shaders/oahu_ocean.vs.sc"
+    -o "${SHADER_OUT_DIR}/oahu_ocean_vs.bin"
+    --type vertex
+    --platform windows
+    -p s_5_0
+    --varyingdef "${ROOT_DIR}/src/shaders/oahu_ocean_varying.def.sc"
+    -i "${BGFX_DIR}/src"
+  DEPENDS
+    "${BGFX_SHADERC}"
+    "${ROOT_DIR}/src/shaders/oahu_ocean.vs.sc"
+    "${ROOT_DIR}/src/shaders/oahu_ocean_varying.def.sc"
+  VERBATIM
+)
+
+add_custom_command(
+  OUTPUT "${SHADER_OUT_DIR}/oahu_ocean_fs.bin"
+  COMMAND "${BGFX_SHADERC}"
+    -f "${ROOT_DIR}/src/shaders/oahu_ocean.fs.sc"
+    -o "${SHADER_OUT_DIR}/oahu_ocean_fs.bin"
+    --type fragment
+    --platform windows
+    -p s_5_0
+    --varyingdef "${ROOT_DIR}/src/shaders/oahu_ocean_varying.def.sc"
+    -i "${BGFX_DIR}/src"
+  DEPENDS
+    "${BGFX_SHADERC}"
+    "${ROOT_DIR}/src/shaders/oahu_ocean.fs.sc"
+    "${ROOT_DIR}/src/shaders/oahu_ocean_varying.def.sc"
+  VERBATIM
+)
+
+add_custom_command(
   OUTPUT "${SHADER_OUT_DIR}/particle_vs.bin"
   COMMAND "${BGFX_SHADERC}"
     -f "${ROOT_DIR}/src/shaders/particle.vs.sc"
@@ -315,6 +349,8 @@ add_custom_target(shaders ALL
     "${SHADER_OUT_DIR}/color_fs.bin"
     "${SHADER_OUT_DIR}/oahu_terrain_vs.bin"
     "${SHADER_OUT_DIR}/oahu_terrain_fs.bin"
+    "${SHADER_OUT_DIR}/oahu_ocean_vs.bin"
+    "${SHADER_OUT_DIR}/oahu_ocean_fs.bin"
     "${SHADER_OUT_DIR}/particle_vs.bin"
     "${SHADER_OUT_DIR}/particle_fs.bin"
     "${SHADER_OUT_DIR}/particle_update_cs.bin"
@@ -346,6 +382,12 @@ add_custom_command(TARGET prappy_native POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${SHADER_OUT_DIR}/oahu_terrain_fs.bin"
     "$<TARGET_FILE_DIR:prappy_native>/shaders/oahu_terrain_fs.bin"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${SHADER_OUT_DIR}/oahu_ocean_vs.bin"
+    "$<TARGET_FILE_DIR:prappy_native>/shaders/oahu_ocean_vs.bin"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${SHADER_OUT_DIR}/oahu_ocean_fs.bin"
+    "$<TARGET_FILE_DIR:prappy_native>/shaders/oahu_ocean_fs.bin"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${SHADER_OUT_DIR}/particle_vs.bin"
     "$<TARGET_FILE_DIR:prappy_native>/shaders/particle_vs.bin"

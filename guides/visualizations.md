@@ -38,6 +38,27 @@ pwsh scripts\run.ps1 -Preset ParticlesHero
 The same presets are available from the `Visualization > Preset` menu and the
 inspector.
 
+## Presentation Captures
+
+Use `present.ps1` when you want a deterministic capture from the renderer path
+without workspace UI panels:
+
+```powershell
+pwsh scripts\present.ps1 -Presentation OahuFlyoverHero
+pwsh scripts\present.ps1 -Presentation OahuTopDownMap
+pwsh scripts\present.ps1 -Presentation ParticlesHero
+pwsh scripts\present.ps1 -Presentation StarfieldHero
+pwsh scripts\present.ps1 -Presentation RandomLinesHero
+```
+
+`OahuFlyoverHero`, `ParticlesHero`, `StarfieldHero`, and `RandomLinesHero`
+default to `1280 x 720`. `OahuTopDownMap` defaults to `1024 x 1024`. Override
+the frame size and output path when needed:
+
+```powershell
+pwsh scripts\present.ps1 -Presentation OahuFlyoverHero -Width 1920 -Height 1080 -Output build\captures\oahu-hero.bmp
+```
+
 ## Controls
 
 The 3D visualizations share a camera rig:
@@ -69,9 +90,13 @@ terrain, coastline, terrain grid, ridge lines, landmarks, and top-down view.
 The generated Oahu data is intentionally high-density: 4,096 coastline samples,
 a 241 x 181 terrain grid, and smoothed USGS elevation samples.
 
-Oahu filled terrain is a retained bgfx indexed mesh with a dedicated terrain
-shader. Coastline, ridge, grid, and landmark diagnostics remain transient line
-overlays so they can be toggled without rebuilding the terrain buffers.
+Oahu terrain is a retained bgfx indexed mesh with a dedicated terrain shader
+for height ramp coloring, ambient/diffuse lighting, and distance haze. The
+flyover view also renders a retained ocean grid before the terrain pass. The
+visual inspector exposes atmosphere, lighting, height ramp, and flyover route
+controls, while coastline, ridge, grid, and landmark diagnostics remain
+transient line overlays so they can be toggled without rebuilding the terrain
+buffers.
 
 The particle field exposes inspector controls for particle count, speed, spread,
 turbulence, trail length, hue drift, reset, and compute preference. On compute
