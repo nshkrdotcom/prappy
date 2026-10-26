@@ -5,10 +5,15 @@ CMake 4.4.4 and Ninja 1.13.2. Final Release build succeeded without compiler
 warnings from the player. These checks were run against the executable, not only
 source inspection.
 
-The resize/title-bar build passed the updated window checks. The subsequent
-rebuild embedding the slimmer PP icon also compiled successfully, but Windows
-Application Control blocked its launch, so those runtime checks could not be
-repeated against the icon rebuild. No security settings were changed.
+The resize/title-bar build passed the updated window checks. Windows Application
+Control initially blocked the subsequent slim-icon build. For comparison, a
+relink using only the previous icon launched and passed the checks. Restoring
+the latest icon and relinking also launched and passed the same checks, followed
+by the duplicate/playback integration test. The normal player then launched from
+`C:\\` and remained responsive, with Smart App Control still On. No framework
+code or security settings changed during this comparison. This isolates a
+build-specific acceptance problem; it does not establish the reason for the
+earlier rejection or guarantee acceptance of future rebuilds.
 
 Commands, from this app directory:
 
