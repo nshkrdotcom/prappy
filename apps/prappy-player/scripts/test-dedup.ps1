@@ -1,7 +1,7 @@
 #Requires -Version 7.0
 $ErrorActionPreference='Stop'
 $app=Split-Path $PSScriptRoot -Parent
-$test=Join-Path $app 'build\dedup-test'
+$test=Join-Path $app 'build\dedup-test\scraper\library'
 foreach($folder in @('a','b','copies')) { New-Item -ItemType Directory -Force "$test\$folder" | Out-Null }
 # Two valid WAVs share filename, length, header and tail, but differ in the middle.
 $stream=[IO.File]::Create("$test\a\same.wav")
@@ -33,4 +33,5 @@ Write-Host $results
 if($p.ExitCode -ne 0 -or $results -notmatch 'Scan: 2 tracks \| 2 identical copies hidden') {
     throw 'Dedup regression failed: renamed copies must collapse; same-name middle differences must remain.'
 }
+if ($results -notmatch 'Testing library\\a\\same\.wav') { throw 'Track label did not strip scraper and its parent directories.' }
 Write-Host 'PASS renamed copies, overlapping roots, same-name distinct audio, and equal-sample/different-middle collision.'

@@ -74,6 +74,22 @@ static fs::path displayPath(const fs::path& path) {
     if (value.starts_with(L"\\\\?\\")) return value.substr(4);
     return path;
 }
+static std::string readablePath(const fs::path& path, const std::vector<fs::path>& roots) {
+    if (path.empty()) return {};
+    fs::path relative;
+    bool afterScraper = false;
+    for (const auto& part : path) {
+        if (afterScraper) relative /= part;
+        else if (key(part) == L"scraper") afterScraper = true;
+    }
+    if (afterScraper) return utf8(relative);
+    for (const auto& root : roots) {
+        relative = path.lexically_relative(root);
+        if (!relative.empty() && !relative.is_absolute() && *relative.begin() != L"..")
+            return utf8(root.filename() / relative);
+    }
+    return utf8(path);
+}
 static fs::path executableDir() {
     std::wstring buf(32768, L'\0');
     DWORD n = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
@@ -130,6 +146,7 @@ struct Track {
     std::wstring id;
     uintmax_t bytes = 0;
     std::vector<fs::path> copies;
+    std::string label;
 };
 struct ScanProgress {
     std::atomic<size_t> found{0}, checked{0}, total{0};
@@ -245,8 +262,10 @@ static size_t removeDuplicates(std::vector<Track>& tracks, std::stop_token stop,
 }
 struct Library {
     std::vector<Track> tracks;
+    std::vector<fs::path> roots;
     int order = 0;
     std::string notice;
+    std::string pathLabel(const fs::path& path) const { return readablePath(path, roots); }
     static bool matches(const Track& track, const std::wstring& id) {
         return track.id == id || std::any_of(track.copies.begin(), track.copies.end(), [&](auto& p) { return key(p) == id; });
     }
@@ -285,7 +304,7 @@ struct Library {
                             auto path = displayPath(entry.path().lexically_normal());
                             auto id = key(path);
                             const auto bytes = entry.file_size(ec);
-                            if (!ec && seen.insert(id).second) found.push_back({path, utf8(path.filename()), utf8(path.parent_path()), ext.substr(1), id, bytes, {}});
+                            if (!ec && seen.insert(id).second) found.push_back({path, utf8(path.filename()), readablePath(path.parent_path(), config.roots), ext.substr(1), id, bytes, {}, readablePath(path, config.roots)});
                             if (progress) progress->found = found.size();
                         }
                     }
@@ -294,7 +313,7 @@ struct Library {
                 }
             }
             const auto duplicates = removeDuplicates(found, stop, progress);
-            tracks = std::move(found); sort();
+            tracks = std::move(found); roots = config.roots; sort();
             notice = std::to_string(tracks.size()) + " tracks";
             if (duplicates) notice += " | " + std::to_string(duplicates) + " identical copies hidden";
             if (!warnings.empty()) notice += " | " + warnings.front() + (warnings.size() > 1 ? " (+more)" : "");
@@ -490,7 +509,7 @@ static int selfTest(const fs::path& config, const fs::path& logFile) {
         const auto testTracks = library.tracks;
         for (auto track : testTracks) {
             if (!formats.insert(track.type).second) continue;
-            log << "Testing " << track.name << std::endl;
+            log << "Testing " << track.label << std::endl;
             if (!audio.play(track.path)) throw std::runtime_error(audio.error);
             auto waitLoaded = [&] {
                 for (int i = 0; i < 500; ++i) { audio.poll(); if (audio.loaded) return; if (!audio.error.empty()) throw std::runtime_error(audio.error); SDL_Delay(10); }
@@ -678,20 +697,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                     if (reinterpret_cast<INT_PTR>(result) <= 32) library.notice = "Could not open player.ini.";
                 }
                 rememberControl();
-                if (ImGui::BeginChild("Tracks", {0, std::max(1.0f, transportY - ImGui::GetCursorPosY() - u(4))}, ImGuiChildFlags_None)) {
+                if (ImGui::BeginChild("Tracks", {0, std::max(1.0f, transportY - ImGui::GetCursorPosY() - u(4))}, ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar)) {
                     const auto current = key(audio.current);
                     auto row = [&](size_t i) {
                         const auto& t = library.tracks[i];
                         ImGui::PushID(static_cast<int>(i));
-                        if (ImGui::Selectable(t.name.c_str(), Library::matches(t, current))) audio.play(t.path);
+                        if (ImGui::Selectable(t.label.c_str(), Library::matches(t, current))) audio.play(t.path);
                         rememberControl();
                         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-                            std::string paths = utf8(t.path);
+                            std::string paths = t.label;
                             if (!t.copies.empty()) {
                                 paths += "\n\nIdentical copies (" + std::to_string(t.copies.size()) + "):";
-                                for (auto& copy : t.copies) paths += "\n" + utf8(copy);
+                                for (auto& copy : t.copies) paths += "\n" + library.pathLabel(copy);
                             }
-                            ImGui::SetTooltip("%s", paths.c_str());
+                            ImGui::BeginTooltip();
+                            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 44);
+                            ImGui::TextUnformatted(paths.c_str());
+                            ImGui::PopTextWrapPos(); ImGui::EndTooltip();
                         }
                         ImGui::PopID();
                     };
@@ -722,14 +744,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                         const auto bar = ImGui::GetStyle().ScrollbarSize;
                         nextControls.push_back({pos.x + size.x - bar, pos.y, bar, size.y});
                     }
+                    if (ImGui::GetScrollMaxX() > 0) {
+                        auto pos = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
+                        const auto bar = ImGui::GetStyle().ScrollbarSize;
+                        nextControls.push_back({pos.x, pos.y + size.y - bar, size.x, bar});
+                    }
                 }
                 ImGui::EndChild();
             }
             auto draw = ImGui::GetWindowDrawList();
             draw->AddRectFilled({0, transportY}, {static_cast<float>(width), static_cast<float>(height)}, IM_COL32(49, 53, 56, 255));
             ImGui::SetCursorPos({u(8), transportY + u(4)});
-            ImGui::TextUnformatted(audio.current.empty() ? "Choose a track from List" : utf8(audio.current.filename()).c_str());
-            tooltip(utf8(audio.current));
+            ImGui::TextUnformatted(audio.current.empty() ? "Choose a track from List" : library.pathLabel(audio.current).c_str());
+            tooltip(library.pathLabel(audio.current));
             ImGui::SetNextItemWidth(u(332));
             float seek = static_cast<float>(audio.position), duration = static_cast<float>(audio.duration);
             ImGui::PushStyleColor(ImGuiCol_SliderGrab, {.96f, .74f, .39f, 1});

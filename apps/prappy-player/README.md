@@ -80,7 +80,11 @@ operate the scraper, change its recordings or interfere with collection jobs.
 ## Controls
 
 - **List** expands/collapses the library. Choose filename order, directory groups
-  or file type groups. Click a track to play it; hover for its complete path.
+  or file type groups. Rows show each track's relative path, including its
+  filename. Paths under `scraper` start after that directory, for example
+  `library\beat-suite\render\mix.flac`. Other roots use their folder name as
+  the prefix. Hover for the same path and any identical-copy locations;
+  scroll horizontally to read longer rows.
 - Previous, Play/Pause, Next, seek and volume are always at the bottom.
   Automatic progression stops after the final track; explicit Next wraps.
   Playback errors stop progression and appear in the status line.
