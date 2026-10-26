@@ -26,10 +26,18 @@ try {
             & "$PSScriptRoot/test-dedup.ps1" -BuildVariant $variant
             if ($variant -eq 'Debug') { Require-LeakReport $report }
         }
+        $report = Join-Path $out "$variant-state-$([Guid]::NewGuid().ToString('N')).log"
+        $env:PRAPPY_LEAK_REPORT = $report
+        & "$PSScriptRoot/test-state.ps1" -BuildVariant $variant
+        if ($variant -eq 'Debug') { Require-LeakReport $report }
+        $report = Join-Path $out "$variant-ui-$([Guid]::NewGuid().ToString('N')).log"
+        $env:PRAPPY_LEAK_REPORT = $report
+        & "$PSScriptRoot/verify-features.ps1" -BuildVariant $variant
+        if ($variant -eq 'Debug') { Require-LeakReport $report }
         $report = Join-Path $out "$variant-window-$([Guid]::NewGuid().ToString('N')).log"
         $env:PRAPPY_LEAK_REPORT = $report
         & "$PSScriptRoot/verify-window.ps1" -BuildVariant $variant
         if ($variant -eq 'Debug') { Require-LeakReport $report }
     }
 } finally { $env:PRAPPY_LEAK_REPORT = $previousReport }
-Write-Host 'PASS strict builds, static analysis, playback stress, Debug CRT leaks and ASan window/playback checks.'
+Write-Host 'PASS strict builds, static analysis, playback stress, catalog/history/repeat state and UI checks, Debug CRT leaks and ASan.'

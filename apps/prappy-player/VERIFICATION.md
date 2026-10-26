@@ -1,5 +1,48 @@
 # Windows verification
 
+## Persistent catalog, history and repeat, 2026-10-26
+
+The final `verify-health.ps1` run passed with MSVC 19.44: Release, Debug and
+Debug-Asan runtime suites plus a clean `/analyze` build. `/W4 /WX /permissive-`
+remain enforced. Debug CRT reports passed for playback, state integration,
+feature UI and native window checks; no ASan errors were detected.
+
+State integration covers:
+
+- Default 10,000-entry retention, configurable limits, branch-preserving history,
+  Back/Forward without duplicate visits, pruning an active old visit and pruning
+  while navigation is pending.
+- UTF-8, Unicode/UNC paths, LF and Windows CRLF/BOM history, malformed/truncated
+  records, bounded lengths, backup rotation/recovery, valid-entry salvage with
+  damaged-source preservation, newer-version preservation and failed/locked writes.
+- Independent binary catalog format version, checksum/config validation,
+  modification-aware verification reuse, forced revalidation, changed/deleted
+  files, offline roots/hard links and configured aliases of canonical paths.
+- Real mpv playback with rapid requests and stale events, failed-load/decoder-error
+  rollback, pause intent during loading, and paused position/repeat restoration.
+- Natural EOF in Off, One and All; manual Next with One enabled; one-track All
+  looping and empty-library handling.
+
+Feature UI tests use explicit `--window-test` instances and isolated fixtures.
+They send acknowledged ImGui input events, waiting for observed hover, press,
+activation and state changes. They do not use fixed sleeps to assume readiness
+and do not compete for the physical desktop cursor. Tests inspect the actual
+history file, all repeat tooltip strings, History opening, row selection and
+search filtering. Screenshots of the repeat graphics and history view were
+visually inspected. Native resize/DPI/hit regions and clean exit are tested
+separately by `verify-window.ps1` through Win32. Test state never uses normal
+Release history/config/catalog files.
+
+Additional final Release, Debug and Debug-Asan integration runs passed FLAC,
+WAV, MP3, Opus, AAC/M4A and WavPack playback, including muted Windows WASAPI output.
+The Debug six-format run also reported no CRT leaks. Generated logs and fixture
+state remain under `build/health`, `build/state-tests` and `build/feature-ui`.
+
+Catalog verification reuse assumes unchanged path, size and modification time
+means unchanged contents. Shift+Refresh explicitly forces content verification.
+Tests do not simulate sudden power loss or prove absence of all defects, and
+the prebuilt mpv DLL remains outside ASan/Debug CRT instrumentation coverage.
+
 ## Button alignment, 2026-10-26
 
 Button labels now center their visible glyph bounds, including the compact List

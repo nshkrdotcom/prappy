@@ -33,6 +33,8 @@
 #include <stop_token>
 #include <tuple>
 #include <vector>
+#include <charconv>
+#include "history.h"
 #ifdef _DEBUG
 #include <crtdbg.h>
 
@@ -66,6 +68,7 @@ constexpr int MinHeight = 250, TransportHeight = 202;
 static WNDPROC originalProc;
 static constexpr wchar_t AppId[] = L"nshkrdotcom.Prappy.Player";
 static std::vector<SDL_FRect> controls, nextControls;
+#include "ui_probe.h"
 static void rememberControl() {
     if (!ImGui::IsItemVisible()) return;
     auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
@@ -133,7 +136,7 @@ static fs::path executableDir() {
     if (!n || n >= buf.size()) throw std::runtime_error("Cannot locate executable directory.");
     buf.resize(n); return fs::path(buf).parent_path();
 }
-struct Config { std::vector<fs::path> roots; std::set<std::string> extensions; };
+struct Config { std::vector<fs::path> roots; std::set<std::string> extensions; size_t historyLimit = 10000; };
 static Config readConfig(const fs::path& file) {
     std::ifstream input(file);
     if (!input) throw std::runtime_error("Cannot read player.ini beside the executable.");
@@ -162,6 +165,12 @@ static Config readConfig(const fs::path& file) {
                     throw std::runtime_error("Config: invalid extension.");
                 config.extensions.insert('.' + ext);
             }
+        } else if (name == "history_limit") {
+            size_t limit = 0;
+            const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), limit);
+            if (error != std::errc{} || end != value.data() + value.size() || limit == 0 || limit > stateio::MaxRecords)
+                throw std::runtime_error("Config: history_limit must be between 1 and 1000000.");
+            config.historyLimit = limit;
         } else throw std::runtime_error("Config line " + std::to_string(number) + ": unknown key " + name);
     }
     if (config.roots.empty() || config.extensions.empty()) throw std::runtime_error("Config needs directory and extensions entries.");
@@ -174,7 +183,7 @@ static void createDefaultConfig(const fs::path& file) {
     const auto root = utf8(fs::path(music)); CoTaskMemFree(music);
     std::ofstream out(file);
     out << "# UTF-8. Repeat directory= for more roots. Relative roots resolve beside this file.\n"
-        << "directory=" << root << "\nextensions=flac,wav,mp3,opus,m4a,wv,mka,webm,ogg,aac,aiff,wma\n";
+        << "directory=" << root << "\nextensions=flac,wav,mp3,opus,m4a,wv,mka,webm,ogg,aac,aiff,wma\nhistory_limit=10000\n";
     if (!out) throw std::runtime_error("Cannot create player.ini. Put the player in a writable folder.");
 }
 struct Track {
@@ -184,9 +193,13 @@ struct Track {
     uintmax_t bytes = 0;
     std::vector<fs::path> copies;
     std::string label;
+    int64_t stamp = 0;
+    bool offline = false;
+    fs::path sourceRoot;
 };
 struct ScanProgress {
     std::atomic<size_t> found{0}, checked{0}, total{0};
+    std::atomic<size_t> hashReads{0}, hashReused{0};
     std::atomic<bool> dedup{false};
 };
 static bool fingerprint(const Track& track, uint64_t& hash) {
@@ -209,6 +222,13 @@ static bool fingerprint(const Track& track, uint64_t& hash) {
     return true;
 }
 using Digest = std::array<unsigned char, 32>;
+struct Verification {
+    uintmax_t bytes = 0;
+    int64_t stamp = 0;
+    std::optional<uint64_t> sample;
+    std::optional<Digest> sha;
+};
+using VerificationCache = std::map<std::wstring, Verification>;
 static std::optional<Digest> digest(const Track& track, std::stop_token stop) {
     std::ifstream file(extendedPath(track.path), std::ios::binary);
     if (!file) return {};
@@ -231,10 +251,38 @@ static std::optional<Digest> digest(const Track& track, std::stop_token stop) {
     if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0);
     return ok ? std::optional<Digest>(result) : std::nullopt;
 }
-static size_t removeDuplicates(std::vector<Track>& tracks, std::stop_token stop, ScanProgress* progress) {
+static size_t removeDuplicates(std::vector<Track>& tracks, std::stop_token stop, ScanProgress* progress, VerificationCache* cache = nullptr) {
     // Sample only same-size candidates; samples never establish equality.
-    // Confirm full-file SHA-256 before collapsing a copy. No persistent index.
-    std::sort(tracks.begin(), tracks.end(), [](auto& a, auto& b) { return a.id < b.id; });
+    // Reuse verification only for unchanged path/size/mtime metadata.
+    // Samples alone never establish equality.
+    const auto record = [&](const Track& track) -> Verification* {
+        if (!cache || track.stamp == 0) return nullptr;
+        auto& value = (*cache)[track.id];
+        if (value.bytes != track.bytes || value.stamp != track.stamp) value = {track.bytes, track.stamp, {}, {}};
+        return &value;
+    };
+    const auto sampleFor = [&](const Track& track, uint64_t& value) {
+        auto saved = record(track);
+        if (saved && saved->sample) { value = *saved->sample; if (progress) ++progress->hashReused; return true; }
+        if (track.offline) return false;
+        if (progress) ++progress->hashReads;
+        if (!fingerprint(track, value)) return false;
+        if (saved) saved->sample = value;
+        return true;
+    };
+    const auto digestFor = [&](const Track& track) -> std::optional<Digest> {
+        auto saved = record(track);
+        if (saved && saved->sha) { if (progress) ++progress->hashReused; return saved->sha; }
+        if (track.offline) return {};
+        if (progress) ++progress->hashReads;
+        auto value = digest(track, stop);
+        std::error_code ec;
+        const auto stamp = fs::last_write_time(extendedPath(track.path), ec);
+        if (ec || (track.stamp && stamp.time_since_epoch().count() != track.stamp)) return {};
+        if (saved) saved->sha = value;
+        return value;
+    };
+    std::sort(tracks.begin(), tracks.end(), [](auto& a, auto& b) { return a.offline != b.offline ? !a.offline : a.id < b.id; });
     std::map<uintmax_t, size_t> sizes;
     for (auto& t : tracks) ++sizes[t.bytes];
     struct Bucket { std::optional<size_t> first; std::map<Digest, size_t> hashes; };
@@ -249,7 +297,7 @@ static size_t removeDuplicates(std::vector<Track>& tracks, std::stop_token stop,
         if (stop.stop_requested()) throw std::runtime_error("Scan cancelled.");
         if (progress) ++progress->checked;
         std::optional<FileIdentity> trackIdentity;
-        if (sizes[track.bytes] > 1) {
+        if (sizes[track.bytes] > 1 && !track.offline) {
             HANDLE handle = CreateFileW(extendedPath(track.path).c_str(), FILE_READ_ATTRIBUTES,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
             if (handle != INVALID_HANDLE_VALUE) {
@@ -272,17 +320,17 @@ static size_t removeDuplicates(std::vector<Track>& tracks, std::stop_token stop,
             }
         }
         uint64_t hash = 0;
-        if (sizes[track.bytes] > 1 && fingerprint(track, hash)) {
+        if (sizes[track.bytes] > 1 && sampleFor(track, hash)) {
             auto& bucket = candidates[{track.bytes, hash}];
             if (!bucket.first && bucket.hashes.empty()) {
                 bucket.first = unique.size();
             } else {
                 if (bucket.first) {
                     const auto i = *bucket.first;
-                    if (auto value = digest(unique[i], stop)) bucket.hashes.emplace(*value, i);
+                    if (auto value = digestFor(unique[i])) bucket.hashes.emplace(*value, i);
                     bucket.first.reset();
                 }
-                if (auto value = digest(track, stop)) {
+                if (auto value = digestFor(track)) {
                     auto [it, inserted] = bucket.hashes.emplace(*value, unique.size());
                     if (!inserted) {
                         if (trackIdentity) hardLinks.emplace(*trackIdentity, it->second);
@@ -299,7 +347,13 @@ static size_t removeDuplicates(std::vector<Track>& tracks, std::stop_token stop,
 }
 struct Library {
     std::vector<Track> tracks;
+    std::vector<Track> files;
+    VerificationCache verified;
     std::vector<fs::path> roots;
+    std::set<std::string> extensions;
+    size_t historyLimit = 10000;
+    bool catalogBackup = true;
+    bool forceVerification = false;
     int order = 0;
     std::string notice;
     std::string pathLabel(const fs::path& path) const { return readablePath(path, roots); }
@@ -335,15 +389,16 @@ struct Library {
             const auto config = readConfig(configFile);
             std::vector<Track> found; std::set<std::wstring> seen;
             std::vector<std::string> warnings;
+            std::vector<fs::path> unavailable;
             for (const auto& root : config.roots) {
                 std::error_code ec;
-                if (!fs::is_directory(root, ec)) { warnings.push_back("Missing root: " + utf8(root)); continue; }
+                if (!fs::is_directory(root, ec)) { warnings.push_back("Offline root: " + utf8(root)); unavailable.push_back(root); continue; }
                 // Canonicalize once per root. Doing this for every audio file creates
                 // thousands of redundant UNC/WSL metadata round trips.
                 auto scanRoot = fs::weakly_canonical(root, ec);
                 if (ec) { scanRoot = root; ec.clear(); }
                 fs::recursive_directory_iterator it(extendedPath(scanRoot), fs::directory_options::skip_permission_denied, ec), end;
-                if (ec) { warnings.push_back("Cannot scan: " + utf8(root)); continue; }
+                if (ec) { warnings.push_back("Cannot scan: " + utf8(root)); unavailable.push_back(root); continue; }
                 while (it != end) {
                     if (stop.stop_requested()) throw std::runtime_error("Scan cancelled.");
                     const auto entry = *it;
@@ -357,16 +412,73 @@ struct Library {
                             auto path = displayPath(entry.path().lexically_normal());
                             auto id = key(path);
                             const auto bytes = entry.file_size(ec);
-                            if (!ec && seen.insert(id).second) found.push_back({path, utf8(path.filename()), readablePath(path.parent_path(), config.roots), ext.substr(1), id, bytes, {}, readablePath(path, config.roots)});
+                            if (!ec && seen.insert(id).second) {
+                                const auto modified = entry.last_write_time(ec);
+                                found.push_back({path, utf8(path.filename()), readablePath(path.parent_path(), config.roots), ext.substr(1), id, bytes, {}, readablePath(path, config.roots), ec ? 0 : modified.time_since_epoch().count(), false, root});
+                            }
+                            if (found.size() > stateio::MaxRecords) throw std::runtime_error("Catalog exceeds one million files.");
                             if (progress) progress->found = found.size();
                         }
                     }
                     ec.clear(); it.increment(ec);
-                    if (ec) { warnings.push_back("Scan: " + ec.message() + " | " + utf8(root)); break; }
+                    if (ec) { warnings.push_back("Scan: " + ec.message() + " | " + utf8(root)); unavailable.push_back(root); break; }
                 }
             }
-            const auto duplicates = removeDuplicates(found, stop, progress);
-            tracks = std::move(found); roots = config.roots; sort();
+            for (const auto& old : files) {
+                const bool retain = std::any_of(unavailable.begin(), unavailable.end(), [&](const auto& root) {
+                    return key(old.sourceRoot) == key(root);
+                });
+                if (retain && config.extensions.contains('.' + old.type) && seen.insert(old.id).second) {
+                    auto copy = old; copy.offline = true; found.push_back(std::move(copy));
+                }
+            }
+            std::erase_if(verified, [&](const auto& item) { return !seen.contains(item.first); });
+            if (found.size() > stateio::MaxRecords) throw std::runtime_error("Catalog exceeds one million files.");
+            const bool sameConfig = roots.size() == config.roots.size() && extensions == config.extensions &&
+                std::equal(roots.begin(), roots.end(), config.roots.begin(), [](const auto& a, const auto& b) { return key(a) == key(b); });
+            std::map<std::wstring, const Track*> priorFiles;
+            for (const auto& file : files) priorFiles.emplace(file.id, &file);
+            const bool unchanged = !forceVerification && sameConfig && found.size() == files.size() &&
+                std::all_of(found.begin(), found.end(), [&](const auto& file) {
+                    const auto old = priorFiles.find(file.id);
+                    return old != priorFiles.end() && file.stamp != 0 && file.stamp == old->second->stamp &&
+                        file.bytes == old->second->bytes && file.offline == old->second->offline;
+                });
+            size_t duplicates = 0;
+            if (unchanged) {
+                files = std::move(found); duplicates = files.size() - tracks.size();
+                if (progress) progress->hashReused = files.size();
+            } else {
+                files = found;
+                duplicates = removeDuplicates(found, stop, progress, &verified);
+                // Preserve known hard-link/copy groups while their entire root is offline.
+                // Their files cannot be opened to rediscover identity until the root returns.
+                std::map<std::wstring, std::wstring> priorGroups;
+                for (const auto& old : tracks) {
+                    priorGroups.emplace(old.id, old.id);
+                    for (const auto& copy : old.copies) priorGroups.emplace(key(copy), old.id);
+                }
+                std::map<std::wstring, size_t> offlineGroups;
+                std::vector<Track> reconciled;
+                for (auto& track : found) {
+                    const auto group = priorGroups.find(track.id);
+                    if (track.offline && group != priorGroups.end()) {
+                        const auto [it, inserted] = offlineGroups.emplace(group->second, reconciled.size());
+                        if (!inserted) {
+                            auto& original = reconciled[it->second];
+                            original.copies.push_back(track.path);
+                            original.copies.insert(original.copies.end(), track.copies.begin(), track.copies.end());
+                            duplicates += 1 + track.copies.size();
+                            continue;
+                        }
+                    }
+                    reconciled.push_back(std::move(track));
+                }
+                tracks = std::move(reconciled);
+            }
+            forceVerification = false;
+            roots = config.roots; extensions = config.extensions;
+            historyLimit = config.historyLimit; sort();
             notice = std::to_string(tracks.size()) + " tracks";
             if (duplicates) notice += " | " + std::to_string(duplicates) + " identical copies hidden";
             if (!warnings.empty()) notice += " | " + warnings.front() + (warnings.size() > 1 ? " (+more)" : "");
@@ -375,6 +487,7 @@ struct Library {
         } catch (const std::exception& e) { notice = e.what(); return false; }
     }
 };
+#include "catalog.h"
 // One cancellable scan, started only on launch or by the Refresh button.
 // Worker owns its result; the UI swaps it in only after completion.
 struct Scan {
@@ -383,13 +496,19 @@ struct Scan {
     std::future<std::pair<Library, bool>> job;
     ~Scan() { cancel.request_stop(); if (job.valid()) job.wait(); }
     bool running() const { return job.valid(); }
-    void begin(const fs::path& config, int order) {
+    void begin(const fs::path& config, int order, const Library* previous = nullptr, bool persist = false) {
         if (running()) return;
         progress.found = progress.checked = progress.total = 0; progress.dedup = false;
+        progress.hashReads = progress.hashReused = 0;
         cancel = std::stop_source{};
-        job = std::async(std::launch::async, [this, config, order, stop = cancel.get_token()] {
-            Library next; next.order = order;
+        Library baseline; if (previous) baseline = *previous;
+        job = std::async(std::launch::async, [this, config, order, persist, next = std::move(baseline), stop = cancel.get_token()] () mutable {
+            next.order = order;
             bool success = next.refresh(config, stop, &progress);
+            if (success && persist && !stop.stop_requested()) {
+                try { saveCatalog(config.parent_path() / "player-catalog.bin", next); next.catalogBackup = true; }
+                catch (const std::exception& e) { next.notice += " | Catalog save failed: " + std::string(e.what()); }
+            }
             return std::make_pair(std::move(next), success);
         });
     }
@@ -420,6 +539,8 @@ struct Audio {
     std::string error;
     fs::path current;
     bool loaded = false, paused = false, active = false, waitingStart = false;
+    int64_t desiredEntry = -1, eventEntry = -1;
+    uint64_t serial = 0, loadedSerial = 0;
     double position = 0, duration = 0, volume = 70;
     ~Audio() { if (handle) terminate_destroy(handle); if (dll) FreeLibrary(dll); }
     void open(bool silent = false) {
@@ -445,19 +566,28 @@ struct Audio {
         int result = command(handle, list.data());
         if (result < 0) { error = error_string(result); return false; } return true;
     }
-    bool play(const fs::path& path) {
+    bool play(const fs::path& path, bool startPaused = false, double startPosition = 0) {
         poll(); // Consume the previous track's events before replacing its identity.
         const auto file = utf8(path);
-        if (!run({"loadfile", file.c_str(), "replace"})) return false;
-        current = path; loaded = false; active = true; waitingStart = true; position = duration = 0; paused = false; error.clear();
-        int no = 0; set_property(handle, "pause", MPV_FORMAT_FLAG, &no); return true;
+        int pauseValue = startPaused ? 1 : 0;
+        const int result = set_property(handle, "pause", MPV_FORMAT_FLAG, &pauseValue);
+        if (result < 0) { error = error_string(result); return false; }
+        const auto options = std::string(startPaused ? "pause=yes,start=" : "pause=no,start=") + std::to_string(std::max(0.0, startPosition));
+        if (!run({"loadfile", file.c_str(), "replace", "-1", options.c_str()})) return false;
+        if (get_property(handle, "playlist/0/id", MPV_FORMAT_INT64, &desiredEntry) < 0) {
+            error = "Cannot identify requested playback."; return false;
+        }
+        ++serial;
+        current = path; loaded = false; active = true; waitingStart = true;
+        position = startPosition; duration = 0; paused = startPaused; error.clear(); return true;
     }
-    void pause() {
+    void setPaused(bool value) {
         if (!active) return;
-        int value = paused ? 0 : 1;
-        int result = set_property(handle, "pause", MPV_FORMAT_FLAG, &value);
-        if (result < 0) error = error_string(result); else paused = value != 0;
+        int flag = value ? 1 : 0;
+        int result = set_property(handle, "pause", MPV_FORMAT_FLAG, &flag);
+        if (result < 0) error = error_string(result); else paused = value;
     }
+    void pause() { setPaused(!paused); }
     void seek(double seconds) {
         if (!loaded) return;
         const auto value = std::to_string(seconds); run({"seek", value.c_str(), "absolute+exact"});
@@ -471,11 +601,16 @@ struct Audio {
         for (;;) {
             auto event = wait_event(handle, 0);
             if (event->event_id == MPV_EVENT_NONE) break;
-            if (event->event_id == MPV_EVENT_START_FILE) { waitingStart = false; error.clear(); }
-            if (event->event_id == MPV_EVENT_FILE_LOADED) { loaded = true; active = true; }
+            if (event->event_id == MPV_EVENT_START_FILE) {
+                eventEntry = static_cast<mpv_event_start_file*>(event->data)->playlist_entry_id;
+                if (eventEntry == desiredEntry) { waitingStart = false; error.clear(); }
+            }
+            if (event->event_id == MPV_EVENT_FILE_LOADED && eventEntry == desiredEntry) {
+                loaded = true; active = true; loadedSerial = serial;
+            }
             if (event->event_id == MPV_EVENT_END_FILE) {
-                if (waitingStart) continue;
                 auto end = static_cast<mpv_event_end_file*>(event->data);
+                if (end->playlist_entry_id != desiredEntry) continue;
                 if (end->reason == MPV_END_FILE_REASON_ERROR) error = "Playback: " + std::string(error_string(end->error));
                 if (end->reason == MPV_END_FILE_REASON_EOF) { eof = true; active = false; loaded = false; }
                 if (end->reason == MPV_END_FILE_REASON_ERROR) { active = false; loaded = false; }
@@ -484,6 +619,8 @@ struct Audio {
         if (loaded) {
             get_property(handle, "time-pos", MPV_FORMAT_DOUBLE, &position);
             get_property(handle, "duration", MPV_FORMAT_DOUBLE, &duration);
+            int flag = paused ? 1 : 0;
+            if (get_property(handle, "pause", MPV_FORMAT_FLAG, &flag) >= 0) paused = flag != 0;
         }
         return eof;
     }
@@ -499,6 +636,7 @@ static bool advance(Audio& audio, const Library& library, int direction, bool au
     index = (index + count) % count;
     return audio.play(library.tracks[static_cast<size_t>(index)].path);
 }
+#include "playback.h"
 
 static void setTaskbarIdentity(HWND hwnd) {
     IPropertyStore* properties = nullptr;
@@ -541,15 +679,19 @@ static SDL_HitTestResult SDLCALL hitTest(SDL_Window*, const SDL_Point* point, vo
     return SDL_HITTEST_DRAGGABLE;
 }
 static void tooltip(const std::string& text) {
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", text.c_str());
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ImGui::SetTooltip("%s", text.c_str());
+        if (uiProbe.enabled) uiProbe.tooltip = text;
+    }
 }
-static bool centeredButton(const char* label, ImVec2 size = {}) {
+static bool centeredButton(const char* label, ImVec2 size = {}, const char* probeName = nullptr) {
     // Center the visible glyph bounds, rather than Segoe UI's padded line box.
     // Retain the standard button for layout, focus, disabled state and input.
     const auto color = ImGui::GetColorU32(ImGuiCol_Text);
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 0));
     const bool pressed = ImGui::Button(label, size);
     ImGui::PopStyleColor();
+    uiProbe.observe(probeName ? probeName : label, pressed);
     if (!ImGui::IsItemVisible()) return pressed;
     const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
     const char* end = label;
@@ -577,6 +719,38 @@ static bool centeredButton(const char* label, ImVec2 size = {}) {
     }
     return pressed;
 }
+static bool repeatButton(RepeatMode mode) {
+    const bool pressed = ImGui::Button("##repeat", {u(24), u(24)});
+    uiProbe.observe("repeat", pressed);
+    const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+    const ImVec2 center{(min.x + max.x) * .5f, (min.y + max.y) * .5f};
+    const float r = u(6), h = u(4), tip = u(2.8f);
+    const auto color = ImGui::GetColorU32(mode == RepeatMode::Off ? ImVec4(.64f, .68f, .69f, 1) : ImVec4(.25f, .94f, .72f, 1));
+    auto draw = ImGui::GetWindowDrawList();
+    const ImVec2 upper[] = {{center.x-r, center.y}, {center.x-r, center.y-h}, {center.x+r, center.y-h}};
+    const ImVec2 lower[] = {{center.x+r, center.y}, {center.x+r, center.y+h}, {center.x-r, center.y+h}};
+    draw->AddPolyline(upper, 3, color, ImDrawFlags_None, u(1.2f));
+    draw->AddPolyline(lower, 3, color, ImDrawFlags_None, u(1.2f));
+    draw->AddTriangleFilled({center.x+r, center.y-h}, {center.x+r-tip, center.y-h-tip}, {center.x+r-tip, center.y-h+tip}, color);
+    draw->AddTriangleFilled({center.x-r, center.y+h}, {center.x-r+tip, center.y+h-tip}, {center.x-r+tip, center.y+h+tip}, color);
+    if (mode == RepeatMode::One) {
+        draw->AddLine({center.x-u(1.5f), center.y-u(1)}, {center.x, center.y-u(2)}, color, u(1));
+        draw->AddLine({center.x, center.y-u(2)}, {center.x, center.y+u(2)}, color, u(1));
+    }
+    return pressed;
+}
+static bool viewButton(const char* label, bool selected) {
+    if (selected) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.16f, .39f, .31f, 1));
+    const bool pressed = centeredButton(label);
+    if (selected) ImGui::PopStyleColor();
+    return pressed;
+}
+static std::string historyTime(int64_t timestamp) {
+    const time_t value = static_cast<time_t>(timestamp); tm local{}; char text[32]{};
+    if (localtime_s(&local, &value) == 0) std::strftime(text, sizeof(text), "%Y-%m-%d %H:%M", &local);
+    return text;
+}
+#include "state_tests.h"
 static std::string timeText(double seconds) {
     int n = static_cast<int>(std::max(0.0, seconds));
     char buf[32]; std::snprintf(buf, sizeof(buf), "%d:%02d", n / 60, n % 60); return buf;
@@ -741,12 +915,14 @@ static int runPlayer(HINSTANCE instance) {
     const std::unique_ptr<void, decltype(&LocalFree)> arguments(argv, LocalFree);
     std::vector<std::wstring> args; for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
     if (args.size() == 3 && args[0] == L"--self-test") return selfTest(args[1], args[2]);
+    if (args.size() == 3 && args[0] == L"--state-test") return stateTests(args[1], args[2]);
     SDL_Window* window = nullptr; SDL_Renderer* renderer = nullptr;
     bool imgui = false, platform = false, graphics = false;
     int exitCode = 0;
     std::unique_ptr<void, decltype(&CloseHandle)> singleton(nullptr, CloseHandle);
     try {
-        const bool windowTest = args.size() == 1 && args[0] == L"--window-test";
+        const bool windowTest = !args.empty() && args[0] == L"--window-test";
+        uiProbe.enabled = windowTest;
         if (!windowTest) {
             HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\PrappyPlayer.Instance");
             const bool alreadyRunning = GetLastError() == ERROR_ALREADY_EXISTS;
@@ -764,11 +940,22 @@ static int runPlayer(HINSTANCE instance) {
         SetCurrentProcessExplicitAppUserModelID(AppId);
         SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON, "1");
         SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON_SMALL, "1");
-        const auto config = executableDir() / "player.ini";
+        const auto stateDirectory = windowTest ? (args.size() == 2 ? fs::absolute(args[1]) : executableDir() / "window-test") : executableDir();
+        fs::create_directories(stateDirectory);
+        const auto config = stateDirectory / "player.ini";
         Library library; Audio audio;
         Scan scan;
         try { createDefaultConfig(config); } catch (const std::exception& e) { library.notice = e.what(); }
-        audio.open();
+        Config settings;
+        try {
+            settings = readConfig(config);
+            loadCatalog(stateDirectory / "player-catalog.bin", settings, library);
+        } catch (const std::exception& e) { library.notice = e.what(); }
+        audio.open(windowTest);
+        HistoryFile historyFile(stateDirectory / "player-history.txt");
+        auto history = historyFile.load(settings.historyLimit);
+        Playback playback(audio, library, history, historyFile);
+        playback.restore();
         if (!SDL_Init(SDL_INIT_VIDEO)) throw std::runtime_error(SDL_GetError());
         window = SDL_CreateWindow("Prappy Player", Width, MinHeight,
             SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE);
@@ -798,34 +985,36 @@ static int runPlayer(HINSTANCE instance) {
         if (!platform || !graphics) throw std::runtime_error("Cannot initialize UI renderer.");
         SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
         SDL_ShowWindow(window);
-        scan.begin(config, library.order);
+        scan.begin(config, library.order, &library, true);
         bool done = false, expanded = false;
+        bool historyView = false;
+        uint64_t historyGeneration = 0;
         char search[256]{};
         bool filterDirty = true;
         std::vector<size_t> visible;
         int expandedHeight = 710;
-        const auto togglePlayback = [&] {
-            if (audio.active) audio.pause();
-            else if (!audio.current.empty()) audio.play(audio.current);
-            else advance(audio, library, 1);
-        };
+        const auto togglePlayback = [&] { playback.toggle(); };
         while (!done) {
             const auto start = SDL_GetTicks();
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
-                if ((event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) &&
+                if (!uiProbe.scripted && (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) &&
                     event.key.key == SDLK_SPACE && !io.WantTextInput &&
                     !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
                     if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) togglePlayback();
                     continue;
                 }
-                ImGui_ImplSDL3_ProcessEvent(&event);
+                if (!uiProbe.scripted) ImGui_ImplSDL3_ProcessEvent(&event);
                 if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) done = true;
             }
-            if (audio.poll()) advance(audio, library, 1, true);
-            if (scan.update(library)) filterDirty = true;
+            playback.tick();
+            if (scan.update(library)) { history.setLimit(library.historyLimit); filterDirty = true; }
+            if (historyGeneration != playback.generation) { historyGeneration = playback.generation; filterDirty = true; }
             if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) { SDL_Delay(80); continue; }
-            ImGui_ImplSDLRenderer3_NewFrame(); ImGui_ImplSDL3_NewFrame(); ImGui::NewFrame();
+            ImGui_ImplSDLRenderer3_NewFrame(); ImGui_ImplSDL3_NewFrame();
+            uiProbe.input(stateDirectory);
+            ImGui::NewFrame();
+            uiProbe.begin();
             nextControls.clear();
             int width, height; SDL_GetWindowSize(window, &width, &height);
             ImGui::SetNextWindowPos({0, 0}); ImGui::SetNextWindowSize({static_cast<float>(width), static_cast<float>(height)});
@@ -834,8 +1023,15 @@ static int runPlayer(HINSTANCE instance) {
             const char* listLabel = expanded ? "List ^" : "List v";
             const auto& uiStyle = ImGui::GetStyle();
             const float buttonsWidth = uiStyle.FramePadding.x * 2 + ImGui::CalcTextSize(listLabel).x;
-            ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - buttonsWidth);
-            if (centeredButton(listLabel, {buttonsWidth, ImGui::GetFontSize()})) {
+            const float historyWidth = ImGui::CalcTextSize("History").x + uiStyle.FramePadding.x * 2;
+            ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - buttonsWidth - historyWidth - uiStyle.ItemSpacing.x);
+            if (centeredButton("History", {historyWidth, ImGui::GetFontSize()}, "history")) {
+                historyView = true; filterDirty = true;
+                if (!expanded && !(SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED)) SDL_SetWindowSize(window, width, expandedHeight);
+                expanded = true;
+            }
+            rememberControl(); tooltip("Browse listening history"); ImGui::SameLine();
+            if (centeredButton(listLabel, {buttonsWidth, ImGui::GetFontSize()}, "list")) {
                 if (!(SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED)) {
                     if (expanded) { expandedHeight = height; SDL_SetWindowSize(window, width, MinHeight); }
                     else SDL_SetWindowSize(window, width, expandedHeight);
@@ -845,16 +1041,21 @@ static int runPlayer(HINSTANCE instance) {
             rememberControl();
             const float transportY = static_cast<float>(height - TransportHeight);
             if (expanded && transportY > u(90)) {
-                ImGui::SetNextItemWidth(u(153));
-                const char* choices[] = {"Filename", "Directory groups", "File type groups"};
-                if (ImGui::Combo("##order", &library.order, choices, 3)) { library.sort(); filterDirty = true; }
-                rememberControl();
-                ImGui::SameLine();
+                if (viewButton("Library", !historyView)) { historyView = false; filterDirty = true; }
+                rememberControl(); ImGui::SameLine();
+                if (viewButton("History##tab", historyView)) { historyView = true; filterDirty = true; }
+                rememberControl(); ImGui::SameLine();
                 if (centeredButton("Config")) {
                     auto result = ShellExecuteW(hwnd, L"open", config.c_str(), nullptr, config.parent_path().c_str(), SW_SHOWNORMAL);
                     if (reinterpret_cast<INT_PTR>(result) <= 32) library.notice = "Could not open player.ini.";
                 }
                 rememberControl();
+                ImGui::SetNextItemWidth(u(153));
+                const char* choices[] = {"Filename", "Directory groups", "File type groups"};
+                ImGui::BeginDisabled(historyView);
+                if (ImGui::Combo("##order", &library.order, choices, 3)) { library.sort(); filterDirty = true; }
+                rememberControl(); ImGui::EndDisabled();
+                if (historyView) { ImGui::SameLine(); ImGui::TextDisabled("Newest first"); }
                 const auto listStart = ImGui::GetCursorPos();
                 const float searchY = transportY - ImGui::GetFrameHeight() - uiStyle.ItemSpacing.y - u(4);
                 ImGui::SetCursorPos({listStart.x, searchY});
@@ -863,6 +1064,7 @@ static int runPlayer(HINSTANCE instance) {
                 ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - clearWidth - countWidth - uiStyle.ItemSpacing.x * 2);
                 if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_F)) ImGui::SetKeyboardFocusHere();
                 if (ImGui::InputTextWithHint("##search", "Search names or paths...", search, sizeof(search), ImGuiInputTextFlags_EscapeClearsAll)) filterDirty = true;
+                uiProbe.observe("search", ImGui::IsItemClicked());
                 rememberControl();
                 tooltip("Match all words, in any order, ignoring case. Ctrl+F focuses search; Escape clears it.");
                 ImGui::SameLine();
@@ -870,16 +1072,42 @@ static int runPlayer(HINSTANCE instance) {
                 if (centeredButton("Clear")) { search[0] = '\0'; filterDirty = true; }
                 rememberControl(); ImGui::EndDisabled();
                 const bool resetScroll = filterDirty;
-                if (filterDirty) { visible = library.filter(search); filterDirty = false; }
-                ImGui::SameLine(); ImGui::TextDisabled("%zu / %zu", visible.size(), library.tracks.size());
+                if (filterDirty) {
+                    if (!historyView) visible = library.filter(search);
+                    else {
+                        visible.clear();
+                        std::wistringstream input(searchText(search)); std::vector<std::wstring> terms;
+                        for (std::wstring term; input >> term;) terms.push_back(std::move(term));
+                        for (size_t i = history.entries.size(); i > 0; --i) {
+                            const auto text = searchText(utf8(history.entries[i - 1].path));
+                            if (std::all_of(terms.begin(), terms.end(), [&](const auto& term) { return text.find(term) != std::wstring::npos; })) visible.push_back(i - 1);
+                        }
+                    }
+                    filterDirty = false;
+                }
+                ImGui::SameLine(); ImGui::TextDisabled("%zu / %zu", visible.size(), historyView ? history.entries.size() : library.tracks.size());
                 ImGui::SetCursorPos(listStart);
                 if (ImGui::BeginChild("Tracks", {0, std::max(1.0f, searchY - listStart.y - uiStyle.ItemSpacing.y)}, ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar)) {
                     if (resetScroll) { ImGui::SetScrollY(0); ImGui::SetScrollX(0); }
                     const auto current = key(audio.current);
                     auto row = [&](size_t i) {
+                        if (historyView) {
+                            const auto& entry = history.entries[i];
+                            const bool unavailable = playback.unavailable.contains(key(entry.path));
+                            const auto label = (unavailable ? "[Unavailable] " : "") + library.pathLabel(entry.path) + "  |  " + historyTime(entry.time);
+                            ImGui::PushID(static_cast<int>(i));
+                            const bool selected = ImGui::Selectable(label.c_str(), history.current() && history.current()->id == entry.id);
+                            uiProbe.observe(("history-" + std::to_string(entry.id)).c_str(), selected);
+                            if (selected) playback.request(entry.path);
+                            rememberControl(); tooltip(utf8(entry.path) + "\nPlayed: " + historyTime(entry.time));
+                            ImGui::PopID(); return;
+                        }
                         const auto& t = library.tracks[i];
                         ImGui::PushID(static_cast<int>(i));
-                        if (ImGui::Selectable(t.label.c_str(), Library::matches(t, current))) audio.play(t.path);
+                        const auto label = (t.offline ? "[Offline] " : "") + t.label;
+                        const bool selected = ImGui::Selectable(label.c_str(), Library::matches(t, current));
+                        uiProbe.observe(("library-" + std::to_string(i)).c_str(), selected);
+                        if (selected) playback.request(t.path);
                         rememberControl();
                         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
                             std::string paths = t.label;
@@ -894,7 +1122,7 @@ static int runPlayer(HINSTANCE instance) {
                         }
                         ImGui::PopID();
                     };
-                    if (library.order == 0) {
+                    if (historyView || library.order == 0) {
                         ImGuiListClipper clipper; clipper.Begin(static_cast<int>(visible.size()));
                         while (clipper.Step()) for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) row(visible[static_cast<size_t>(i)]);
                     } else {
@@ -915,8 +1143,9 @@ static int runPlayer(HINSTANCE instance) {
                             ImGui::PopID(); begin = end;
                         }
                     }
-                    if (library.tracks.empty()) ImGui::TextWrapped("Add music roots in Config, then Refresh.");
-                    else if (visible.empty()) ImGui::TextDisabled("No matching tracks.");
+                    if (historyView && history.entries.empty()) ImGui::TextWrapped("Tracks appear here after they successfully load.");
+                    else if (!historyView && library.tracks.empty()) ImGui::TextWrapped("Add music roots in Config, then Refresh.");
+                    else if (visible.empty()) ImGui::TextDisabled("No matches.");
                     if (ImGui::GetScrollMaxY() > 0) {
                         auto pos = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
                         const auto bar = ImGui::GetStyle().ScrollbarSize;
@@ -947,41 +1176,60 @@ static int runPlayer(HINSTANCE instance) {
             ImGui::TextDisabled("%s / %s", timeText(audio.position).c_str(), timeText(audio.duration).c_str());
             ImGui::SameLine(u(248)); ImGui::TextDisabled("%s", audio.active ? (audio.paused ? "PAUSED" : "PLAYING") : "READY");
             const float transportRowY = ImGui::GetCursorPosY();
-            if (centeredButton("|<", {u(32), u(24)})) advance(audio, library, -1);
+            ImGui::BeginDisabled(!playback.adjacent(-1));
+            if (centeredButton("|<", {u(32), u(24)}, "back")) playback.navigate(-1);
             rememberControl();
-            tooltip("Previous"); ImGui::SameLine();
+            ImGui::EndDisabled();
+            tooltip("Back: " + library.pathLabel(playback.destination(-1))); ImGui::SameLine();
             ImGui::PushStyleColor(ImGuiCol_Button, {.96f, .74f, .39f, 1});
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {1, .84f, .55f, 1});
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, {.84f, .59f, .24f, 1});
             ImGui::PushStyleColor(ImGuiCol_Text, {.12f, .15f, .16f, 1});
-            if (centeredButton(audio.active && !audio.paused ? "Pause" : "Play", {u(56), u(24)})) togglePlayback();
+            const bool wantsPause = playback.pending ? playback.pending->paused : audio.paused;
+            if (centeredButton(audio.active && !wantsPause ? "Pause" : "Play", {u(56), u(24)}, "play")) togglePlayback();
             rememberControl();
             ImGui::PopStyleColor(4);
-            ImGui::SameLine(); if (centeredButton(">|", {u(32), u(24)})) advance(audio, library, 1);
+            ImGui::SameLine(); if (centeredButton(">|", {u(32), u(24)}, "next")) playback.navigate(1);
             rememberControl();
-            tooltip("Next"); ImGui::SameLine();
+            tooltip(std::string(playback.adjacent(1) ? "Forward: " : "Next in library: ") + library.pathLabel(playback.destination(1))); ImGui::SameLine();
             ImGui::SetCursorPosY(transportRowY + (u(24) - ImGui::GetFrameHeight()) * .5f);
-            ImGui::SetNextItemWidth(u(105)); float volume = static_cast<float>(audio.volume);
+            ImGui::SetNextItemWidth(u(95)); float volume = static_cast<float>(audio.volume);
             if (ImGui::SliderFloat("##volume", &volume, 0, 100, "Vol %.0f")) audio.setVolume(volume);
             rememberControl();
             ImGui::SameLine();
             ImGui::SetCursorPosY(transportRowY);
+            if (repeatButton(history.repeat)) { history.cycleRepeat(); historyFile.save(history, true); }
+            rememberControl(); tooltip(repeatTooltip(history.repeat)); ImGui::SameLine();
             ImGui::BeginDisabled(scan.running());
-            if (centeredButton(scan.running() ? "Scanning" : "Refresh", {u(65), u(24)})) scan.begin(config, library.order);
+            if (centeredButton(scan.running() ? "Scanning" : "Refresh", {u(65), u(24)})) {
+                if (ImGui::GetIO().KeyShift) { library.verified.clear(); library.forceVerification = true; }
+                scan.begin(config, library.order, &library, true);
+            }
             rememberControl();
             ImGui::EndDisabled();
-            tooltip("Reload config and rebuild the music list");
+            tooltip("Refresh the catalog. Hold Shift to reverify duplicate contents.");
             ImGui::SetCursorPosY(static_cast<float>(height) - u(24));
             ImGui::PushStyleColor(ImGuiCol_Text, audio.error.empty() ? ImVec4(.68f, .72f, .72f, 1) : ImVec4(1, .63f, .5f, 1));
-            const auto message = !audio.error.empty() ? audio.error : (scan.running() ? scan.status() : library.notice);
+            const auto message = !historyFile.notice.empty() ? historyFile.notice : (!playback.notice.empty() ? playback.notice :
+                (!audio.error.empty() ? audio.error : (scan.running() ? library.notice + " | " + scan.status() : library.notice)));
             ImGui::TextUnformatted(message.c_str()); tooltip(message); ImGui::PopStyleColor();
             draw->AddRect({0, 0}, {static_cast<float>(width - 1), static_cast<float>(height - 1)}, IM_COL32(90, 99, 99, 255));
             ImGui::End(); controls.swap(nextControls); ImGui::Render();
             SDL_SetRenderDrawColor(renderer, 46, 49, 51, 255); SDL_RenderClear(renderer);
             ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer); SDL_RenderPresent(renderer);
+            if (windowTest) {
+                std::ostringstream status;
+                status << "READY " << width << ' ' << height << ' ' << static_cast<int>(history.repeat) << ' '
+                    << (history.current() ? history.current()->id : 0) << ' ' << history.entries.size() << ' '
+                    << playback.pending.has_value() << ' ' << audio.paused << ' ' << historyView << ' ' << visible.size();
+                uiProbe.flush(stateDirectory, status.str());
+            }
             const auto elapsed = SDL_GetTicks() - start;
             if (elapsed < 33) SDL_Delay(static_cast<Uint32>(33 - elapsed));
         }
+        playback.finish();
+        if (historyFile.writable && history.revision != historyFile.saved && !historyFile.notice.empty())
+            MessageBoxA(hwnd, historyFile.notice.c_str(), "Prappy Player: history was not saved", MB_OK | MB_ICONWARNING);
     } catch (const std::exception& e) {
         MessageBoxA(nullptr, e.what(), "Prappy Player", MB_OK | MB_ICONERROR); exitCode = 1;
     }
