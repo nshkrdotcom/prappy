@@ -53,6 +53,23 @@ paths also load without requiring a machine-wide long-path setting. The live
 library changed during collection; a later player scan loaded 5,329 tracks without
 a scan warning.
 
+Duplicate inventory: a read-only WSL scan found 5,328 paths, including 496 hard-link
+aliases. Full SHA-256 checks of same-size/same-sample candidates identified 1,090
+redundant paths in 775 byte-identical groups, leaving 4,238 unique files at that
+time. The player recognizes hard links and checks full-file SHA-256 before hiding other duplicates, retains
+alternate paths for tooltips/current-track identity, and leaves every file intact.
+The dedup regression also verifies equal-size files with identical sampled ends
+but different middle bytes remain separate. Library counts can change while the
+user's collection continues running.
+
+The live player showed **4,238 tracks / 1,090 identical copies hidden**, matching
+the independent inventory. Hard-link identity is checked without reading audio;
+other sample-matched candidates are hashed once per scan using Windows SHA-256.
+This avoids repeated pairwise file reads, but full-content scanning across WSL
+is still substantially slower than the former path-only scan. No persistent
+checksum database/cache was added. The bright mint title/volume/drag details
+and gold Play/seek accents were verified in the running window.
+
 Limitations: audible output was not listened to; hardware output initialization
 was checked while muted. Scraper metadata is not part of the player's scope.
 Dragging between physical monitors with different DPIs and a manual visual

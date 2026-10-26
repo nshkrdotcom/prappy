@@ -42,6 +42,17 @@ entries show an error and retain the previous list. Missing roots show a warning
 valid roots still load. Overlapping roots are deduplicated. Directory junctions
 are not traversed. No watchers, database, background rescans or media writes.
 
+Byte-identical files also collapse into a single song entry, including renamed
+copies and hard links. Hover the entry to see all its paths. The status line
+reports how many copies were hidden. Same filenames with different bytes stay
+separate; different encodings of the same performance also stay separate.
+Hard links are recognized by file identity. Other equal-size candidates with
+matching small samples receive a full-file SHA-256 check before hiding anything.
+Each candidate is hashed at most once per scan. This happens during the
+startup scan and explicit Refresh; no files are deleted and no index is stored.
+Full-content verification can make those scans substantially slower over WSL,
+since candidate audio must be read across the Windows/Linux filesystem boundary.
+
 For **local WSL**, Windows already exposes the Linux filesystem: no network
 share, SSH, copying or mapped drive is needed. This workstation's running distro
 is `ubuntu26-dev`; its configured audio roots are:
@@ -94,5 +105,8 @@ sort/refresh identity, next/previous, end-of-track progression and error reporti
 Use representative audio files long enough to seek (at least two seconds).
 For window checks and screenshots: `pwsh scripts/verify-window.ps1`. This launches
 a temporary player instance, moves/resizes it, clicks List/Pin, then closes it.
+`pwsh scripts/test-dedup.ps1` exercises renamed identical copies, overlapping roots,
+alternate-copy queue identity and same-name/same-sample files that differ in the
+middle; it also runs the playback integration checks on the deduplicated list.
 
 See [THIRD_PARTY.md](THIRD_PARTY.md) for versions, licenses and provenance.

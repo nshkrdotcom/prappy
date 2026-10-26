@@ -27,7 +27,7 @@ public static class PlayerNative {
 '@
 [PlayerNative]::SetThreadDpiAwarenessContext([IntPtr](-4)) | Out-Null
 $p = Start-Process -FilePath "$app\build\Release\PrappyPlayer.exe" -WorkingDirectory $env:TEMP -WindowStyle Hidden -PassThru
-for ($i=0; $i -lt 50; $i++) {
+for ($i=0; $i -lt 450; $i++) {
     $p.Refresh()
     if ($p.MainWindowHandle -ne [IntPtr]::Zero) { break }
     Start-Sleep -Milliseconds 100
