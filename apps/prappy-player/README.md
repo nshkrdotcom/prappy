@@ -46,7 +46,7 @@ to edit it. UTF-8, one `key=value` per line:
 # Examples: replace these paths with accessible Windows folders/shares.
 directory=D:\Music
 directory=\\ubuntu-host\music
-extensions=flac,wav,mp3,opus,m4a,wv
+extensions=flac,wav,mp3,opus,m4a,wv,mka,webm,ogg,aac,aiff,wma
 ```
 
 Repeat `directory` for more recursive roots. Relative paths resolve against the
@@ -80,7 +80,7 @@ is `ubuntu26-dev`; its configured audio roots are:
 ```ini
 directory=\\wsl.localhost\ubuntu26-dev\home\home\p\g\n\scraper\library
 directory=\\wsl.localhost\ubuntu26-dev\home\home\.local\share\audioharvest\phase-02-library
-extensions=flac,wav,mp3,opus,m4a,wv
+extensions=flac,wav,mp3,opus,m4a,wv,mka,webm,ogg,aac,aiff,wma
 ```
 
 Find your distro name with `wsl --list --verbose`. Use that name after

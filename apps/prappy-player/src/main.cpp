@@ -142,7 +142,7 @@ static void createDefaultConfig(const fs::path& file) {
     const auto root = utf8(fs::path(music)); CoTaskMemFree(music);
     std::ofstream out(file);
     out << "# UTF-8. Repeat directory= for more roots. Relative roots resolve beside this file.\n"
-        << "directory=" << root << "\nextensions=flac,wav,mp3,opus,m4a,wv\n";
+        << "directory=" << root << "\nextensions=flac,wav,mp3,opus,m4a,wv,mka,webm,ogg,aac,aiff,wma\n";
     if (!out) throw std::runtime_error("Cannot create player.ini. Put the player in a writable folder.");
 }
 struct Track {
