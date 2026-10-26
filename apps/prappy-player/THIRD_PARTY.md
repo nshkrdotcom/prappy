@@ -7,9 +7,20 @@ Third-party files retain their own licenses. No submodules are used.
 |---|---|---|---|
 | SDL 3.4.18 | [829a65d769d935c4852f8159e964312c0957260a](https://github.com/libsdl-org/SDL/tree/829a65d769d935c4852f8159e964312c0957260a) | `third_party/SDL` | zlib, `LICENSE.txt` |
 | Dear ImGui 1.93.0 | [c1aaac65e896a45f81f47a4d68f9959e0f86c859](https://github.com/ocornut/imgui/tree/c1aaac65e896a45f81f47a4d68f9959e0f86c859) | Core files and SDL3/SDLRenderer3 backends | MIT, `LICENSE.txt` |
+| FreeType 2.13.3 | [VER-2-13-3](https://github.com/freetype/freetype/tree/VER-2-13-3) | Downloaded source; statically linked, ImGui's matching upstream FreeType adapter | FreeType License, deployed `licenses/FreeType.txt` |
+| Noto Sans CJK SC Regular 2.004 | [Sans2.004](https://github.com/notofonts/noto-cjk/tree/Sans2.004) | `assets/fonts/NotoSansCJKsc-Regular.otf` | SIL OFL 1.1, adjacent `OFL.txt` |
 | libmpv Windows x64 | mpv [e471496c56](https://github.com/mpv-player/mpv/tree/e471496c56), [shinchiro build 20261021](https://github.com/shinchiro/mpv-winbuild-cmake/releases/tag/20261021) | `third_party/mpv/include/mpv/client.h`, downloaded `libmpv-2.dll` | See `third_party/mpv/licenses` |
 
 SDL is copied without tests, examples, docs, platform IDE projects or Git metadata.
+This software uses the FreeType library, copyright © 1996–2024 The FreeType
+Project (https://freetype.org). All rights reserved. FreeType is used under its
+FreeType License. `scripts/deps.ps1` verifies the source archive SHA-256
+`bc5c898e4756d373e0d991bab053036c5eb2aa7c0d5c67e8662ddc6da40c4103`.
+The bundled Noto font SHA-256 is
+`2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b`.
+Windows Segoe UI, Segoe UI Emoji and installed CJK fonts are loaded locally,
+without redistribution. DirectWrite handles shaping and native font fallback;
+its color glyph layers are rasterized on the CPU and cached as SDL textures.
 ImGui's official `example_sdl3_sdlrenderer3` supplied the initialization/render loop
 pattern; the application does not need its demo window or extra renderer stacks.
 Local player code uses Win32 only for window constraints, icon, configuration

@@ -6,6 +6,8 @@ struct Scan {
     ScanProgress progress;
     std::stop_source cancel;
     std::future<std::pair<Library, bool>> job;
+    std::jthread worker;
+    std::function<void()> notify;
     ~Scan() { cancel.request_stop(); if (job.valid()) job.wait(); }
     bool running() const { return job.valid(); }
     void begin(const fs::path& config, int order, const Library* previous = nullptr, bool persist = false) {
@@ -14,14 +16,16 @@ struct Scan {
         progress.hashReads = progress.hashReused = 0;
         cancel = std::stop_source{};
         Library baseline; if (previous) baseline = *previous;
-        job = std::async(std::launch::async, [this, config, order, persist, next = std::move(baseline), stop = cancel.get_token()] () mutable {
+        std::promise<std::pair<Library, bool>> promise; job = promise.get_future();
+        worker = std::jthread([this, config, order, persist, next = std::move(baseline), stop = cancel.get_token(), notify = notify, promise = std::move(promise)] () mutable {
             next.order = order;
             bool success = next.refresh(config, stop, &progress);
             if (success && persist && !stop.stop_requested()) {
                 try { saveCatalog(config.parent_path() / "player-catalog.bin", next); next.catalogBackup = true; }
                 catch (const std::exception& e) { next.notice += " | Catalog save failed: " + std::string(e.what()); }
             }
-            return std::make_pair(std::move(next), success);
+            promise.set_value(std::make_pair(std::move(next), success));
+            if (notify) notify();
         });
     }
     bool update(Library& library) {

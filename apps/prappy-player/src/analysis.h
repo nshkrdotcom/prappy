@@ -59,10 +59,11 @@ class Worker {
     bool forcePending = false;
     std::optional<Identity> selected;
     bool selectedReady = false;
+    std::function<void()> notify;
     std::jthread thread;
     void run(std::stop_token stop);
 public:
-    explicit Worker(fs::path cacheDirectory);
+    explicit Worker(fs::path cacheDirectory, std::function<void()> completion = {});
     ~Worker();
     Worker(const Worker&) = delete;
     Worker& operator=(const Worker&) = delete;

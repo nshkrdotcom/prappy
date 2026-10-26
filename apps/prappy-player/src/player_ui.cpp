@@ -7,6 +7,8 @@
 #include "tests.h"
 #include "feature_ui.h"
 #include "preferences.h"
+#include "ui_wake.h"
+#include "ui_schedule.h"
 #include <windowsx.h>
 #include <shellapi.h>
 #include <dwmapi.h>
@@ -80,7 +82,10 @@ static SDL_HitTestResult SDLCALL hitTest(SDL_Window*, const SDL_Point* point, vo
 }
 static void tooltip(const std::string& text) {
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-        ImGui::SetTooltip("%s", text.c_str());
+        ImGui::BeginTooltip();
+        std::istringstream lines(text); for (std::string line; std::getline(lines, line);)
+            filenameText(line, std::max(100.0f, ImGui::GetIO().DisplaySize.x - 32));
+        ImGui::EndTooltip();
         if (uiProbe.enabled) uiProbe.tooltip = text;
     }
 }
@@ -239,6 +244,10 @@ int runPlayer(HINSTANCE instance) {
         }
         com.result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         if (FAILED(com.result)) throw std::runtime_error("Cannot initialize Windows COM services.");
+        SDL_SetHint(SDL_HINT_IME_IMPLEMENTED_UI, "none");
+        if (!SDL_Init(SDL_INIT_VIDEO)) throw std::runtime_error(SDL_GetError());
+        const auto wake = std::make_shared<UiWake>();
+        const auto notify = [wake] { wake->notify(); };
         SetCurrentProcessExplicitAppUserModelID(AppId);
         SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON, "1");
         SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON_SMALL, "1");
@@ -247,10 +256,12 @@ int runPlayer(HINSTANCE instance) {
         const auto config = stateDirectory / "player.ini";
         auto preferences = Preferences::load(stateDirectory / "player-ui.txt");
         stateio::Writer preferenceWriter;
+        preferenceWriter.notify = notify;
         uint64_t preferenceRevision = 0, savedPreferences = 0;
         std::chrono::steady_clock::time_point nextPreferenceSave{};
         Library library; Audio audio;
         Scan scan;
+        scan.notify = notify;
         try { createDefaultConfig(config); } catch (const std::exception& e) { library.notice = e.what(); }
         Config settings;
         try {
@@ -258,11 +269,13 @@ int runPlayer(HINSTANCE instance) {
             loadCatalog(stateDirectory / "player-catalog.bin", settings, library);
         } catch (const std::exception& e) { library.notice = e.what(); }
         audio.open(windowTest);
+        audio.setNotify([wake] { wake->notify(UiWake::Audio); });
         HistoryFile historyFile(stateDirectory / "player-history.txt");
+        historyFile.writer.notify = notify;
         auto history = historyFile.load(settings.historyLimit);
         Playback playback(audio, library, history, historyFile);
         playback.folder = preferences.folder;
-        analysis::Worker analyzer(stateDirectory / "player-analysis");
+        analysis::Worker analyzer(stateDirectory / "player-analysis", notify);
         std::map<std::wstring, analysis::Summary> analyses;
         uint64_t analysisGeneration = 0;
         bool forceAnalysis = false;
@@ -288,11 +301,11 @@ int runPlayer(HINSTANCE instance) {
             if (track != library.tracks.end()) analyzer.prioritize(*track);
         };
         playback.restore();
-        if (!SDL_Init(SDL_INIT_VIDEO)) throw std::runtime_error(SDL_GetError());
         constexpr int StripHeight = 86;
         window = SDL_CreateWindow("Prappy Player", Width, preferences.strip ? StripHeight : MinHeight,
             SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE);
         if (!window) throw std::runtime_error(SDL_GetError());
+        uiProbe.windowID = SDL_GetWindowID(window);
         SDL_SetWindowMinimumSize(window, Width, preferences.strip ? StripHeight : MinHeight);
         SDL_SetWindowAlwaysOnTop(window, preferences.topmost);
         auto hwnd = static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
@@ -312,8 +325,8 @@ int runPlayer(HINSTANCE instance) {
         auto& io = ImGui::GetIO(); io.IniFilename = nullptr; io.LogFilename = nullptr;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         style();
-        const fs::path font = L"C:\\Windows\\Fonts\\segoeui.ttf";
-        if (fs::exists(font)) io.Fonts->AddFontFromFileTTF(utf8(font).c_str(), 18);
+        text::loadFonts();
+        text::Painter textPainter(renderer); text::active = &textPainter;
         platform = ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
         graphics = ImGui_ImplSDLRenderer3_Init(renderer);
         if (!platform || !graphics) throw std::runtime_error("Cannot initialize UI renderer.");
@@ -397,7 +410,7 @@ int runPlayer(HINSTANCE instance) {
                         if (entry->queued && ImGui::SmallButton("Remove")) remove = entry->id;
                         if (entry->queued) uiProbe.observe(("queue-remove-" + std::to_string(entry->id)).c_str(), ImGui::IsItemActivated());
                         if (entry->queued) ImGui::SameLine();
-                        ImGui::Text("%s%s", entry->queued ? "Queued: " : "Forward: ", library.pathLabel(entry->path).c_str());
+                        filenameText((entry->queued ? "Queued: " : "Forward: ") + library.pathLabel(entry->path));
                         tooltip(utf8(entry->path)); ImGui::PopID();
                         const float gap = rowHeight - (ImGui::GetCursorPosY() - startY);
                         if (gap > 0) ImGui::Dummy({0, std::max(0.0f, gap - ImGui::GetStyle().ItemSpacing.y)});
@@ -412,27 +425,71 @@ int runPlayer(HINSTANCE instance) {
             }
         };
         const auto togglePlayback = [&] { playback.toggle(); };
+        UiSchedule schedule;
+        auto lastUpdate = UiSchedule::Clock::now();
+        bool gainMoving = false, mouseHeld = false, composing = false;
+        std::set<SDL_Keycode> heldKeys, imeKeys;
+        Uint64 imeUntil = 0;
+        uint64_t probeSequence = 0;
+        size_t scanFound = 0, scanChecked = 0;
         while (!done) {
-            const auto start = SDL_GetTicks();
-            SDL_Event event;
-            while (SDL_PollEvent(&event)) {
+            auto now = UiSchedule::Clock::now();
+            const auto flags = SDL_GetWindowFlags(window);
+            const bool visibleWindow = (flags & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN)) == 0;
+            const bool playing = audio.active && !audio.paused;
+            const bool probeHeld = uiProbe.scripted && (uiProbe.mouseDown || uiProbe.rightDown ||
+                std::any_of(uiProbe.keys.begin(), uiProbe.keys.end(), [](const auto& value) { return value.second; }));
+            const bool animate = (visibleWindow && (playing || mouseHeld || !heldKeys.empty() || probeHeld || displayedPeak > 0)) || gainMoving;
+            auto persistence = UiSchedule::Time::max();
+            if (history.revision != historyFile.saved && !historyFile.writer.busy() && historyFile.writable)
+                persistence = historyFile.urgent && historyFile.writer.error.empty() ? now : historyFile.nextSave;
+            if (preferenceRevision != savedPreferences && !preferenceWriter.busy()) persistence = std::min(persistence, nextPreferenceSave);
+            SDL_Event event{};
+            bool received = SDL_WaitEventTimeout(&event, schedule.wait(now, visibleWindow, animate, windowTest && uiProbe.pollCommands, scan.running(), persistence));
+            if (received) ++schedule.wakeups;
+            do {
+                if (!received) break;
+                now = UiSchedule::Clock::now();
+                if (event.type == wake->eventType()) { if (wake->acknowledge() & UiWake::Work) schedule.request(2); }
+                else schedule.input(now);
+                if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) mouseHeld = true;
+                if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) mouseHeld = SDL_GetMouseState(nullptr, nullptr) != 0;
+                if (event.type == SDL_EVENT_KEY_DOWN) heldKeys.insert(event.key.key);
+                if (event.type == SDL_EVENT_KEY_UP) heldKeys.erase(event.key.key);
+                if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) { heldKeys.clear(); imeKeys.clear(); mouseHeld = false; composing = false; }
+                if (event.type == SDL_EVENT_TEXT_EDITING) { composing = event.edit.text && event.edit.text[0]; imeUntil = SDL_GetTicks() + 100; }
+                if (event.type == SDL_EVENT_TEXT_INPUT && composing) imeUntil = SDL_GetTicks() + 100;
+                const bool imeKey = (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) &&
+                    (event.key.key == SDLK_RETURN || event.key.key == SDLK_ESCAPE || event.key.key == SDLK_SPACE);
+                if (imeKey && event.type == SDL_EVENT_KEY_DOWN && (composing || SDL_GetTicks() < imeUntil)) imeKeys.insert(event.key.key);
+                if (imeKey && imeKeys.contains(event.key.key)) { if (event.type == SDL_EVENT_KEY_UP) imeKeys.erase(event.key.key); continue; }
                 if (!uiProbe.scripted && (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) &&
-                    event.key.key == SDLK_SPACE && !io.WantTextInput &&
+                    event.key.key == SDLK_SPACE && !io.WantTextInput && !composing &&
                     !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
                     if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) togglePlayback();
                     continue;
                 }
                 if (!uiProbe.scripted) ImGui_ImplSDL3_ProcessEvent(&event);
                 if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) done = true;
-            }
+            } while ((received = SDL_PollEvent(&event)));
+            if (done) break;
+            now = UiSchedule::Clock::now();
+            const double elapsed = std::chrono::duration<double>(now - lastUpdate).count(); lastUpdate = now;
+            const auto previousGeneration = playback.generation;
+            const auto previousPause = audio.paused; const auto previousActive = audio.active;
+            const auto previousPosition = audio.position, previousDuration = audio.duration;
             playback.tick();
+            if (previousGeneration != playback.generation || previousPause != audio.paused || previousActive != audio.active) schedule.request(2);
+            if (audio.paused && (previousPosition != audio.position || previousDuration != audio.duration)) schedule.request();
             if (scan.update(library)) {
+                schedule.request(2);
                 history.setLimit(library.historyLimit); filterDirty = true;
                 analyses.clear(); analyzer.reconcile(library, forceAnalysis); forceAnalysis = false;
                 waveform.reset(); browseVisits = UINT64_MAX; browseCatalogDirty = true;
                 prioritizeCurrent();
             }
             for (auto& result : analyzer.collect()) {
+                schedule.request(2);
                 const auto id = key(result.identity.path);
                 const auto track = std::find_if(library.tracks.begin(), library.tracks.end(), [&](const auto& t) { return t.id == id; });
                 if (track != library.tracks.end() && track->bytes == result.identity.bytes && track->stamp == result.identity.stamp) {
@@ -456,10 +513,12 @@ int runPlayer(HINSTANCE instance) {
             if (audio.loaded) {
                 const auto found = analyses.find(currentAnalysisId);
                 const auto target = normalizationGain(found == analyses.end() ? nullptr : &found->second, preferences.normalize);
-                const auto nextGain = audio.gain + std::clamp(target - audio.gain, -.3, .3);
+                const auto nextGain = approachGain(audio.gain, target, elapsed);
+                gainMoving = std::abs(target - audio.gain) > .001;
                 if (std::abs(nextGain - audio.gain) > .001) audio.setGain(nextGain);
             }
-            displayedPeak = std::max(audio.meterPeak, displayedPeak * .88);
+            else gainMoving = false;
+            displayedPeak = releasePeak(displayedPeak, audio.meterPeak, elapsed);
             if (preferenceWriter.collect()) {
                 if (!preferenceWriter.error.empty()) { library.notice = preferenceWriter.error; nextPreferenceSave = std::chrono::steady_clock::now() + std::chrono::seconds(5); }
                 else savedPreferences = preferenceWriter.revision;
@@ -472,9 +531,21 @@ int runPlayer(HINSTANCE instance) {
                 historyGeneration = playback.generation;
                 if (historyView) filterDirty = true;
             }
-            if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) { SDL_Delay(80); continue; }
+            if (scan.running()) {
+                const auto found = scan.progress.found.load(), checked = scan.progress.checked.load();
+                if (found != scanFound || checked != scanChecked) { scanFound = found; scanChecked = checked; schedule.request(); }
+            }
+            if (windowTest) {
+                uiProbe.input(stateDirectory, false);
+                if (probeSequence != uiProbe.acknowledged) { probeSequence = uiProbe.acknowledged; schedule.input(now); }
+            }
+            if (!visibleWindow) { schedule.paint = now + std::chrono::milliseconds(33); continue; }
+            const bool animateNow = (audio.active && !audio.paused) || mouseHeld || !heldKeys.empty() || probeHeld || displayedPeak > 0 || gainMoving;
+            if (!schedule.due(now, animateNow)) continue;
+            textPainter.beginFrame();
             ImGui_ImplSDLRenderer3_NewFrame(); ImGui_ImplSDL3_NewFrame();
-            uiProbe.input(stateDirectory);
+            // Scripted input is reapplied after the platform backend queues mouse state.
+            if (windowTest) uiProbe.input(stateDirectory);
             ImGui::NewFrame();
             uiProbe.begin();
             nextControls.clear();
@@ -494,7 +565,7 @@ int runPlayer(HINSTANCE instance) {
                 if (centeredButton(">##strip", {30, 26}, "next")) playback.navigate(1); rememberControl();
                 ImGui::SameLine();
                 if (centeredButton("More##strip", {58, 26}, "more")) ImGui::OpenPopup("Options"); rememberControl();
-                ImGui::SameLine(); ImGui::TextUnformatted(audio.current.empty() ? "Choose a track" : utf8(audio.current.filename()).c_str());
+                ImGui::SameLine(); filenameText(audio.current.empty() ? "Choose a track" : utf8(audio.current.filename()));
                 if (!audio.current.empty()) rememberControl();
                 tooltip(library.pathLabel(audio.current));
                 if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) contextPath = audio.current;
@@ -643,7 +714,10 @@ int runPlayer(HINSTANCE instance) {
                             const bool unavailable = playback.unavailable.contains(key(entry.path));
                             const auto label = (unavailable ? "[Unavailable] " : "") + library.pathLabel(entry.path) + "  \xc2\xb7  " + historyTime(entry.time);
                             ImGui::PushID(std::to_string(entry.id).c_str());
-                            const bool selected = ImGui::Selectable(label.c_str(), history.current() && history.current()->id == entry.id);
+                            const auto origin = ImGui::GetCursorScreenPos();
+                            const bool selected = ImGui::Selectable("##visit", history.current() && history.current()->id == entry.id, 0,
+                                {std::max(ImGui::GetContentRegionAvail().x, textPainter.width(label, filenameFontSize()) + 4), 0});
+                            highlightedLabel(label, highlightTerms, origin);
                             uiProbe.observe(("history-" + std::to_string(entry.id)).c_str(), selected);
                             if (selected) playback.request(entry.path);
                             rememberControl(); tooltip(utf8(entry.path) + "\nPlayed: " + historyTime(entry.time));
@@ -660,7 +734,7 @@ int runPlayer(HINSTANCE instance) {
                         if (t.duration) label += " · " + timeText(*t.duration);
                         const auto origin = ImGui::GetCursorScreenPos();
                         const bool selected = ImGui::Selectable("##track", Library::matches(t, current), ImGuiSelectableFlags_None,
-                            {std::max(ImGui::GetContentRegionAvail().x, ImGui::CalcTextSize(label.c_str()).x + 4), 0});
+                            {std::max(ImGui::GetContentRegionAvail().x, textPainter.width(label, filenameFontSize()) + 4), 0});
                         highlightedLabel(label, highlightTerms, origin);
                         uiProbe.observe(("library-" + std::to_string(i)).c_str(), selected);
                         if (selected) playback.request(t.path);
@@ -674,9 +748,8 @@ int runPlayer(HINSTANCE instance) {
                                 for (auto& copy : t.copies) paths += "\n" + library.pathLabel(copy);
                             }
                             ImGui::BeginTooltip();
-                            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 44);
-                            ImGui::TextUnformatted(paths.c_str());
-                            ImGui::PopTextWrapPos(); ImGui::EndTooltip();
+                            std::istringstream lines(paths); for (std::string line; std::getline(lines, line);) filenameText(line, io.DisplaySize.x - 32);
+                            ImGui::EndTooltip();
                         }
                         ImGui::PopID();
                     };
@@ -720,7 +793,7 @@ int runPlayer(HINSTANCE instance) {
             auto draw = ImGui::GetWindowDrawList();
             draw->AddRectFilled({0, transportY}, {static_cast<float>(width), static_cast<float>(height)}, IM_COL32(49, 53, 56, 255));
             ImGui::SetCursorPos({u(8), transportY + u(4)});
-            ImGui::TextUnformatted(audio.current.empty() ? "Choose a track from List" : library.pathLabel(audio.current).c_str());
+            filenameText(audio.current.empty() ? "Choose a track from List" : library.pathLabel(audio.current));
             uiProbe.observe("audio-info", false);
             if (!audio.current.empty()) rememberControl();
             if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) contextPath = audio.current;
@@ -754,7 +827,8 @@ int runPlayer(HINSTANCE instance) {
             tooltip(waveform ? "Stereo waveform scaled to the track peak. Drag to seek; focus and use Left/Right (5s), Home or End." : "Waveform analysis pending. Drag to seek.");
             ImGui::TextDisabled("%s / %s", timeText(audio.position).c_str(), timeText(audio.duration).c_str());
             ImGui::SameLine(u(248)); ImGui::TextDisabled("%s", audio.active ? (audio.paused ? "PAUSED" : "PLAYING") : "READY");
-            ImGui::SameLine(); peakMeter(displayedPeak, {std::max(30.0f, static_cast<float>(width) - ImGui::GetCursorPosX() - 12), 6});
+            uiProbe.observe("transport-status", false);
+            ImGui::SameLine(); peakMeter(displayedPeak, {std::max(30.0f, static_cast<float>(width) - ImGui::GetCursorPosX() - 12), 6}, ImGui::GetTextLineHeight());
             uiProbe.observe("peak-meter", false); tooltip("Decoded sample peak before volume/gain; not a true-peak meter");
             const float transportRowY = std::round(ImGui::GetCursorPosY());
             constexpr float buttonHeight = 34, arrowWidth = 46, playWidth = 80, repeatWidth = 34, refreshWidth = 92;
@@ -819,6 +893,15 @@ int runPlayer(HINSTANCE instance) {
             ImGui::End(); controls.swap(nextControls); ImGui::Render();
             SDL_SetRenderDrawColor(renderer, 46, 49, 51, 255); SDL_RenderClear(renderer);
             ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer); SDL_RenderPresent(renderer);
+            schedule.presented(now);
+            schedule.caret = UiSchedule::Time::max();
+            if (io.WantTextInput && io.ConfigInputTextCursorBlink) {
+                if (const auto input = ImGui::GetInputTextState(ImGui::GetActiveID())) {
+                    const auto phase = std::fmod(std::max(0.0f, input->CursorAnim), 1.2f);
+                    const auto delay = input->CursorAnim < 0 ? .8f - input->CursorAnim : phase <= .8f ? .801f - phase : 1.201f - phase;
+                    schedule.caret = now + std::chrono::milliseconds(static_cast<int>(std::ceil(delay * 1000)));
+                }
+            }
             if (windowTest) {
                 uiProbe.order = library.order;
                 size_t queued = 0; for (const auto& entry : history.entries) if (entry.queued) ++queued;
@@ -828,14 +911,13 @@ int runPlayer(HINSTANCE instance) {
                     << queued << ' ' << static_cast<int>(browser.view) << ' ' << !playback.folder.empty() << ' ' << audio.meterPeak << ' '
                     << ImGui::GetCurrentContext()->ErrorCountCurrentFrame;
                 uiProbe.features = features.str();
+                uiProbe.telemetry = "LOOP " + std::to_string(schedule.presents) + " " + std::to_string(schedule.wakeups) + " " + std::to_string(SDL_TextInputActive(window)) + " " + std::to_string(composing);
                 std::ostringstream status;
                 status << "READY " << width << ' ' << height << ' ' << static_cast<int>(history.repeat) << ' '
                     << (history.current() ? history.current()->id : 0) << ' ' << history.playedCount << ' '
                     << playback.pending.has_value() << ' ' << audio.paused << ' ' << historyView << ' ' << visible.size();
                 uiProbe.flush(stateDirectory, status.str());
             }
-            const auto elapsed = SDL_GetTicks() - start;
-            if (elapsed < 33) SDL_Delay(static_cast<Uint32>(33 - elapsed));
         }
         playback.finish();
         if (preferenceWriter.collect(true) && preferenceWriter.error.empty()) savedPreferences = preferenceWriter.revision;
@@ -844,6 +926,9 @@ int runPlayer(HINSTANCE instance) {
         if (historyFile.writable && history.revision != historyFile.saved && !historyFile.notice.empty())
             MessageBoxA(hwnd, historyFile.notice.c_str(), "Prappy Player: history was not saved", MB_OK | MB_ICONWARNING);
     } catch (const std::exception& e) {
+        if (uiProbe.enabled) {
+            if (args.size() == 2) { std::ofstream error(fs::path(args[1]) / "ui-error.txt"); error << e.what(); }
+        }
         MessageBoxA(nullptr, e.what(), "Prappy Player", MB_OK | MB_ICONERROR); exitCode = 1;
     }
     if (graphics) ImGui_ImplSDLRenderer3_Shutdown();

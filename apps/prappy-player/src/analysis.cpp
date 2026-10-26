@@ -273,7 +273,7 @@ fs::path cachePath(const fs::path& directory, const Identity& identity) {
     std::ostringstream name; name << std::hex << stateio::checksum(utf8(identity.path)) << ".bin";
     return directory / name.str();
 }
-Worker::Worker(fs::path cacheDirectory) : directory(std::move(cacheDirectory)), thread([this](std::stop_token stop) { run(stop); }) {}
+Worker::Worker(fs::path cacheDirectory, std::function<void()> completion) : directory(std::move(cacheDirectory)), notify(std::move(completion)), thread([this](std::stop_token stop) { run(stop); }) {}
 Worker::~Worker() { thread.request_stop(); wake.notify_all(); }
 void Worker::reconcile(const Library& library, bool force) {
     std::lock_guard lock(mutex); pending.clear(); completed.clear();
@@ -346,6 +346,7 @@ void Worker::run(std::stop_token stop) {
             }
             active.reset();
         }
+        if (notify) notify();
     }
 }
 }

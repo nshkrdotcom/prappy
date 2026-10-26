@@ -24,14 +24,23 @@ set(SDL_TESTS OFF CACHE BOOL "" FORCE)
 set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/SDL EXCLUDE_FROM_ALL)
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/freetype/CMakeLists.txt")
+  message(FATAL_ERROR "Missing pinned FreeType source. Run scripts/deps.ps1.")
+endif()
+foreach(dependency ZLIB BZIP2 PNG HARFBUZZ BROTLI)
+  set(FT_DISABLE_${dependency} ON CACHE BOOL "" FORCE)
+endforeach()
+add_subdirectory(third_party/freetype EXCLUDE_FROM_ALL)
 add_library(imgui STATIC
   third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp
   third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp
   third_party/imgui/backends/imgui_impl_sdl3.cpp
-  third_party/imgui/backends/imgui_impl_sdlrenderer3.cpp)
-target_include_directories(imgui SYSTEM PUBLIC third_party/imgui third_party/imgui/backends)
-target_link_libraries(imgui PUBLIC SDL3::SDL3-static)
-add_executable(prappy_player WIN32 src/main.cpp src/player_ui.cpp src/analysis.cpp src/tests.cpp assets/player.rc)
+  third_party/imgui/backends/imgui_impl_sdlrenderer3.cpp
+  third_party/imgui/misc/freetype/imgui_freetype.cpp)
+target_compile_definitions(imgui PUBLIC IMGUI_USE_WCHAR32 IMGUI_ENABLE_FREETYPE)
+target_include_directories(imgui SYSTEM PUBLIC third_party/imgui third_party/imgui/backends third_party/imgui/misc/freetype)
+target_link_libraries(imgui PUBLIC SDL3::SDL3-static freetype)
+add_executable(prappy_player WIN32 src/main.cpp src/player_ui.cpp src/analysis.cpp src/text.cpp src/tests.cpp assets/player.rc)
 set_property(SOURCE assets/player.rc APPEND PROPERTY OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/player.ico")
 set_target_properties(prappy_player PROPERTIES OUTPUT_NAME "PrappyPlayer")
 target_include_directories(prappy_player SYSTEM PRIVATE third_party/mpv/include)
@@ -40,12 +49,14 @@ target_compile_options(prappy_player PRIVATE /W4 /WX /permissive- /utf-8 /EHsc /
 if(PRAPPY_ANALYZE)
   target_compile_options(prappy_player PRIVATE /analyze /analyze:external-)
 endif()
-target_link_libraries(prappy_player PRIVATE imgui shell32 ole32 comctl32 bcrypt dwmapi)
+target_link_libraries(prappy_player PRIVATE imgui shell32 ole32 comctl32 bcrypt dwmapi dwrite)
 target_link_options(prappy_player PRIVATE /INCREMENTAL:NO /MANIFEST:EMBED /MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/assets/player.manifest)
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mpv/libmpv-2.dll")
   message(FATAL_ERROR "Missing libmpv runtime. Run scripts/deps.ps1.")
 endif()
 add_custom_command(TARGET prappy_player POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts" "$<TARGET_FILE_DIR:prappy_player>/fonts"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/player.ico" "$<TARGET_FILE_DIR:prappy_player>/PrappyPlayer.ico"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -54,5 +65,7 @@ add_custom_command(TARGET prappy_player POST_BUILD
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mpv/licenses" "$<TARGET_FILE_DIR:prappy_player>/licenses/mpv"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/SDL/LICENSE.txt" "$<TARGET_FILE_DIR:prappy_player>/licenses/SDL.txt"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/freetype/docs/FTL.TXT" "$<TARGET_FILE_DIR:prappy_player>/licenses/FreeType.txt"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/LICENSE.txt" "$<TARGET_FILE_DIR:prappy_player>/licenses/imgui.txt")

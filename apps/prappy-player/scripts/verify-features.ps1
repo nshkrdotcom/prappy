@@ -26,6 +26,7 @@ public static class FeatureNative {
  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h,IntPtr after,int x,int y,int w,int height,uint flags);
  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h,IntPtr dc,uint f);
  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l);
+ [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
  [DllImport("user32.dll",EntryPoint="GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr h,int index);
 }
 '@
@@ -65,6 +66,11 @@ function Read-Ui {
             $state.ScrollMaxY=[double]::Parse($matches[3],[Globalization.CultureInfo]::InvariantCulture)
         }
         elseif ($line -match '^ORDER ([0-9]+)$') { $state.SortOrder=[int]$matches[1] }
+        elseif ($line -match '^LOOP ([0-9]+) ([0-9]+) ([01]) ([01])$') {
+            $state | Add-Member Presents ([uint64]$matches[1]) -Force
+            $state | Add-Member TextInput ([bool][int]$matches[3]) -Force
+            $state | Add-Member Composing ([bool][int]$matches[4]) -Force
+        }
         elseif ($line -match '^ACTIVATION "([^"]+)" ([0-9]+)$') { $state.Activations[$matches[1]]=[uint64]$matches[2] }
         elseif ($line.StartsWith('FEATURES ')) {
             $feature=$line -split ' '
@@ -145,6 +151,11 @@ function Capture([string]$name) {
     try { $bitmap.Save("$stateDirectory/$name.png") } finally { $graphics.Dispose(); $bitmap.Dispose() }
 }
 function Check-HeaderText([string]$name,$layout) {
+    if ($layout.Controls.ContainsKey('transport-status')) {
+        $label=$layout.Controls['transport-status']; $meter=$layout.Controls['peak-meter']
+        Require ([Math]::Abs($label.Y-$meter.Y) -le 0.5 -and [Math]::Abs($label.Top-$meter.Top) -le 0.5 -and
+            [Math]::Abs($label.Bottom-$meter.Bottom) -le 0.5) "Playback status and meter share a centered row ($name)"
+    }
     $window=[FeatureNative+Rect]::new(); $origin=[FeatureNative+Point]::new()
     [FeatureNative]::GetWindowRect($hwnd,[ref]$window) | Out-Null
     [FeatureNative]::ClientToScreen($hwnd,[ref]$origin) | Out-Null
@@ -284,7 +295,8 @@ try {
         New-Item -ItemType Directory -Force $directory | Out-Null
         $bytes=$template.Clone()
         [BitConverter]::GetBytes([int]($index+1000)).CopyTo($bytes,16384)
-        [IO.File]::WriteAllBytes((Join-Path $directory ('track-{0:D3}.wav' -f $index)),$bytes)
+        $filename = if ($index -eq 119) { '中文😀 日本語 한국어 👩🏽‍🔬 🇯🇵.wav' } else { 'track-{0:D3}.wav' -f $index }
+        [IO.File]::WriteAllBytes((Join-Path $directory $filename),$bytes)
     }
     Click 'Clear'
     Click 'Library'
@@ -404,6 +416,25 @@ try {
     Send-UiInput 'KEY CTRL 1'; Send-UiInput 'KEY SHIFT 1'; Send-UiInput 'KEY T 1'; Send-UiInput 'KEY T 0'; Send-UiInput 'KEY SHIFT 0'; Send-UiInput 'KEY CTRL 0'
     $null=Wait-Ui {param($s) !$s.Topmost} 'topmost keyboard shortcut toggles preference'
     Require (([FeatureNative]::GetWindowLongPtr($hwnd,-20).ToInt64() -band 8) -eq 0) 'topmost shortcut clears native style'
+    Click 'list'
+    Click 'search'
+    $null=Wait-Ui {param($s) $s.Controls['search'].Active} 'search is active before SDL text events'
+    Send-UiInput 'NATIVE_EDIT "中"'
+    $null=Wait-Ui {param($s) $s.Composing} 'SDL composition reaches the player'
+    foreach($key in @('ENTER','ESC','SPACE')) {
+        Send-UiInput "NATIVE_KEY $key 1"; Send-UiInput "NATIVE_KEY $key 0"
+    }
+    Require ((Read-Ui).Paused) 'composition keys preserve paused playback'
+    Send-UiInput 'NATIVE_TEXT "中文😀"'; Send-UiInput 'NATIVE_EDIT ""'
+    $null=Wait-Ui {param($s) !$s.Composing -and $s.Visible -eq 1} 'native Unicode commit finds multilingual filename'
+    Capture 'unicode'
+    Click 'Clear'
+    $null=Wait-Ui {param($s) $s.Visible -gt 0} 'Unicode search clears normally'
+    Send-UiInput 'MOVE 0 0'
+    Start-Sleep -Seconds 2
+    $first=(Read-Ui).Presents
+    Start-Sleep -Seconds 2
+    Require ((Read-Ui).Presents -eq $first) 'paused UI presents no idle frames after settling'
 } finally {
     if (!$process.HasExited) { $null=$process.CloseMainWindow(); if (!$process.WaitForExit(5000)) { Stop-Process -Id $process.Id -Force; throw 'Restored feature player did not close.' } }
 }

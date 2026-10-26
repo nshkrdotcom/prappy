@@ -4,6 +4,8 @@
 #include "scan.h"
 #include "status.h"
 #include "feature_tests.h"
+#include "text.h"
+#include "ui_schedule.h"
 #include <SDL3/SDL.h>
 #include <cmath>
 #include <fstream>
@@ -16,6 +18,28 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
         require(rejected, message);
     };
     try {
+        {
+            text::Painter painter(nullptr);
+            for (const auto* label : {"中文 日本語 한국어", "😀 👩🏽‍🔬 🇯🇵 👨‍👩‍👧‍👦", "café café العربية"}) {
+                const auto shaped = painter.inspect(label, {}, 18);
+                require(shaped.width > 0 && !shaped.missingGlyph, "Unicode shaping produced missing glyphs.");
+            }
+            const auto emoji = painter.inspect("👩🏽‍🔬", {L"🔬"}, 18);
+            require(emoji.clusters.size() == 1 && emoji.highlightedClusters == 1 && emoji.clusters[0] == 7,
+                "Emoji highlighting split a shaped cluster.");
+            require(painter.inspect("文件", {}, 36).width > painter.inspect("文件", {}, 18).width * 1.9f,
+                "Text size did not scale.");
+            UiSchedule schedule; const auto now = UiSchedule::Clock::now();
+            schedule.dirty = false; schedule.settle = 0; schedule.paint = now;
+            require(schedule.wait(now, true, false, false, false, {}) == 1000 && !schedule.due(now, false), "Idle UI paints on watchdog.");
+            schedule.caret = now + std::chrono::milliseconds(400);
+            require(schedule.wait(now, true, false, false, false, {}) == 400 && schedule.due(schedule.caret, false), "Caret deadline lost.");
+            require(schedule.wait(now, false, false, false, false, {}) == 1000, "Hidden UI paints caret.");
+            require(std::abs(approachGain(0, 12, .5) - 4.5) < .001 &&
+                std::abs(releasePeak(releasePeak(1, 0, .1), 0, .2) - releasePeak(1, 0, .3)) < .00001,
+                "Gain or meter depends on frame rate.");
+            log << "PASS Unicode shaping, emoji clusters, scaled text, idle/caret deadlines and elapsed-time audio controls\n";
+        }
         require(statusText("", "Checking duplicates: 4 / 10") == "Checking duplicates: 4 / 10", "Empty status adds a leading separator.");
         require(statusText("10 tracks | 2 identical copies hidden", "Checking duplicates: 4 / 10") ==
             "10 tracks \xc2\xb7 2 identical copies hidden \xc2\xb7 Checking duplicates: 4 / 10", "Status sections are not joined with middle dots.");

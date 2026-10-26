@@ -1,5 +1,47 @@
 # Windows verification
 
+## Unicode, idle rendering and transport alignment, 2026-10-26
+
+Release, Release with MSVC static analysis, Debug and Debug with AddressSanitizer
+build with warnings treated as errors. The health matrix exercises playback,
+state/storage/analysis, feature UI and native window behavior in Release, Debug
+and ASan; Debug instances also produce clean CRT leak reports. The normal Release
+executable was rebuilt after isolated suffix-build verification.
+
+New checks cover CJK, Arabic, accented text, color-emoji sequences and complete
+cluster highlighting, scaled text, idle/caret deadlines, and elapsed-time gain
+and meter release. A multilingual filename is rendered and found by a Unicode
+commit through the SDL backend. SDL preedit events and composition Enter/Escape/
+Space preserve paused playback. A settled paused window presents no further
+frames across a two-second observation. Compact, wide and restored layouts check
+that playback status and meter occupy the same centered row. DirectWrite text
+uses the FreeType capital height and baseline to match surrounding control text.
+Both README screenshots were recaptured from the actual library after scan and
+waveform reconciliation, using isolated copied state and silent playback.
+
+These automated composition tests inject SDL events. This desktop has only the
+English keyboard layout; native Japanese/Chinese/Korean conversion engines and
+candidate popups still require a manual check on a desktop with those IMEs.
+The pinned SDL backend owns native text-input start/stop and caret positioning;
+Windows owns composition and candidate UI.
+
+Eight-second CPU samples on this desktop, expressed as percent of one core:
+
+| Mode | Fixed 30fps loop | Event loop, same test polling | Production wait behavior |
+|---|---:|---:|---:|
+| Paused compact | 24.6% | 2.5% | 0.0% |
+| Paused 900×760 | 80.0% | 2.5% | 1.0% |
+| Minimized | 0.2% | 4.7% | 0.0% |
+
+The explicit test harness polls command files every 16ms; normal sessions do
+not. `scripts/measure-idle.ps1 -Variant Release -Label after -NativeWait` reproduces
+the production-wait measurement after `scripts/test-dedup.ps1` creates its audio
+fixtures. Startup/resize settling is excluded; numbers are finite samples,
+not universal CPU guarantees. Playback remains animated around 30fps. Working
+set rose from roughly 39–45MB to 142–150MB with loaded fallback fonts and shaped
+text; rasterized filename tiles have a 16MiB cache budget, with eviction deferred
+until the draw list using a texture has been presented.
+
 ## Preserve list scroll during playback, 2026-10-26
 
 Playback generation changes previously dirtied the visible rows and implicitly

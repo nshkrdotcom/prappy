@@ -6,6 +6,8 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <functional>
+#include <thread>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -108,6 +110,8 @@ struct BinaryReader {
 // One immutable snapshot at a time; callers coalesce dirty revisions while busy.
 struct Writer {
     std::future<std::string> job;
+    std::jthread worker;
+    std::function<void()> notify;
     std::string error;
     bool backup = true;
     uint64_t revision = 0;
@@ -121,9 +125,13 @@ struct Writer {
     }
     template<class Generate> void startGenerated(const fs::path& path, Generate generate, uint64_t version) {
         revision = version;
-        job = std::async(std::launch::async, [path, generate = std::move(generate), keep = backup] {
-            try { write(path, generate(), keep); return std::string{}; }
-            catch (const std::exception& e) { return std::string(e.what()); }
+        std::promise<std::string> promise; job = promise.get_future();
+        worker = std::jthread([path, generate = std::move(generate), keep = backup, notify = notify, promise = std::move(promise)] () mutable {
+            std::string error;
+            try { write(path, generate(), keep); }
+            catch (const std::exception& e) { error = e.what(); }
+            promise.set_value(std::move(error));
+            if (notify) notify();
         });
     }
 };

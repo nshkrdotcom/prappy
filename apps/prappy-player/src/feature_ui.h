@@ -3,6 +3,7 @@
 #include "browse.h"
 #include "imgui.h"
 #include "imgui_internal.h"
+#include "text.h"
 #include <shellapi.h>
 #include <shlobj.h>
 
@@ -72,29 +73,27 @@ inline bool waveformSeek(const analysis::Result* waveform, double& position, dou
     return changed;
 }
 
+inline float filenameFontSize() {
+    const auto glyph = ImGui::GetFontBaked()->FindGlyph('H');
+    return text::active->fontSizeForCapHeight(glyph->Y1 - glyph->Y0);
+}
 inline void highlightedLabel(const std::string& label, const std::vector<std::wstring>& terms, ImVec2 origin) {
-    const auto normalized = searchText(label);
-    std::vector<bool> marked(normalized.size(), false);
-    for (const auto& term : terms) if (!term.empty())
-        for (size_t offset = 0; (offset = normalized.find(term, offset)) != std::wstring::npos; offset += term.size())
-            for (size_t i = offset; i < offset + term.size(); ++i) marked[i] = true;
-    const auto count = MultiByteToWideChar(CP_UTF8, 0, label.data(), static_cast<int>(label.size()), nullptr, 0);
-    std::wstring original(count, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, label.data(), static_cast<int>(label.size()), original.data(), count);
-    auto draw = ImGui::GetWindowDrawList();
-    for (size_t begin = 0; begin < original.size();) {
-        size_t end = begin + 1;
-        while (end < original.size() && marked[end] == marked[begin]) ++end;
-        // Do not split a UTF-16 surrogate pair across color runs.
-        if (end < original.size() && original[end] >= 0xdc00 && original[end] <= 0xdfff) ++end;
-        const auto text = utf8(fs::path(original.substr(begin, end - begin)));
-        draw->AddText(origin, ImGui::GetColorU32(marked[begin] ? ImVec4(.96f, .74f, .39f, 1) : ImGui::GetStyleColorVec4(ImGuiCol_Text)), text.c_str());
-        origin.x += ImGui::CalcTextSize(text.c_str()).x; begin = end;
-    }
+    const auto glyph = ImGui::GetFontBaked()->FindGlyph('H'); const auto size = filenameFontSize();
+    origin.y += std::round(glyph->Y0 - (size * .8f - (glyph->Y1 - glyph->Y0)));
+    text::active->draw(label, terms, origin, size, ImGui::GetColorU32(ImGuiCol_Text));
+}
+inline void filenameText(const std::string& label, float maximum = 0) {
+    const auto origin = ImGui::GetCursorScreenPos();
+    const auto width = text::active->width(label, filenameFontSize());
+    ImGui::Dummy({maximum > 0 ? std::min(maximum, width) : width, ImGui::GetFontSize()});
+    highlightedLabel(label, {}, origin);
 }
 
-inline void peakMeter(double peak, ImVec2 size) {
-    ImGui::Dummy(size); const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+inline void peakMeter(double peak, ImVec2 size, float rowHeight = 0) {
+    const auto height = std::max(size.y, rowHeight);
+    ImGui::Dummy({size.x, height});
+    auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+    min.y = std::round(min.y + (height - size.y) * .5f); max.y = min.y + size.y;
     auto draw = ImGui::GetWindowDrawList(); draw->AddRectFilled(min, max, IM_COL32(24, 29, 31, 255), 2);
     const auto db = peak > 0 ? 20 * std::log10(peak) : -60;
     const float level = static_cast<float>(std::clamp((db + 60) / 60, 0.0, 1.0));

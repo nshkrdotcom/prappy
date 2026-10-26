@@ -7,6 +7,19 @@ the list collapsed; playback controls always stay at the bottom.
 The UI uses SDL's software renderer with a native Windows framebuffer, avoiding
 a Direct3D/OpenGL game graphics device that can trigger GPU overlay notices.
 
+Filenames use DirectWrite shaping, Windows font fallback and a bundled Noto CJK
+font. CJK scripts, supplementary Unicode characters and color emoji work in
+library/history rows, the current title and path tooltips. Highlighting follows
+shaped clusters, preserving emoji sequences and combining marks. The search box
+uses a 32-bit FreeType font atlas; Windows displays IME composition and candidates
+at the text cursor. Composition Enter, Escape and Space are reserved for input.
+
+The paused player waits for events and redraws only when needed, including caret
+blinks and delayed tooltips. Playback remains animated; worker completions and
+audio events wake the UI, including while minimized. Meter decay and normalization
+ramps use elapsed time. Shaped text textures have a bounded cache, retired after
+the frame using them is presented.
+
 ## Catalog, history and repeat
 
 The catalog is saved as `player-catalog.bin` beside `player.ini`. A compatible
@@ -129,7 +142,7 @@ Keep the list tucked away for playback in a small window.
 Widen the window and open the list to browse tracks by their relative paths.
 The playback controls stay at the bottom.
 
-![Prappy Player showing ten tracks with readable library-relative paths](assets/player-library.jpg)
+![Prappy Player with a searchable library, waveform and aligned playback controls](assets/player-library.jpg)
 
 ## Build and run
 

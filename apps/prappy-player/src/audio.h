@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdint>
 #include <charconv>
+#include <functional>
 struct AudioInfo {
     std::string codec, sampleFormat, channelLayout;
     int64_t sampleRate = 0, channels = 0;
@@ -34,6 +35,7 @@ struct Audio {
 #define MPV_API(name) decltype(&mpv_##name) name = nullptr
     MPV_API(create); MPV_API(initialize); MPV_API(terminate_destroy); MPV_API(set_option_string);
     MPV_API(command); MPV_API(set_property); MPV_API(get_property); MPV_API(wait_event); MPV_API(error_string); MPV_API(free);
+    MPV_API(set_wakeup_callback);
 #undef MPV_API
     std::string error;
     fs::path current;
@@ -44,7 +46,12 @@ struct Audio {
     AudioInfo info;
     double gain = 0, meterPeak = 0;
     bool metering = false;
-    ~Audio() { if (handle) terminate_destroy(handle); if (dll) FreeLibrary(dll); }
+    std::function<void()> notify;
+    ~Audio() { if (handle) { set_wakeup_callback(handle, nullptr, nullptr); terminate_destroy(handle); } if (dll) FreeLibrary(dll); }
+    void setNotify(std::function<void()> callback) {
+        notify = std::move(callback);
+        set_wakeup_callback(handle, [](void* context) { auto& audio = *static_cast<Audio*>(context); if (audio.notify) audio.notify(); }, this);
+    }
     void open(bool silent = false, std::initializer_list<std::pair<const char*, const char*>> options = {}, bool meter = true) {
         if (dll) throw std::logic_error("Audio is already open.");
         auto path = executableDir() / "libmpv-2.dll";
@@ -53,6 +60,7 @@ struct Audio {
 #define MPV_LOAD(name) name = reinterpret_cast<decltype(name)>(GetProcAddress(dll, "mpv_" #name)); if (!name) throw std::runtime_error("Incompatible libmpv: " #name)
         MPV_LOAD(create); MPV_LOAD(initialize); MPV_LOAD(terminate_destroy); MPV_LOAD(set_option_string);
         MPV_LOAD(command); MPV_LOAD(set_property); MPV_LOAD(get_property); MPV_LOAD(wait_event); MPV_LOAD(error_string); MPV_LOAD(free);
+        MPV_LOAD(set_wakeup_callback);
 #undef MPV_LOAD
         handle = create(); if (!handle) throw std::runtime_error("libmpv could not create the player.");
         for (auto [name, value] : std::array<std::pair<const char*, const char*>, 8>{{

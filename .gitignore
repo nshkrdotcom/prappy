@@ -13,3 +13,4 @@ external/
 *.lib
 *.exp
 
+apps/prappy-player/third_party/freetype/
