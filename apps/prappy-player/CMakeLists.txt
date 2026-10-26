@@ -21,6 +21,7 @@ add_library(imgui STATIC
 target_include_directories(imgui PUBLIC third_party/imgui third_party/imgui/backends)
 target_link_libraries(imgui PUBLIC SDL3::SDL3-static)
 add_executable(prappy_player WIN32 src/main.cpp assets/player.rc)
+set_property(SOURCE assets/player.rc APPEND PROPERTY OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/player.ico")
 set_target_properties(prappy_player PROPERTIES OUTPUT_NAME "PrappyPlayer")
 target_include_directories(prappy_player PRIVATE third_party/mpv/include)
 target_compile_definitions(prappy_player PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
