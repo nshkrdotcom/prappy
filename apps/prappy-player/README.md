@@ -1,0 +1,86 @@
+# Prappy Player
+
+Compact Windows x64 music player: SDL3, Dear ImGui and audio-only libmpv.
+Fixed **500 physical pixels** wide, 18px text, adjustable height. Starts with
+the list collapsed; playback controls always stay at the bottom.
+
+## Build and run
+
+PowerShell 7, MSVC 2022 C++ Build Tools / Windows SDK, CMake 3.25+ and Ninja.
+The shared toolchain setup is in `dotfiles_private/windows/bootstrap_windows`.
+Set `DOTFILES_PRIVATE` if that checkout is not beside this repository or under
+`$HOME/projects`. No bgfx, shader compiler, submodules or package manager needed.
+
+```powershell
+cd C:\Users\Home\projects\prappy\apps\prappy-player
+pwsh scripts/deps.ps1          # first checkout: download the pinned libmpv DLL
+pwsh scripts/build.ps1 -Run    # Release; add -Config Debug for a debug build
+```
+
+Executable: `build/Release/PrappyPlayer.exe`. Launch it directly without a
+console, including from Explorer. To relocate it, copy the executable,
+`libmpv-2.dll`, `licenses/` and your `player.ini` together. The MSVC runtime and
+SDL are statically linked. Build output and the downloaded DLL are gitignored.
+
+## Music roots
+
+On first launch, the player creates `player.ini` **beside the executable**, with
+your Windows Music folder as the default root. Expand **List**, then **Config**
+to edit it. UTF-8, one `key=value` per line:
+
+```ini
+# Examples: replace these paths with accessible Windows folders/shares.
+directory=D:\Music
+directory=\\ubuntu-host\music
+extensions=flac,wav,mp3,opus,m4a,wv
+```
+
+Repeat `directory` for more recursive roots. Relative paths resolve against the
+configuration file's directory, never the shell's working directory. Extensions
+are case-insensitive, with or without leading dots. Unknown keys and malformed
+entries show an error and retain the previous list. Missing roots show a warning;
+valid roots still load. Overlapping roots are deduplicated. Directory junctions
+are not traversed. No watchers, database, background rescans or media writes.
+
+The Ubuntu path `~/p/g/n/scraper` is not a Windows path. Mount/share its audio
+roots or copy the audio locally before entering them here. The player does not
+connect to, operate, convert or modify scraper data.
+
+## Controls
+
+- **List** expands/collapses the library. Choose filename order, directory groups
+  or file type groups. Click a track to play it; hover for its complete path.
+- Previous, Play/Pause, Next, seek and volume are always at the bottom.
+  Automatic progression stops after the final track; explicit Next wraps.
+  Playback errors stop progression and appear in the status line.
+- Sorting changes next/previous order without changing the playing track.
+  Refresh reloads config and scans once, preserving playback by full path.
+  If the playing file disappears from the list, it can finish; Next starts at
+  the first remaining track.
+- **Refresh** is the single rescan action. Hover over the status for full errors.
+- Drag the title or the angled strip above now-playing. Resize the top/bottom
+  edges. **Pin** toggles always-on-top; `_` minimizes and `X` closes. Normal
+  taskbar and Alt-Tab presence are preserved; maximize is disabled.
+
+Width and text use physical pixels deliberately, including on high-DPI displays;
+moving between monitors does not expand the width. The compact layout was enlarged
+from the initial 350px / 12px design at the user's request.
+
+## Verification
+
+The executable includes a headless integration check, using libmpv's null audio
+output. Supply a configuration containing at least two nonempty audio files:
+
+```powershell
+$p = Start-Process build/Release/PrappyPlayer.exe -WindowStyle Hidden -Wait -PassThru `
+  -ArgumentList '--self-test', 'C:\absolute\test.ini', 'C:\absolute\results.log'
+$p.ExitCode
+```
+
+It checks decoding once per discovered extension, duration, pause, seek, volume,
+sort/refresh identity, next/previous, end-of-track progression and error reporting.
+Use representative audio files long enough to seek (at least two seconds).
+For window checks and screenshots: `pwsh scripts/verify-window.ps1`. This launches
+a temporary player instance, moves/resizes it, clicks List/Pin, then closes it.
+
+See [THIRD_PARTY.md](THIRD_PARTY.md) for versions, licenses and provenance.

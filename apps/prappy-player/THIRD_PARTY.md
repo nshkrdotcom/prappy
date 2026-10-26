@@ -1,0 +1,33 @@
+# Vendored dependencies
+
+App-authored source uses the repository's [MIT license](../../LICENSE).
+Third-party files retain their own licenses. No submodules are used.
+
+| Component | Pinned upstream | Local files | License |
+|---|---|---|---|
+| SDL 3.4.18 | [829a65d769d935c4852f8159e964312c0957260a](https://github.com/libsdl-org/SDL/tree/829a65d769d935c4852f8159e964312c0957260a) | `third_party/SDL` | zlib, `LICENSE.txt` |
+| Dear ImGui 1.93.0 | [c1aaac65e896a45f81f47a4d68f9959e0f86c859](https://github.com/ocornut/imgui/tree/c1aaac65e896a45f81f47a4d68f9959e0f86c859) | Core files and SDL3/SDLRenderer3 backends | MIT, `LICENSE.txt` |
+| libmpv Windows x64 | mpv [e471496c56](https://github.com/mpv-player/mpv/tree/e471496c56), [shinchiro build 20261021](https://github.com/shinchiro/mpv-winbuild-cmake/releases/tag/20261021) | `third_party/mpv/include/mpv/client.h`, downloaded `libmpv-2.dll` | See `third_party/mpv/licenses` |
+
+SDL is copied without tests, examples, docs, platform IDE projects or Git metadata.
+ImGui's official `example_sdl3_sdlrenderer3` supplied the initialization/render loop
+pattern; the application does not need its demo window or extra renderer stacks.
+Local player code uses Win32 only for window constraints, icon, configuration
+opening and DLL loading. The existing Prappy icon is reused as the app family icon.
+
+Runtime archive:
+`mpv-dev-x86_64-20261021-git-e471496c56.7z`
+
+SHA-256:
+`efc719eff3dc5954b4a5efc800632808bcec01cc9034940dd14e5eb7fe9ea633`
+
+`scripts/deps.ps1` downloads and verifies this exact artifact. Windows' bundled
+`tar` extracts it. The runtime is a larger binary containing mpv and codec
+dependencies; it is not a vendored build of mpv's entire source tree. Only the C
+API header is needed. The application loads its C entrypoints from the adjacent
+DLL, so the archive's MinGW import library is neither used nor required by MSVC.
+
+mpv defaults to GPLv2-or-later; do not treat the runtime as covered by the app's MIT
+license. Its upstream Copyright and GPL/LGPL texts are retained and deployed.
+Corresponding mpv sources and the runtime build recipes are linked above; codec
+sources/revisions are recorded in the [builder repository](https://github.com/shinchiro/mpv-winbuild-cmake/tree/20261021).
