@@ -8,6 +8,9 @@ static int stateTests(const fs::path& configPath, const fs::path& logPath) {
         require(rejected, message);
     };
     try {
+        require(statusText("", "Checking duplicates: 4 / 10") == "Checking duplicates: 4 / 10", "Empty status adds a leading separator.");
+        require(statusText("10 tracks | 2 identical copies hidden", "Checking duplicates: 4 / 10") ==
+            "10 tracks \xc2\xb7 2 identical copies hidden \xc2\xb7 Checking duplicates: 4 / 10", "Status sections are not joined with middle dots.");
         const auto root = logPath.parent_path() / ("state-test-" + std::to_string(GetCurrentProcessId()));
         fs::create_directories(root);
         const auto a = fs::absolute(root / L"space Beyonc\u00e9" / L"a.wav"), b = fs::absolute(root / "b.wav"), c = fs::absolute(root / "c.wav");

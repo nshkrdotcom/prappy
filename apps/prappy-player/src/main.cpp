@@ -684,16 +684,8 @@ static void tooltip(const std::string& text) {
         if (uiProbe.enabled) uiProbe.tooltip = text;
     }
 }
-static bool centeredButton(const char* label, ImVec2 size = {}, const char* probeName = nullptr) {
-    // Center the visible glyph bounds, rather than Segoe UI's padded line box.
-    // Retain the standard button for layout, focus, disabled state and input.
-    const auto color = ImGui::GetColorU32(ImGuiCol_Text);
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 0));
-    const bool pressed = ImGui::Button(label, size);
-    ImGui::PopStyleColor();
-    uiProbe.observe(probeName ? probeName : label, pressed);
-    if (!ImGui::IsItemVisible()) return pressed;
-    const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+static void centeredLabel(const char* label, ImVec2 min, ImVec2 max, ImU32 color) {
+    // Measure visible ink; the font's line box includes uneven empty space.
     const char* end = label;
     float pen = 0;
     ImVec2 inkMin{ImGui::GetFontSize(), ImGui::GetFontSize()}, inkMax{};
@@ -717,25 +709,63 @@ static bool centeredButton(const char* label, ImVec2 size = {}, const char* prob
         draw->AddText(pos, color, label, end);
         draw->PopClipRect();
     }
+}
+static bool centeredButton(const char* label, ImVec2 size = {}, const char* probeName = nullptr) {
+    const auto color = ImGui::GetColorU32(ImGuiCol_Text);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 0));
+    const bool pressed = ImGui::Button(label, size);
+    ImGui::PopStyleColor();
+    uiProbe.observe(probeName ? probeName : label, pressed);
+    if (ImGui::IsItemVisible()) centeredLabel(label, ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), color);
     return pressed;
 }
-static bool repeatButton(RepeatMode mode) {
-    const bool pressed = ImGui::Button("##repeat", {u(24), u(24)});
+static bool navigationButton(const char* id, bool forward, ImVec2 size) {
+    const bool pressed = ImGui::Button(id, size);
+    uiProbe.observe(forward ? "next" : "back", pressed);
+    if (!ImGui::IsItemVisible()) return pressed;
+    const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+    const ImVec2 center{std::round((min.x + max.x) * .5f), std::round((min.y + max.y) * .5f)};
+    constexpr float halfWidth = 6, halfHeight = 6;
+    const float direction = forward ? 1.0f : -1.0f;
+    const auto color = ImGui::GetColorU32(ImGuiCol_Text);
+    auto draw = ImGui::GetWindowDrawList();
+    draw->AddTriangleFilled({center.x + direction * 3, center.y},
+        {center.x - direction * halfWidth, center.y - halfHeight}, {center.x - direction * halfWidth, center.y + halfHeight}, color);
+    draw->AddRectFilled({center.x + direction * 5 - 1, center.y - halfHeight},
+        {center.x + direction * 5 + 1, center.y + halfHeight}, color);
+    return pressed;
+}
+static bool listButton(bool expanded, ImVec2 size) {
+    const bool pressed = ImGui::Button("##list", size);
+    uiProbe.observe("list", pressed);
+    const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+    const auto color = ImGui::GetColorU32(ImGuiCol_Text);
+    const float textWidth = ImGui::CalcTextSize("List").x;
+    const float groupLeft = std::round((min.x + max.x - textWidth - 15) * .5f);
+    centeredLabel("List", {groupLeft, min.y}, {groupLeft + textWidth, max.y}, color);
+    const ImVec2 center{groupLeft + textWidth + 11, std::round((min.y + max.y) * .5f)};
+    const float direction = expanded ? -1.0f : 1.0f;
+    const ImVec2 points[] = {{center.x - 4, center.y - direction * 2}, {center.x, center.y + direction * 2}, {center.x + 4, center.y - direction * 2}};
+    ImGui::GetWindowDrawList()->AddPolyline(points, 3, color, ImDrawFlags_None, 1.5f);
+    return pressed;
+}
+static bool repeatButton(RepeatMode mode, ImVec2 size) {
+    const bool pressed = ImGui::Button("##repeat", size);
     uiProbe.observe("repeat", pressed);
     const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
-    const ImVec2 center{(min.x + max.x) * .5f, (min.y + max.y) * .5f};
-    const float r = u(6), h = u(4), tip = u(2.8f);
+    const ImVec2 center{std::round((min.x + max.x) * .5f), std::round((min.y + max.y) * .5f)};
+    constexpr float r = 8, h = 5, tip = 3;
     const auto color = ImGui::GetColorU32(mode == RepeatMode::Off ? ImVec4(.64f, .68f, .69f, 1) : ImVec4(.25f, .94f, .72f, 1));
     auto draw = ImGui::GetWindowDrawList();
     const ImVec2 upper[] = {{center.x-r, center.y}, {center.x-r, center.y-h}, {center.x+r, center.y-h}};
     const ImVec2 lower[] = {{center.x+r, center.y}, {center.x+r, center.y+h}, {center.x-r, center.y+h}};
-    draw->AddPolyline(upper, 3, color, ImDrawFlags_None, u(1.2f));
-    draw->AddPolyline(lower, 3, color, ImDrawFlags_None, u(1.2f));
+    draw->AddPolyline(upper, 3, color, ImDrawFlags_None, 1.5f);
+    draw->AddPolyline(lower, 3, color, ImDrawFlags_None, 1.5f);
     draw->AddTriangleFilled({center.x+r, center.y-h}, {center.x+r-tip, center.y-h-tip}, {center.x+r-tip, center.y-h+tip}, color);
     draw->AddTriangleFilled({center.x-r, center.y+h}, {center.x-r+tip, center.y+h-tip}, {center.x-r+tip, center.y+h+tip}, color);
     if (mode == RepeatMode::One) {
-        draw->AddLine({center.x-u(1.5f), center.y-u(1)}, {center.x, center.y-u(2)}, color, u(1));
-        draw->AddLine({center.x, center.y-u(2)}, {center.x, center.y+u(2)}, color, u(1));
+        draw->AddLine({center.x-2, center.y-1}, {center.x, center.y-2}, color, 1.5f);
+        draw->AddLine({center.x, center.y-2}, {center.x, center.y+2}, color, 1.5f);
     }
     return pressed;
 }
@@ -749,6 +779,12 @@ static std::string historyTime(int64_t timestamp) {
     const time_t value = static_cast<time_t>(timestamp); tm local{}; char text[32]{};
     if (localtime_s(&local, &value) == 0) std::strftime(text, sizeof(text), "%Y-%m-%d %H:%M", &local);
     return text;
+}
+static std::string statusText(std::string primary, const std::string& progress = {}) {
+    if (!progress.empty()) primary += (primary.empty() ? "" : " \xc2\xb7 ") + progress;
+    for (size_t offset = 0; (offset = primary.find(" | ", offset)) != std::string::npos; offset += 4)
+        primary.replace(offset, 3, " \xc2\xb7 ");
+    return primary;
 }
 #include "state_tests.h"
 static std::string timeText(double seconds) {
@@ -1019,19 +1055,22 @@ static int runPlayer(HINSTANCE instance) {
             int width, height; SDL_GetWindowSize(window, &width, &height);
             ImGui::SetNextWindowPos({0, 0}); ImGui::SetNextWindowSize({static_cast<float>(width), static_cast<float>(height)});
             ImGui::Begin("Player", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
-            ImGui::TextColored({.25f, .94f, .72f, 1}, "PRAPPY  /  PLAYER");
-            const char* listLabel = expanded ? "List ^" : "List v";
             const auto& uiStyle = ImGui::GetStyle();
-            const float buttonsWidth = uiStyle.FramePadding.x * 2 + ImGui::CalcTextSize(listLabel).x;
-            const float historyWidth = ImGui::CalcTextSize("History").x + uiStyle.FramePadding.x * 2;
-            ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - buttonsWidth - historyWidth - uiStyle.ItemSpacing.x);
-            if (centeredButton("History", {historyWidth, ImGui::GetFontSize()}, "history")) {
+            const float headerY = std::round(uiStyle.WindowPadding.y);
+            constexpr float headerHeight = 26, headerWidth = 74, gap = 7;
+            const float headerRight = std::round(ImGui::GetWindowContentRegionMax().x);
+            const auto titleMin = ImGui::GetCursorScreenPos();
+            centeredLabel("PRAPPY  /  PLAYER", titleMin, {titleMin.x + 116, titleMin.y + headerHeight},
+                ImGui::GetColorU32(ImVec4(.25f, .94f, .72f, 1)));
+            ImGui::SetCursorPos({headerRight - headerWidth * 2 - gap, headerY});
+            if (centeredButton("History", {headerWidth, headerHeight}, "history")) {
                 historyView = true; filterDirty = true;
                 if (!expanded && !(SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED)) SDL_SetWindowSize(window, width, expandedHeight);
                 expanded = true;
             }
-            rememberControl(); tooltip("Browse listening history"); ImGui::SameLine();
-            if (centeredButton(listLabel, {buttonsWidth, ImGui::GetFontSize()}, "list")) {
+            rememberControl(); tooltip("Browse listening history");
+            ImGui::SetCursorPos({headerRight - headerWidth, headerY});
+            if (listButton(expanded, {headerWidth, headerHeight})) {
                 if (!(SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED)) {
                     if (expanded) { expandedHeight = height; SDL_SetWindowSize(window, width, MinHeight); }
                     else SDL_SetWindowSize(window, width, expandedHeight);
@@ -1039,6 +1078,8 @@ static int runPlayer(HINSTANCE instance) {
                 expanded = !expanded;
             }
             rememberControl();
+            tooltip(expanded ? "Collapse list" : "Expand list");
+            ImGui::SetCursorPos({std::round(uiStyle.WindowPadding.x), headerY + headerHeight + std::round(uiStyle.ItemSpacing.y)});
             const float transportY = static_cast<float>(height - TransportHeight);
             if (expanded && transportY > u(90)) {
                 if (viewButton("Library", !historyView)) { historyView = false; filterDirty = true; }
@@ -1094,7 +1135,7 @@ static int runPlayer(HINSTANCE instance) {
                         if (historyView) {
                             const auto& entry = history.entries[i];
                             const bool unavailable = playback.unavailable.contains(key(entry.path));
-                            const auto label = (unavailable ? "[Unavailable] " : "") + library.pathLabel(entry.path) + "  |  " + historyTime(entry.time);
+                            const auto label = (unavailable ? "[Unavailable] " : "") + library.pathLabel(entry.path) + "  \xc2\xb7  " + historyTime(entry.time);
                             ImGui::PushID(static_cast<int>(i));
                             const bool selected = ImGui::Selectable(label.c_str(), history.current() && history.current()->id == entry.id);
                             uiProbe.observe(("history-" + std::to_string(entry.id)).c_str(), selected);
@@ -1175,33 +1216,50 @@ static int runPlayer(HINSTANCE instance) {
             ImGui::PopStyleColor(2);
             ImGui::TextDisabled("%s / %s", timeText(audio.position).c_str(), timeText(audio.duration).c_str());
             ImGui::SameLine(u(248)); ImGui::TextDisabled("%s", audio.active ? (audio.paused ? "PAUSED" : "PLAYING") : "READY");
-            const float transportRowY = ImGui::GetCursorPosY();
+            const float transportRowY = std::round(ImGui::GetCursorPosY());
+            constexpr float buttonHeight = 34, arrowWidth = 46, playWidth = 80, repeatWidth = 34, refreshWidth = 92;
+            const float transportLeft = std::round(uiStyle.WindowPadding.x);
+            const float transportRight = static_cast<float>(width) - transportLeft;
+            const float playX = transportLeft + arrowWidth + gap, nextX = playX + playWidth + gap;
+            const float refreshX = transportRight - refreshWidth, repeatX = refreshX - gap - repeatWidth;
+            const float valueX = nextX + arrowWidth + gap, sliderX = valueX + 46 + gap;
+            ImGui::SetCursorPos({transportLeft, transportRowY});
             ImGui::BeginDisabled(!playback.adjacent(-1));
-            if (centeredButton("|<", {u(32), u(24)}, "back")) playback.navigate(-1);
+            if (navigationButton("##back", false, {arrowWidth, buttonHeight})) playback.navigate(-1);
             rememberControl();
             ImGui::EndDisabled();
-            tooltip("Back: " + library.pathLabel(playback.destination(-1))); ImGui::SameLine();
+            tooltip("Back: " + library.pathLabel(playback.destination(-1)));
+            ImGui::SetCursorPos({playX, transportRowY});
             ImGui::PushStyleColor(ImGuiCol_Button, {.96f, .74f, .39f, 1});
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {1, .84f, .55f, 1});
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, {.84f, .59f, .24f, 1});
             ImGui::PushStyleColor(ImGuiCol_Text, {.12f, .15f, .16f, 1});
             const bool wantsPause = playback.pending ? playback.pending->paused : audio.paused;
-            if (centeredButton(audio.active && !wantsPause ? "Pause" : "Play", {u(56), u(24)}, "play")) togglePlayback();
+            if (centeredButton(audio.active && !wantsPause ? "Pause" : "Play", {playWidth, buttonHeight}, "play")) togglePlayback();
             rememberControl();
             ImGui::PopStyleColor(4);
-            ImGui::SameLine(); if (centeredButton(">|", {u(32), u(24)}, "next")) playback.navigate(1);
+            ImGui::SetCursorPos({nextX, transportRowY});
+            if (navigationButton("##next", true, {arrowWidth, buttonHeight})) playback.navigate(1);
             rememberControl();
-            tooltip(std::string(playback.adjacent(1) ? "Forward: " : "Next in library: ") + library.pathLabel(playback.destination(1))); ImGui::SameLine();
-            ImGui::SetCursorPosY(transportRowY + (u(24) - ImGui::GetFrameHeight()) * .5f);
-            ImGui::SetNextItemWidth(u(95)); float volume = static_cast<float>(audio.volume);
-            if (ImGui::SliderFloat("##volume", &volume, 0, 100, "Vol %.0f")) audio.setVolume(volume);
-            rememberControl();
-            ImGui::SameLine();
-            ImGui::SetCursorPosY(transportRowY);
-            if (repeatButton(history.repeat)) { history.cycleRepeat(); historyFile.save(history, true); }
-            rememberControl(); tooltip(repeatTooltip(history.repeat)); ImGui::SameLine();
+            tooltip(std::string(playback.adjacent(1) ? "Forward: " : "Next in library: ") + library.pathLabel(playback.destination(1)));
+            ImGui::SetCursorPos({valueX, transportRowY});
+            ImGui::Dummy({46, buttonHeight});
+            const auto volumeLabel = "Vol " + std::to_string(static_cast<int>(std::round(audio.volume)));
+            centeredLabel(volumeLabel.c_str(), ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ImGui::GetColorU32(ImGuiCol_Text));
+            uiProbe.observe("volume-value", false);
+            ImGui::SetCursorPos({sliderX, transportRowY + std::round((buttonHeight - ImGui::GetFrameHeight()) * .5f)});
+            ImGui::SetNextItemWidth(repeatX - gap - sliderX);
+            // Preserve whole-point mouse/keyboard adjustments with an external readout.
+            int volume = static_cast<int>(std::round(audio.volume));
+            if (ImGui::SliderInt("##volume", &volume, 0, 100, "")) audio.setVolume(volume);
+            uiProbe.observe("volume", ImGui::IsItemClicked());
+            rememberControl(); tooltip("Volume: " + std::to_string(static_cast<int>(std::round(audio.volume))) + "%");
+            ImGui::SetCursorPos({repeatX, transportRowY});
+            if (repeatButton(history.repeat, {repeatWidth, buttonHeight})) { history.cycleRepeat(); historyFile.save(history, true); }
+            rememberControl(); tooltip(repeatTooltip(history.repeat));
+            ImGui::SetCursorPos({refreshX, transportRowY});
             ImGui::BeginDisabled(scan.running());
-            if (centeredButton(scan.running() ? "Scanning" : "Refresh", {u(65), u(24)})) {
+            if (centeredButton(scan.running() ? "Scanning" : "Refresh", {refreshWidth, buttonHeight}, "refresh")) {
                 if (ImGui::GetIO().KeyShift) { library.verified.clear(); library.forceVerification = true; }
                 scan.begin(config, library.order, &library, true);
             }
@@ -1211,8 +1269,9 @@ static int runPlayer(HINSTANCE instance) {
             ImGui::SetCursorPosY(static_cast<float>(height) - u(24));
             ImGui::PushStyleColor(ImGuiCol_Text, audio.error.empty() ? ImVec4(.68f, .72f, .72f, 1) : ImVec4(1, .63f, .5f, 1));
             const auto message = !historyFile.notice.empty() ? historyFile.notice : (!playback.notice.empty() ? playback.notice :
-                (!audio.error.empty() ? audio.error : (scan.running() ? library.notice + " | " + scan.status() : library.notice)));
-            ImGui::TextUnformatted(message.c_str()); tooltip(message); ImGui::PopStyleColor();
+                (!audio.error.empty() ? audio.error : (scan.running() ? statusText(library.notice, scan.status()) : library.notice)));
+            const auto displayMessage = statusText(message);
+            ImGui::TextUnformatted(displayMessage.c_str()); tooltip(displayMessage); ImGui::PopStyleColor();
             draw->AddRect({0, 0}, {static_cast<float>(width - 1), static_cast<float>(height - 1)}, IM_COL32(90, 99, 99, 255));
             ImGui::End(); controls.swap(nextControls); ImGui::Render();
             SDL_SetRenderDrawColor(renderer, 46, 49, 51, 255); SDL_RenderClear(renderer);

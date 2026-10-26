@@ -48,6 +48,10 @@ function Read-Ui {
             $state.Controls[$matches[1]] = [pscustomobject]@{
                 X=([double]::Parse($matches[2],[Globalization.CultureInfo]::InvariantCulture)+[double]::Parse($matches[4],[Globalization.CultureInfo]::InvariantCulture))/2
                 Y=([double]::Parse($matches[3],[Globalization.CultureInfo]::InvariantCulture)+[double]::Parse($matches[5],[Globalization.CultureInfo]::InvariantCulture))/2
+                Left=[double]::Parse($matches[2],[Globalization.CultureInfo]::InvariantCulture)
+                Top=[double]::Parse($matches[3],[Globalization.CultureInfo]::InvariantCulture)
+                Right=[double]::Parse($matches[4],[Globalization.CultureInfo]::InvariantCulture)
+                Bottom=[double]::Parse($matches[5],[Globalization.CultureInfo]::InvariantCulture)
                 Hovered=[bool][int]$matches[6];Active=[bool][int]$matches[7];Clicks=[uint64]$matches[8]
             }
         } elseif ($line -match '^TOOLTIP "(.*)"$') { $state.Tooltip=$matches[1] }
@@ -113,6 +117,39 @@ try {
     [FeatureNative]::SetWindowPos($hwnd,[IntPtr]::Zero,120,120,0,0,0x45) | Out-Null
     $null=Wait-Ui {param($s) $s.Count -eq 2 -and !$s.Pending -and $s.Paused} 'session restored paused'
     Capture 'startup'
+    $layout=Read-Ui
+    Require ($layout.Controls.ContainsKey('volume-value') -and $layout.Controls.ContainsKey('volume')) 'Volume value is outside the interactive slider'
+    Require ($layout.Controls['volume-value'].Right -lt $layout.Controls['volume'].Left) 'Volume value cannot be covered by the slider thumb'
+    $header=$layout.Controls['history']; $list=$layout.Controls['list']
+    Require ($header.Top -eq $list.Top -and $header.Bottom -eq $list.Bottom) 'History and List have identical vertical bounds'
+    Require (($header.Right-$header.Left) -eq ($list.Right-$list.Left)) 'History and List have identical widths'
+    $transport=$layout.Controls['play']
+    foreach ($name in @('back','next','repeat','refresh')) {
+        Require ($layout.Controls[$name].Top -eq $transport.Top -and $layout.Controls[$name].Bottom -eq $transport.Bottom) "Transport $name has matching vertical bounds"
+    }
+    foreach ($endpoint in @(0,100)) {
+        $slider=(Read-Ui).Controls['volume']
+        $x=if ($endpoint -eq 0) {$slider.Left+1} else {$slider.Right-1}
+        Send-UiInput ('MOVE {0} {1}' -f $x.ToString([Globalization.CultureInfo]::InvariantCulture),$slider.Y.ToString([Globalization.CultureInfo]::InvariantCulture))
+        $null=Wait-Ui {param($s) $s.Controls['volume'].Hovered} 'volume slider hovered'
+        Send-UiInput 'DOWN'
+        $null=Wait-Ui {param($s) $s.Controls['volume'].Active} 'volume slider pressed'
+        Send-UiInput 'UP'
+        $null=Wait-Ui {param($s) $s.Tooltip -eq "Volume: $endpoint%"} "volume endpoint $endpoint applied"
+        $endpointLayout=Read-Ui
+        Require ($endpointLayout.Controls['volume-value'].Right -lt $endpointLayout.Controls['volume'].Left) "Volume $endpoint readout stays outside the slider"
+        Capture "volume-$endpoint"
+    }
+    $rect=[FeatureNative+Rect]::new()
+    [FeatureNative]::GetWindowRect($hwnd,[ref]$rect) | Out-Null
+    $borderWidth=($rect.Right-$rect.Left)-$layout.Width; $borderHeight=($rect.Bottom-$rect.Top)-$layout.Height
+    [FeatureNative]::SetWindowPos($hwnd,[IntPtr]::Zero,0,0,(900+$borderWidth),(250+$borderHeight),0x6) | Out-Null
+    $wide=Wait-Ui {param($s) $s.Width -eq 900} 'wide layout rendered'
+    Require ($wide.Controls['history'].Top -eq $wide.Controls['list'].Top -and $wide.Controls['history'].Bottom -eq $wide.Controls['list'].Bottom) 'Wide header controls remain aligned'
+    Require ($wide.Controls['volume'].Right -lt $wide.Controls['repeat'].Left -and $wide.Controls['refresh'].Right -le 900) 'Wide transport remains spaced within the window'
+    Capture 'wide-layout'
+    [FeatureNative]::SetWindowPos($hwnd,[IntPtr]::Zero,0,0,(500+$borderWidth),(250+$borderHeight),0x6) | Out-Null
+    $null=Wait-Ui {param($s) $s.Width -eq 500} 'compact width restored'
     Click 'history'
     $null=Wait-Ui {param($s) $s.History -and $s.Height -ge 600 -and $s.Visible -eq 2} 'History expanded with restored visits'
     Write-Host 'PASS History opens directly from compact controls'

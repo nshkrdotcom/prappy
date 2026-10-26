@@ -1,5 +1,22 @@
 # Windows verification
 
+## Layout polish, 2026-10-26
+
+History and List now share identical 74-by-26-pixel bounds. List uses a drawn
+chevron; the label and chevron are centered together. Back/Next use vector
+transport icons, and all transport buttons share integer-pixel vertical bounds.
+The volume value is separate from the slider, whose thumb cannot cover text.
+Status sections use middle dots; an initial scan with no catalog summary has no
+leading separator. History timestamps use the same separator style.
+
+The feature UI check reproduced the volume-overlap issue before the fix, then
+passed the new non-overlap and matching-bounds checks after it. Checks cover
+volume endpoints 0/100, 500/900-pixel widths, all repeat states/tooltips, history
+navigation and search. Compact/expanded screenshots were visually inspected.
+State checks cover empty and populated status composition. The full health
+suite passed with strict Release, Debug, static-analysis and ASan builds, clean
+Debug CRT leak reports, and native resize/DPI/input/shutdown checks.
+
 ## Persistent catalog, history and repeat, 2026-10-26
 
 The final `verify-health.ps1` run passed with MSVC 19.44: Release, Debug and
