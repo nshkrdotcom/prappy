@@ -115,18 +115,22 @@ struct Library {
             for (const auto& root : config.roots) {
                 std::error_code ec;
                 if (!fs::is_directory(root, ec)) { warnings.push_back("Missing root: " + utf8(root)); continue; }
-                fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end;
+                // Canonicalize once per root. Doing this for every audio file creates
+                // thousands of redundant UNC/WSL metadata round trips.
+                auto scanRoot = fs::weakly_canonical(root, ec);
+                if (ec) { scanRoot = root; ec.clear(); }
+                fs::recursive_directory_iterator it(scanRoot, fs::directory_options::skip_permission_denied, ec), end;
                 if (ec) { warnings.push_back("Cannot scan: " + utf8(root)); continue; }
                 while (it != end) {
                     const auto entry = *it;
-                    const auto attr = GetFileAttributesW(entry.path().c_str());
-                    if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_REPARSE_POINT) && entry.is_directory(ec))
-                        it.disable_recursion_pending();
+                    if (entry.is_directory(ec)) {
+                        const auto attr = GetFileAttributesW(entry.path().c_str());
+                        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_REPARSE_POINT)) it.disable_recursion_pending();
+                    }
                     if (entry.is_regular_file(ec)) {
                         auto ext = lower(utf8(entry.path().extension()));
                         if (config.extensions.contains(ext)) {
-                            auto path = fs::weakly_canonical(entry.path(), ec);
-                            if (ec) { path = entry.path().lexically_normal(); ec.clear(); }
+                            auto path = entry.path().lexically_normal();
                             auto id = key(path);
                             if (seen.insert(id).second) found.push_back({path, utf8(path.filename()), utf8(path.parent_path()), ext.substr(1), id});
                         }

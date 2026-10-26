@@ -37,9 +37,20 @@ Passed:
 - Temporary window-test instances close after verification; normal app launch
   remains available independently.
 
-Limitations: the user's actual Ubuntu scraper library is not accessible from
-this workstation, so its recordings and metadata were not tested. Audible output
-was not listened to; hardware output initialization was checked while muted.
+Local WSL integration was subsequently verified with `ubuntu26-dev`. The checkout
+library and registered `phase-02-library` are accessible directly through
+`\\wsl.localhost\ubuntu26-dev\home\home\...`. Windows enumerated 5,328 audio
+files across these roots: 2,372 WAV, 1,604 FLAC, 1,159 WavPack, 157 MP3, 23 Opus
+and 13 M4A at verification time. One actual recording of each format loaded and
+advanced through decoded playback using the deployed libmpv DLL and the WSL UNC
+path, with null audio output. No audio was copied, converted or modified.
+
+The original scan canonicalized every file separately, making WSL startup slow.
+It now canonicalizes each configured root once and uses lexical paths for entries,
+avoiding redundant UNC metadata requests while retaining overlapping-root dedup.
+
+Limitations: audible output was not listened to; hardware output initialization
+was checked while muted. Scraper metadata is not part of the player's scope.
 Dragging between physical monitors with different DPIs and a manual visual
 taskbar/Alt-Tab inspection were not performed. Native styles, icons and constraints
 were checked through Win32 APIs. The old visualizer's source was moved intact;

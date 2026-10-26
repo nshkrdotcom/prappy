@@ -42,9 +42,21 @@ entries show an error and retain the previous list. Missing roots show a warning
 valid roots still load. Overlapping roots are deduplicated. Directory junctions
 are not traversed. No watchers, database, background rescans or media writes.
 
-The Ubuntu path `~/p/g/n/scraper` is not a Windows path. Mount/share its audio
-roots or copy the audio locally before entering them here. The player does not
-connect to, operate, convert or modify scraper data.
+For **local WSL**, Windows already exposes the Linux filesystem: no network
+share, SSH, copying or mapped drive is needed. This workstation's running distro
+is `ubuntu26-dev`; its configured audio roots are:
+
+```ini
+directory=\\wsl.localhost\ubuntu26-dev\home\home\p\g\n\scraper\library
+directory=\\wsl.localhost\ubuntu26-dev\home\home\.local\share\audioharvest\phase-02-library
+extensions=flac,wav,mp3,opus,m4a,wv
+```
+
+Find your distro name with `wsl --list --verbose`. Use that name after
+`\\wsl.localhost\`, followed by the Linux absolute path with backslashes.
+The distro must be available. Paste the entries into the executable's
+`player.ini` and click Refresh. The player reads audio in place and does not
+operate the scraper, change its recordings or interfere with collection jobs.
 
 ## Controls
 
