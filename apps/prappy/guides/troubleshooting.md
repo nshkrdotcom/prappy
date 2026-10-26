@@ -5,7 +5,7 @@
 Set `DOTFILES_PRIVATE` for the current PowerShell session:
 
 ```powershell
-$env:DOTFILES_PRIVATE = "C:\Users\windo\projects\dotfiles_private"
+$env:DOTFILES_PRIVATE = "C:\Users\Home\projects\dotfiles_private"
 ```
 
 Then rerun the command.

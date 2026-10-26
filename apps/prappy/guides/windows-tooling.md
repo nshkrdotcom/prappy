@@ -3,7 +3,7 @@
 Prappy is the sample app. The reusable setup lives in:
 
 ```text
-C:\Users\windo\projects\dotfiles_private\windows\bootstrap_windows\native_cpp
+C:\Users\Home\projects\dotfiles_private\windows\bootstrap_windows\native_cpp
 ```
 
 The scripts in this repo call into that shared tooling through
@@ -20,7 +20,7 @@ dotfiles repo so they can be reused on a clean Windows 11 machine.
 From the dotfiles repo:
 
 ```powershell
-cd C:\Users\windo\projects\dotfiles_private
+cd C:\Users\Home\projects\dotfiles_private
 pwsh windows\bootstrap_windows\Initialize-PrappyNativeSample.ps1 -Force
 ```
 
@@ -30,7 +30,7 @@ repo.
 ## Full Dotfiles Setup Path
 
 ```powershell
-cd C:\Users\windo\projects\dotfiles_private
+cd C:\Users\Home\projects\dotfiles_private
 pwsh windows\bootstrap_windows\Invoke-PrappyNativeSample.ps1 All -Force -SmokeTest
 ```
 
@@ -45,7 +45,7 @@ pwsh windows\bootstrap_windows\Invoke-PrappyNativeSample.ps1 Run -Visualization 
 Set this in the current PowerShell session:
 
 ```powershell
-$env:DOTFILES_PRIVATE = "C:\Users\windo\projects\dotfiles_private"
+$env:DOTFILES_PRIVATE = "C:\Users\Home\projects\dotfiles_private"
 ```
 
 Then rerun the failed Prappy script.

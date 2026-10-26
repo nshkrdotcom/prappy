@@ -13,7 +13,7 @@ function Resolve-PrappyNativeTooling {
     }
 
     $candidates += @(
-        (Join-Path $PSScriptRoot "..\..\..\dotfiles_private\windows\bootstrap_windows\native_cpp"),
+        (Join-Path $PSScriptRoot "..\..\..\..\dotfiles_private\windows\bootstrap_windows\native_cpp"),
         (Join-Path $env:USERPROFILE "projects\dotfiles_private\windows\bootstrap_windows\native_cpp")
     )
 

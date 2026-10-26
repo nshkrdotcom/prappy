@@ -3,8 +3,8 @@
 This guide is written for the local repo layout:
 
 ```text
-C:\Users\windo\projects\n\prappy
-C:\Users\windo\projects\dotfiles_private
+C:\Users\Home\projects\prappy\apps\prappy
+C:\Users\Home\projects\dotfiles_private
 ```
 
 The Prappy repo contains the app. The dotfiles repo contains the reusable
@@ -15,7 +15,7 @@ Windows-native C++ setup scripts.
 Open PowerShell 7 or Windows Terminal:
 
 ```powershell
-cd C:\Users\windo\projects\n\prappy
+cd C:\Users\Home\projects\prappy\apps\prappy
 pwsh scripts\bootstrap.ps1
 ```
 

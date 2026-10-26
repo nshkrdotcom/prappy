@@ -7,7 +7,7 @@ under `src\shaders\`, and scripts under `scripts\`.
 ## Build And Run
 
 ```powershell
-cd C:\Users\windo\projects\n\prappy
+cd C:\Users\Home\projects\prappy\apps\prappy
 pwsh scripts\build.ps1
 pwsh scripts\run.ps1
 ```
