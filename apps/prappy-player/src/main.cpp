@@ -634,7 +634,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
         SDL_ShowWindow(window);
         scan.begin(config, library.order);
-        bool done = false, expanded = false, onTop = false;
+        bool done = false, expanded = false;
         int expandedHeight = 710;
         while (!done) {
             const auto start = SDL_GetTicks();
@@ -653,10 +653,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             ImGui::Begin("Player", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
             ImGui::TextColored({.25f, .94f, .72f, 1}, "PRAPPY  /  PLAYER");
             const char* listLabel = expanded ? "List ^" : "List v";
-            const char* pinLabel = onTop ? "Pin *" : "Pin";
             const auto& uiStyle = ImGui::GetStyle();
-            float buttonsWidth = uiStyle.ItemSpacing.x + uiStyle.FramePadding.x * 4;
-            for (const char* label : {listLabel, pinLabel}) buttonsWidth += ImGui::CalcTextSize(label).x;
+            const float buttonsWidth = uiStyle.FramePadding.x * 2 + ImGui::CalcTextSize(listLabel).x;
             ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - buttonsWidth);
             if (ImGui::SmallButton(listLabel)) {
                 if (!(SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED)) {
@@ -666,10 +664,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                 expanded = !expanded;
             }
             rememberControl();
-            ImGui::SameLine();
-            if (ImGui::SmallButton(pinLabel)) { onTop = !onTop; SDL_SetWindowAlwaysOnTop(window, onTop); }
-            rememberControl();
-            tooltip("Keep above other windows");
             const float transportY = static_cast<float>(height - TransportHeight);
             if (expanded && transportY > u(58)) {
                 ImGui::SetNextItemWidth(u(153));

@@ -109,19 +109,13 @@ try {
     if ($Interactive) {
     [PlayerNative]::SetWindowPos($hwnd,[IntPtr]::Zero,0,0,(500+$frameWidth),(250+$frameHeight),0x6) | Out-Null
     Start-Sleep -Milliseconds 300
-    Click 410 17
+    Click 465 17
     $r = Rect
     Require (($r.Bottom-$r.Top) -ge 600) 'List expands'
     Capture 'player-expanded'
-    Click 410 17
+    Click 465 17
     $r = Rect
     Require (($r.Bottom-$r.Top) -eq (250+$frameHeight)) 'List collapses'
-    # Synchronize the app toggle with the topmost state forced by this harness.
-    Click 475 17
-    $before = [PlayerNative]::GetWindowLongPtr($hwnd,-20)
-    Click 475 17
-    $after = [PlayerNative]::GetWindowLongPtr($hwnd,-20)
-    Require (($before -band 8) -ne ($after -band 8)) 'Pin toggles always-on-top'
     }
     [PlayerNative]::SetWindowPos($hwnd,[IntPtr]::Zero,0,0,(500+$frameWidth),(250+$frameHeight),0x6) | Out-Null
     Start-Sleep -Milliseconds 100
@@ -146,7 +140,7 @@ try {
     foreach ($check in @(
         @{X=250;Y=190;Hit=2;Name='Empty transport space is draggable'},
         @{X=250;Y=17;Hit=2;Name='Empty header space is draggable'},
-        @{X=410;Y=17;Hit=1;Name='Header buttons retain mouse input'},
+        @{X=465;Y=17;Hit=1;Name='List button retains mouse input'},
         @{X=100;Y=150;Hit=1;Name='Play button retains mouse input'},
         @{X=250;Y=90;Hit=1;Name='Seek slider retains mouse input'},
         @{X=300;Y=150;Hit=1;Name='Volume slider retains mouse input'}
@@ -157,7 +151,7 @@ try {
     $bytes = [IO.File]::ReadAllBytes($p.Path)
     $pe = [BitConverter]::ToInt32($bytes,0x3c)
     Require ([BitConverter]::ToInt16($bytes,$pe+24+68) -eq 2) 'Windows GUI executable (no console subsystem)'
-    Write-Host "Screenshot: $out\player-collapsed.png. Use -Interactive for pointer-driven List/Pin checks on an idle desktop."
+    Write-Host "Screenshot: $out\player-collapsed.png. Use -Interactive for pointer-driven List checks on an idle desktop."
 } finally {
     $top = if ($ex -band 8) { [IntPtr](-1) } else { [IntPtr](-2) }
     [PlayerNative]::PostMessage($hwnd,0x10,[IntPtr]::Zero,[IntPtr]::Zero) | Out-Null

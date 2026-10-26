@@ -96,7 +96,7 @@ operate the scraper, change its recordings or interfere with collection jobs.
 - **Refresh** is the single rescan action. Hover over the status for full errors.
 - Drag any unused space, including the title and blank list/transport areas.
   Buttons, sliders, song rows, group headers and scrollbars retain normal input.
-  Resize any native window edge or corner. **Pin** toggles always-on-top.
+  Resize any native window edge or corner.
   The dark Windows title bar provides minimize, maximize/restore and close,
   plus the system menu and Windows 11 Snap Layouts when enabled in Windows.
   List toggles preserve your chosen width and leave maximized windows maximized.
@@ -121,7 +121,7 @@ sort/refresh identity, next/previous, end-of-track progression and error reporti
 Use representative audio files long enough to seek (at least two seconds).
 For window checks and screenshots: `pwsh scripts/verify-window.ps1`. This launches
 a temporary player instance, checks native window behavior, then cancels its scan
-and closes it. Add `-Interactive` to click List/Pin on an idle desktop; normal
+and closes it. Add `-Interactive` to click List on an idle desktop; normal
 verification does not move the pointer.
 `pwsh scripts/test-dedup.ps1` exercises renamed identical copies, overlapping roots,
 alternate-copy queue identity and same-name/same-sample files that differ in the
