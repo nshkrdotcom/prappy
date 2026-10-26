@@ -70,6 +70,20 @@ is still substantially slower than the former path-only scan. No persistent
 checksum database/cache was added. The bright mint title/volume/drag details
 and gold Play/seek accents were verified in the running window.
 
+Pinned-launch regression: the original synchronous startup scan left two player
+processes running without windows after taskbar launches. The existing pinned
+shortcut already targeted the correct Release executable. The scan now runs in
+one cancellable worker after the window is shown, with atomic progress and a
+result swapped into the library by the UI thread. Refresh uses the same worker;
+there are no timed scans or watchers. A per-session instance lock makes repeated
+launches restore the current window instead of starting another scan.
+
+Testing through the actual `Prappy Player.lnk` taskbar shortcut showed the window
+in **307 ms**. The window remained responsive while scanning; reopening restored
+it from minimized state with exactly one player process. Closing during the scan
+cancelled it and exited in **137 ms**. The renamed-copy/hard-link/collision and
+playback integration regression passed after this change.
+
 Limitations: audible output was not listened to; hardware output initialization
 was checked while muted. Scraper metadata is not part of the player's scope.
 Dragging between physical monitors with different DPIs and a manual visual

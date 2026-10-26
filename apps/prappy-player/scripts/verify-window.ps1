@@ -1,4 +1,5 @@
 #Requires -Version 7.0
+param([switch]$Interactive)
 $ErrorActionPreference='Stop'
 $app = Split-Path $PSScriptRoot -Parent
 $out = Join-Path $app 'build'
@@ -13,20 +14,21 @@ public static class PlayerNative {
  [DllImport("user32.dll")] public static extern IntPtr GetWindowDpiAwarenessContext(IntPtr h);
  [DllImport("user32.dll")] public static extern bool AreDpiAwarenessContextsEqual(IntPtr a,IntPtr b);
  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
- [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out Rect r);
+ [DllImport("user32.dll",EntryPoint="GetWindowRect")] static extern bool NativeGetWindowRect(IntPtr h,out Rect r);
+ public static bool GetWindowRect(IntPtr h,out Rect r) { SetThreadDpiAwarenessContext(new IntPtr(-4)); return NativeGetWindowRect(h,out r); }
  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h,IntPtr after,int x,int y,int w,int height,uint flags);
  [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h,uint m,IntPtr w,IntPtr l);
  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l);
  [DllImport("user32.dll")] public static extern long GetWindowLongPtr(IntPtr h,int index);
  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
- [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
- [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point p);
+ [DllImport("user32.dll",EntryPoint="SetPhysicalCursorPos")] public static extern bool SetCursorPos(int x,int y);
+ [DllImport("user32.dll",EntryPoint="GetPhysicalCursorPos")] public static extern bool GetCursorPos(out Point p);
  [DllImport("user32.dll")] public static extern void mouse_event(uint flags,uint x,uint y,uint data,UIntPtr extra);
  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h,IntPtr dc,uint flags);
 }
 '@
 [PlayerNative]::SetThreadDpiAwarenessContext([IntPtr](-4)) | Out-Null
-$p = Start-Process -FilePath "$app\build\Release\PrappyPlayer.exe" -WorkingDirectory $env:TEMP -WindowStyle Hidden -PassThru
+$p = Start-Process -FilePath "$app\build\Release\PrappyPlayer.exe" -ArgumentList '--window-test' -WorkingDirectory $env:TEMP -WindowStyle Hidden -PassThru
 for ($i=0; $i -lt 450; $i++) {
     $p.Refresh()
     if ($p.MainWindowHandle -ne [IntPtr]::Zero) { break }
@@ -41,6 +43,7 @@ function Rect {
 }
 function Require($condition, $message) { if (!$condition) { throw $message }; Write-Host "PASS $message" }
 function Click($x, $y) {
+    [PlayerNative]::SetForegroundWindow($hwnd) | Out-Null
     $r = Rect
     [PlayerNative]::SetCursorPos($r.Left+$x,$r.Top+$y) | Out-Null
     Start-Sleep -Milliseconds 80
@@ -82,6 +85,8 @@ try {
     [PlayerNative]::SendMessage($hwnd,0x112,[IntPtr](0xf030),[IntPtr]::Zero) | Out-Null
     $r = Rect
     Require (($r.Right-$r.Left) -eq 500) 'Maximize cannot expand width'
+    if ($Interactive) {
+    Start-Sleep -Milliseconds 300
     Click 365 20
     $r = Rect
     Require (($r.Bottom-$r.Top) -ge 600) 'List expands'
@@ -89,13 +94,15 @@ try {
     Click 365 20
     $r = Rect
     Require (($r.Bottom-$r.Top) -eq 276) 'List collapses'
-    $originalTop = if ($ex -band 8) { [IntPtr](-1) } else { [IntPtr](-2) }
-    [PlayerNative]::SetWindowPos($hwnd,$originalTop,0,0,0,0,0x13) | Out-Null
+    # Synchronize the app toggle with the topmost state forced by this harness.
+    Click 417 17
     $before = [PlayerNative]::GetWindowLongPtr($hwnd,-20)
     Click 417 17
     $after = [PlayerNative]::GetWindowLongPtr($hwnd,-20)
     Require (($before -band 8) -ne ($after -band 8)) 'Pin toggles always-on-top'
-    Click 417 17
+    }
+    [PlayerNative]::SetWindowPos($hwnd,[IntPtr]::Zero,0,0,500,276,0x6) | Out-Null
+    Start-Sleep -Milliseconds 100
     $r = Rect
     $packed = [IntPtr]((($r.Top+1) -shl 16) -bor ($r.Left+250))
     Require ([PlayerNative]::SendMessage($hwnd,0x84,[IntPtr]::Zero,$packed).ToInt32() -eq 12) 'Top edge offers native height resizing'
@@ -106,9 +113,10 @@ try {
     $bytes = [IO.File]::ReadAllBytes($p.Path)
     $pe = [BitConverter]::ToInt32($bytes,0x3c)
     Require ([BitConverter]::ToInt16($bytes,$pe+24+68) -eq 2) 'Windows GUI executable (no console subsystem)'
-    Write-Host "Screenshots: $out\player-{collapsed,expanded}.png"
+    Write-Host "Screenshot: $out\player-collapsed.png. Use -Interactive for pointer-driven List/Pin checks on an idle desktop."
 } finally {
     $top = if ($ex -band 8) { [IntPtr](-1) } else { [IntPtr](-2) }
     [PlayerNative]::PostMessage($hwnd,0x10,[IntPtr]::Zero,[IntPtr]::Zero) | Out-Null
-    [PlayerNative]::SetCursorPos($cursor.X,$cursor.Y) | Out-Null
+    if (!$p.WaitForExit(5000)) { throw 'Test player did not cancel its scan and close promptly.' }
+    if ($Interactive) { [PlayerNative]::SetCursorPos($cursor.X,$cursor.Y) | Out-Null }
 }

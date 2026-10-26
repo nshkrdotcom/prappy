@@ -40,7 +40,7 @@ configuration file's directory, never the shell's working directory. Extensions
 are case-insensitive, with or without leading dots. Unknown keys and malformed
 entries show an error and retain the previous list. Missing roots show a warning;
 valid roots still load. Overlapping roots are deduplicated. Directory junctions
-are not traversed. No watchers, database, background rescans or media writes.
+are not traversed. No watchers, database, automatic rescans or media writes.
 
 Byte-identical files also collapse into a single song entry, including renamed
 copies and hard links. Hover the entry to see all its paths. The status line
@@ -52,6 +52,12 @@ Each candidate is hashed at most once per scan. This happens during the
 startup scan and explicit Refresh; no files are deleted and no index is stored.
 Full-content verification can make those scans substantially slower over WSL,
 since candidate audio must be read across the Windows/Linux filesystem boundary.
+The window opens immediately and shows scan/duplicate-check progress. A single
+temporary worker runs only at startup or when Refresh is clicked; controls stay
+responsive and the previous list remains usable until the new list is ready.
+Closing cancels the scan. Refresh is disabled while a scan is already running.
+Reopening the executable or its pinned taskbar shortcut restores the existing
+player instead of launching another copy.
 
 For **local WSL**, Windows already exposes the Linux filesystem: no network
 share, SSH, copying or mapped drive is needed. This workstation's running distro
@@ -104,7 +110,9 @@ It checks decoding once per discovered extension, duration, pause, seek, volume,
 sort/refresh identity, next/previous, end-of-track progression and error reporting.
 Use representative audio files long enough to seek (at least two seconds).
 For window checks and screenshots: `pwsh scripts/verify-window.ps1`. This launches
-a temporary player instance, moves/resizes it, clicks List/Pin, then closes it.
+a temporary player instance, checks native window behavior, then cancels its scan
+and closes it. Add `-Interactive` to click List/Pin on an idle desktop; normal
+verification does not move the pointer.
 `pwsh scripts/test-dedup.ps1` exercises renamed identical copies, overlapping roots,
 alternate-copy queue identity and same-name/same-sample files that differ in the
 middle; it also runs the playback integration checks on the deduplicated list.

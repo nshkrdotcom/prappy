@@ -11,18 +11,22 @@
 #include <mpv/client.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstring>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <stop_token>
 #include <tuple>
 #include <vector>
 
@@ -118,6 +122,10 @@ struct Track {
     uintmax_t bytes = 0;
     std::vector<fs::path> copies;
 };
+struct ScanProgress {
+    std::atomic<size_t> found{0}, checked{0}, total{0};
+    std::atomic<bool> dedup{false};
+};
 static bool fingerprint(const Track& track, uint64_t& hash) {
     std::ifstream file(extendedPath(track.path), std::ios::binary);
     if (!file) return false;
@@ -138,7 +146,7 @@ static bool fingerprint(const Track& track, uint64_t& hash) {
     return true;
 }
 using Digest = std::array<unsigned char, 32>;
-static std::optional<Digest> digest(const Track& track) {
+static std::optional<Digest> digest(const Track& track, std::stop_token stop) {
     std::ifstream file(extendedPath(track.path), std::ios::binary);
     if (!file) return {};
     BCRYPT_ALG_HANDLE algorithm = nullptr;
@@ -147,6 +155,7 @@ static std::optional<Digest> digest(const Track& track) {
     if (ok) ok = BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) >= 0;
     std::vector<unsigned char> buffer(1024 * 1024);
     for (uintmax_t remaining = track.bytes; ok && remaining;) {
+        if (stop.stop_requested()) { ok = false; break; }
         const auto count = static_cast<ULONG>(std::min<uintmax_t>(remaining, buffer.size()));
         file.read(reinterpret_cast<char*>(buffer.data()), count);
         ok = file.gcount() == count && BCryptHashData(hash, buffer.data(), count, 0) >= 0;
@@ -159,7 +168,7 @@ static std::optional<Digest> digest(const Track& track) {
     if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0);
     return ok ? std::optional<Digest>(result) : std::nullopt;
 }
-static size_t removeDuplicates(std::vector<Track>& tracks) {
+static size_t removeDuplicates(std::vector<Track>& tracks, std::stop_token stop, ScanProgress* progress) {
     // Sample only same-size candidates; samples never establish equality.
     // Confirm full-file SHA-256 before collapsing a copy. No persistent index.
     std::sort(tracks.begin(), tracks.end(), [](auto& a, auto& b) { return a.id < b.id; });
@@ -172,7 +181,10 @@ static size_t removeDuplicates(std::vector<Track>& tracks) {
     std::vector<Track> unique;
     unique.reserve(tracks.size());
     size_t duplicates = 0;
+    if (progress) { progress->total = tracks.size(); progress->dedup = true; }
     for (auto& track : tracks) {
+        if (stop.stop_requested()) throw std::runtime_error("Scan cancelled.");
+        if (progress) ++progress->checked;
         std::optional<FileIdentity> trackIdentity;
         if (sizes[track.bytes] > 1) {
             HANDLE handle = CreateFileW(extendedPath(track.path).c_str(), FILE_READ_ATTRIBUTES,
@@ -204,10 +216,10 @@ static size_t removeDuplicates(std::vector<Track>& tracks) {
             } else {
                 if (bucket.first) {
                     const auto i = *bucket.first;
-                    if (auto value = digest(unique[i])) bucket.hashes.emplace(*value, i);
+                    if (auto value = digest(unique[i], stop)) bucket.hashes.emplace(*value, i);
                     bucket.first.reset();
                 }
-                if (auto value = digest(track)) {
+                if (auto value = digest(track, stop)) {
                     auto [it, inserted] = bucket.hashes.emplace(*value, unique.size());
                     if (!inserted) {
                         if (trackIdentity) hardLinks.emplace(*trackIdentity, it->second);
@@ -237,7 +249,7 @@ struct Library {
             return an == bn ? a.id < b.id : an < bn;
         });
     }
-    bool refresh(const fs::path& configFile) {
+    bool refresh(const fs::path& configFile, std::stop_token stop = {}, ScanProgress* progress = nullptr) {
         try {
             const auto config = readConfig(configFile);
             std::vector<Track> found; std::set<std::wstring> seen;
@@ -252,6 +264,7 @@ struct Library {
                 fs::recursive_directory_iterator it(extendedPath(scanRoot), fs::directory_options::skip_permission_denied, ec), end;
                 if (ec) { warnings.push_back("Cannot scan: " + utf8(root)); continue; }
                 while (it != end) {
+                    if (stop.stop_requested()) throw std::runtime_error("Scan cancelled.");
                     const auto entry = *it;
                     if (entry.is_directory(ec)) {
                         const auto attr = GetFileAttributesW(entry.path().c_str());
@@ -264,13 +277,14 @@ struct Library {
                             auto id = key(path);
                             const auto bytes = entry.file_size(ec);
                             if (!ec && seen.insert(id).second) found.push_back({path, utf8(path.filename()), utf8(path.parent_path()), ext.substr(1), id, bytes, {}});
+                            if (progress) progress->found = found.size();
                         }
                     }
                     ec.clear(); it.increment(ec);
                     if (ec) { warnings.push_back("Scan: " + ec.message() + " | " + utf8(root)); break; }
                 }
             }
-            const auto duplicates = removeDuplicates(found);
+            const auto duplicates = removeDuplicates(found, stop, progress);
             tracks = std::move(found); sort();
             notice = std::to_string(tracks.size()) + " tracks";
             if (duplicates) notice += " | " + std::to_string(duplicates) + " identical copies hidden";
@@ -278,6 +292,35 @@ struct Library {
             else if (tracks.empty()) notice += " | Edit player.ini, then Refresh";
             return true;
         } catch (const std::exception& e) { notice = e.what(); return false; }
+    }
+};
+// One cancellable scan, started only on launch or by the Refresh button.
+// Worker owns its result; the UI swaps it in only after completion.
+struct Scan {
+    ScanProgress progress;
+    std::stop_source cancel;
+    std::future<std::pair<Library, bool>> job;
+    ~Scan() { cancel.request_stop(); if (job.valid()) job.wait(); }
+    bool running() const { return job.valid(); }
+    void begin(const fs::path& config, int order) {
+        if (running()) return;
+        progress.found = progress.checked = progress.total = 0; progress.dedup = false;
+        cancel = std::stop_source{};
+        job = std::async(std::launch::async, [this, config, order, stop = cancel.get_token()] {
+            Library next; next.order = order;
+            bool success = next.refresh(config, stop, &progress);
+            return std::make_pair(std::move(next), success);
+        });
+    }
+    void update(Library& library) {
+        if (!running() || job.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+        auto [next, success] = job.get();
+        if (success) { next.order = library.order; next.sort(); library = std::move(next); }
+        else library.notice = std::move(next.notice);
+    }
+    std::string status() const {
+        if (progress.dedup) return "Checking duplicates: " + std::to_string(progress.checked.load()) + " / " + std::to_string(progress.total.load());
+        return "Scanning music: " + std::to_string(progress.found.load()) + " files";
     }
 };
 
@@ -524,11 +567,25 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     SDL_Window* window = nullptr; SDL_Renderer* renderer = nullptr;
     bool imgui = false, platform = false, graphics = false;
     int exitCode = 0;
+    std::unique_ptr<void, decltype(&CloseHandle)> singleton(nullptr, CloseHandle);
     try {
+        const bool windowTest = args.size() == 1 && args[0] == L"--window-test";
+        if (!windowTest) {
+            HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\PrappyPlayer.Instance");
+            const bool alreadyRunning = GetLastError() == ERROR_ALREADY_EXISTS;
+            if (!mutex) throw std::runtime_error("Cannot create player instance lock.");
+            singleton.reset(mutex);
+            if (alreadyRunning) {
+                if (auto existing = FindWindowW(nullptr, L"Prappy Player")) {
+                    ShowWindow(existing, SW_RESTORE); SetForegroundWindow(existing);
+                }
+                return 0;
+            }
+        }
         const auto config = executableDir() / "player.ini";
         Library library; Audio audio;
+        Scan scan;
         try { createDefaultConfig(config); } catch (const std::exception& e) { library.notice = e.what(); }
-        library.refresh(config);
         audio.open();
         if (!SDL_Init(SDL_INIT_VIDEO)) throw std::runtime_error(SDL_GetError());
         window = SDL_CreateWindow("Prappy Player", Width, MinHeight,
@@ -556,6 +613,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         if (!platform || !graphics) throw std::runtime_error("Cannot initialize UI renderer.");
         SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
         SDL_ShowWindow(window);
+        scan.begin(config, library.order);
         bool done = false, expanded = false, onTop = false;
         int expandedHeight = 710;
         while (!done) {
@@ -566,6 +624,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                 if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) done = true;
             }
             if (audio.poll()) advance(audio, library, 1, true);
+            scan.update(library);
             if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) { SDL_Delay(80); continue; }
             ImGui_ImplSDLRenderer3_NewFrame(); ImGui_ImplSDL3_NewFrame(); ImGui::NewFrame();
             int width, height; SDL_GetWindowSize(window, &width, &height);
@@ -676,11 +735,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             ImGui::SetNextItemWidth(u(105)); float volume = static_cast<float>(audio.volume);
             if (ImGui::SliderFloat("##volume", &volume, 0, 100, "Vol %.0f")) audio.setVolume(volume);
             ImGui::SameLine();
-            if (ImGui::Button("Refresh", {u(65), u(24)})) library.refresh(config);
+            ImGui::BeginDisabled(scan.running());
+            if (ImGui::Button(scan.running() ? "Scanning" : "Refresh", {u(65), u(24)})) scan.begin(config, library.order);
+            ImGui::EndDisabled();
             tooltip("Reload config and rebuild the music list");
             ImGui::SetCursorPosY(static_cast<float>(height) - u(24));
             ImGui::PushStyleColor(ImGuiCol_Text, audio.error.empty() ? ImVec4(.68f, .72f, .72f, 1) : ImVec4(1, .63f, .5f, 1));
-            const auto& message = audio.error.empty() ? library.notice : audio.error;
+            const auto message = !audio.error.empty() ? audio.error : (scan.running() ? scan.status() : library.notice);
             ImGui::TextUnformatted(message.c_str()); tooltip(message); ImGui::PopStyleColor();
             draw->AddRect({0, 0}, {static_cast<float>(width - 1), static_cast<float>(height - 1)}, IM_COL32(90, 99, 99, 255));
             ImGui::End(); ImGui::Render();
