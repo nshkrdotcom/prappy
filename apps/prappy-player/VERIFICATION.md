@@ -48,6 +48,10 @@ path, with null audio output. No audio was copied, converted or modified.
 The original scan canonicalized every file separately, making WSL startup slow.
 It now canonicalizes each configured root once and uses lexical paths for entries,
 avoiding redundant UNC metadata requests while retaining overlapping-root dedup.
+Enumeration uses Windows extended-length paths internally so deep WSL library
+paths also load without requiring a machine-wide long-path setting. The live
+library changed during collection; a later player scan loaded 5,329 tracks without
+a scan warning.
 
 Limitations: audible output was not listened to; hardware output initialization
 was checked while muted. Scraper metadata is not part of the player's scope.

@@ -44,6 +44,18 @@ static std::wstring key(const fs::path& p) {
     auto s = p.lexically_normal().wstring();
     CharLowerBuffW(s.data(), static_cast<DWORD>(s.size())); return s;
 }
+static fs::path extendedPath(const fs::path& path) {
+    auto value = path.wstring();
+    if (value.starts_with(L"\\\\?\\")) return path;
+    if (value.starts_with(L"\\\\")) return L"\\\\?\\UNC\\" + value.substr(2);
+    return L"\\\\?\\" + value;
+}
+static fs::path displayPath(const fs::path& path) {
+    auto value = path.wstring();
+    if (value.starts_with(L"\\\\?\\UNC\\")) return L"\\\\" + value.substr(8);
+    if (value.starts_with(L"\\\\?\\")) return value.substr(4);
+    return path;
+}
 static fs::path executableDir() {
     std::wstring buf(32768, L'\0');
     DWORD n = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
@@ -119,7 +131,7 @@ struct Library {
                 // thousands of redundant UNC/WSL metadata round trips.
                 auto scanRoot = fs::weakly_canonical(root, ec);
                 if (ec) { scanRoot = root; ec.clear(); }
-                fs::recursive_directory_iterator it(scanRoot, fs::directory_options::skip_permission_denied, ec), end;
+                fs::recursive_directory_iterator it(extendedPath(scanRoot), fs::directory_options::skip_permission_denied, ec), end;
                 if (ec) { warnings.push_back("Cannot scan: " + utf8(root)); continue; }
                 while (it != end) {
                     const auto entry = *it;
@@ -130,13 +142,13 @@ struct Library {
                     if (entry.is_regular_file(ec)) {
                         auto ext = lower(utf8(entry.path().extension()));
                         if (config.extensions.contains(ext)) {
-                            auto path = entry.path().lexically_normal();
+                            auto path = displayPath(entry.path().lexically_normal());
                             auto id = key(path);
                             if (seen.insert(id).second) found.push_back({path, utf8(path.filename()), utf8(path.parent_path()), ext.substr(1), id});
                         }
                     }
                     ec.clear(); it.increment(ec);
-                    if (ec) { warnings.push_back("Some files could not be read: " + utf8(root)); break; }
+                    if (ec) { warnings.push_back("Scan: " + ec.message() + " | " + utf8(root)); break; }
                 }
             }
             tracks = std::move(found); sort();

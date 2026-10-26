@@ -47,7 +47,7 @@ function Click($x, $y) {
     [PlayerNative]::mouse_event(2,0,0,0,[UIntPtr]::Zero)
     Start-Sleep -Milliseconds 80
     [PlayerNative]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 180
+    Start-Sleep -Milliseconds 550
 }
 function Capture($name) {
     $r = Rect
