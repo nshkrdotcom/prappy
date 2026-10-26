@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" role="img" aria-labelledby="title description">
+  <title id="title">Prappy — a shared workbench</title>
+  <desc id="description">An abstract collection of mint contours, a folded geometric frame, and gold arches, arranged across a charcoal field.</desc>
+  <defs>
+    <linearGradient id="field" x2="1" y2="1">
+      <stop stop-color="#1d282c"/>
+      <stop offset=".55" stop-color="#192125"/>
+      <stop offset="1" stop-color="#202527"/>
+    </linearGradient>
+    <radialGradient id="mint-light">
+      <stop stop-color="#40f0b8" stop-opacity=".08"/>
+      <stop offset="1" stop-color="#40f0b8" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="mint-face" x2=".8" y2="1">
+      <stop stop-color="#a2f8d8"/>
+      <stop offset="1" stop-color="#40dbaa"/>
+    </linearGradient>
+    <linearGradient id="gold-face" x2=".7" y2="1">
+      <stop stop-color="#ffdaa0"/>
+      <stop offset="1" stop-color="#e9ad52"/>
+    </linearGradient>
+    <linearGradient id="arc-face" x2="1" y2="0">
+      <stop stop-color="#e3a452"/>
+      <stop offset=".55" stop-color="#f5bd63"/>
+      <stop offset="1" stop-color="#ffdaa0"/>
+    </linearGradient>
+    <filter id="shadow" x="-40%" y="-100%" width="180%" height="300%">
+      <feGaussianBlur stdDeviation="12"/>
+    </filter>
+    <pattern id="draft" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M24 21v6m-3-3h6" fill="none" stroke="#98b2ae" stroke-width=".65" opacity=".13"/>
+    </pattern>
+    <path id="contour" d="M138 182C132 156 162 135 192 130C210 107 258 101 285 119C318 116 351 139 350 161C377 185 350 209 319 214C294 237 247 236 223 220C183 229 151 211 138 182Z"/>
+  </defs>
+
+  <rect x=".5" y=".5" width="1199" height="339" rx="20" fill="url(#field)" stroke="#364247"/>
+  <rect x="20" y="20" width="1160" height="300" rx="10" fill="url(#draft)"/>
+  <ellipse cx="506" cy="155" rx="450" ry="180" fill="url(#mint-light)"/>
+
+  <!-- A common plane holds three different kinds of work. -->
+  <g fill="none" stroke="#6c8580" stroke-width="1" opacity=".16">
+    <path d="M65 263L321 306L1130 186"/>
+    <path d="M108 108L1082 275"/>
+    <path d="M447 41L842 313"/>
+    <path d="M80 287L1050 142" stroke-dasharray="2 8"/>
+  </g>
+  <g fill="#03080a" opacity=".36" filter="url(#shadow)">
+    <ellipse cx="252" cy="238" rx="115" ry="17"/>
+    <ellipse cx="591" cy="253" rx="132" ry="20"/>
+    <ellipse cx="925" cy="252" rx="110" ry="17"/>
+  </g>
+
+  <!-- Contours: a small terrain built from nested cuts. -->
+  <g transform="translate(2 -6) rotate(-8 248 176)">
+    <g fill="none" stroke="#376f61" stroke-width="1.2">
+      <use href="#contour" transform="translate(0 24)" opacity=".35"/>
+      <use href="#contour" transform="translate(0 16)" opacity=".55"/>
+      <use href="#contour" transform="translate(0 8)" opacity=".8"/>
+    </g>
+    <use href="#contour" fill="#233d36" stroke="#63c7a4" stroke-width="1.5"/>
+    <g fill="none" stroke="#83d4be" stroke-width="1.3">
+      <use href="#contour" transform="translate(246 172) scale(.83) translate(-246 -172)"/>
+      <use href="#contour" transform="translate(246 172) scale(.66) translate(-246 -172)"/>
+      <use href="#contour" transform="translate(246 172) scale(.49) translate(-246 -172)"/>
+      <use href="#contour" transform="translate(246 172) scale(.32) translate(-246 -172)"/>
+    </g>
+    <path d="M239 145C254 136 272 146 274 158C281 169 268 179 254 178C239 184 226 174 229 164C224 156 231 149 239 145Z" fill="#40f0b8"/>
+    <path d="M145 189C174 206 194 196 219 187C244 177 272 191 301 177C321 168 334 155 342 151" fill="none" stroke="#f5bd63" stroke-width="2.5"/>
+  </g>
+
+  <!-- A hollow folded frame; its cutout is as important as its faces. -->
+  <path d="M466 106V149L568 237V194Z" fill="#277d65"/>
+  <path d="M568 194L720 164V207L568 237Z" fill="#35ab83"/>
+  <path d="M466 106L618 77L720 164L568 194ZM518 118L578 170L667 152L607 101Z" fill="url(#mint-face)" fill-rule="evenodd"/>
+  <path d="M518 118V148L578 199V170Z" fill="#1d5143"/>
+  <path d="M578 170L667 152V182L578 199Z" fill="#173d34"/>
+  <path d="M466 106L618 77L720 164" fill="none" stroke="#c6ffe8" stroke-opacity=".65"/>
+  <path d="M568 194L720 164" fill="none" stroke="#6af3bd"/>
+  <path d="M636 92L654 89L747 168L729 172Z" fill="url(#gold-face)"/>
+  <path d="M729 172L747 168V199L729 203Z" fill="#ad753a"/>
+  <path d="M636 92V123L729 203V172Z" fill="#d59b50"/>
+  <path d="M636 92L729 172" fill="none" stroke="#ffe4b9" stroke-opacity=".7"/>
+
+  <!-- An open arch and a few loose plates leave room for another tool. -->
+  <path d="M842 239V155C842 92 947 70 972 126C983 151 976 179 956 196" fill="none" stroke="#926b3c" stroke-width="23" transform="translate(9 9)"/>
+  <path d="M842 239V155C842 92 947 70 972 126C983 151 976 179 956 196" fill="none" stroke="url(#arc-face)" stroke-width="23"/>
+  <path d="M831 235V155C831 94 916 67 961 105" fill="none" stroke="#ffe0a8" stroke-width="1.5" opacity=".6"/>
+  <path d="M884 226V163C884 136 921 125 932 148C940 165 927 178 916 181" fill="none" stroke="#81d6b7" stroke-width="10"/>
+  <g transform="translate(989 211)">
+    <path d="M-21 35L25 11L58 27L12 51Z" fill="#276f5b"/>
+    <path d="M-21 26L25 2L58 18L12 42Z" fill="#4ebf97"/>
+    <path d="M-21 17L25-7L58 9L12 33Z" fill="#9ce7c8"/>
+    <path d="M-21 17L12 33L58 9" fill="none" stroke="#ceffe7"/>
+  </g>
+
+  <g fill="none" stroke="#adc2ba" stroke-width="1" opacity=".35">
+    <path d="M85 61h13m-6.5-6.5v13"/>
+    <circle cx="1095" cy="80" r="5"/>
+    <path d="M397 273h13m-6.5-6.5v13"/>
+  </g>
+  <circle cx="795" cy="66" r="3" fill="#f5bd63"/>
+  <circle cx="1081" cy="280" r="2.5" fill="#40f0b8"/>
+</svg>
