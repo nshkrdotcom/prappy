@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <string>
 #include <stdexcept>
+#include <optional>
 namespace fs = std::filesystem;
 inline std::string utf8(const fs::path& p) {
     auto s = p.u8string(); return {reinterpret_cast<const char*>(s.data()), s.size()};
@@ -41,6 +42,20 @@ inline fs::path displayPath(const fs::path& path) {
     if (value.starts_with(L"\\\\?\\UNC\\")) return L"\\\\" + value.substr(8);
     if (value.starts_with(L"\\\\?\\")) return value.substr(4);
     return path;
+}
+inline std::optional<std::string> wslLinuxPath(const fs::path& path) {
+    auto value = displayPath(path).lexically_normal().wstring();
+    std::replace(value.begin(), value.end(), L'/', L'\\');
+    auto folded = value; CharLowerBuffW(folded.data(), static_cast<DWORD>(folded.size()));
+    size_t start = 0;
+    if (folded.starts_with(L"\\\\wsl.localhost\\")) start = 16;
+    else if (folded.starts_with(L"\\\\wsl$\\")) start = 7;
+    else return {};
+    const auto slash = value.find(L'\\', start);
+    if (slash == start || start >= value.size()) return {};
+    if (slash == std::wstring::npos) return std::string("/");
+    value = value.substr(slash); std::replace(value.begin(), value.end(), L'\\', L'/');
+    return utf8(fs::path(value));
 }
 inline std::string readablePath(const fs::path& path, const std::vector<fs::path>& roots) {
     if (path.empty()) return {};

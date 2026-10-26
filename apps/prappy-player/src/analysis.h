@@ -8,6 +8,7 @@
 #include <stop_token>
 #include <vector>
 #include <mutex>
+#include <memory>
 #include <thread>
 
 struct Library;
@@ -43,6 +44,8 @@ struct Summary {
     std::optional<double> loudness;
     std::string error;
     bool cached = false;
+    float samplePeak = 0;
+    std::shared_ptr<const Result> waveform;
 };
 // One worker, one decode at a time. No filesystem or decoder calls on the UI.
 class Worker {
@@ -54,6 +57,8 @@ class Worker {
     std::optional<Identity> active;
     std::stop_source activeStop;
     bool forcePending = false;
+    std::optional<Identity> selected;
+    bool selectedReady = false;
     std::jthread thread;
     void run(std::stop_token stop);
 public:

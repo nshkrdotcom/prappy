@@ -140,7 +140,7 @@ Result measure(const fs::path& path, std::stop_token stop, const Progress& progr
     decoder.volume = 100;
     decoder.open(false, {{"ao", "pcm"}, {"ao-pcm-file", output.c_str()}, {"ao-pcm-waveheader", "no"},
         {"audio-format", "float"}, {"audio-samplerate", "48000"}, {"audio-channels", "stereo"},
-        {"gapless-audio", "no"}, {"replaygain", "no"}, {"keep-open", "no"}});
+        {"gapless-audio", "no"}, {"replaygain", "no"}, {"keep-open", "no"}}, false);
     bool connected = ConnectNamedPipe(pipe.value, &io) != FALSE;
     if (!connected) {
         const auto error = GetLastError();
@@ -278,6 +278,7 @@ Worker::~Worker() { thread.request_stop(); wake.notify_all(); }
 void Worker::reconcile(const Library& library, bool force) {
     std::lock_guard lock(mutex); pending.clear(); completed.clear();
     forcePending = force;
+    selectedReady = false;
     bool keepActive = false;
     for (const auto& track : library.tracks) if (!track.offline) {
         Identity identity{track.path, track.bytes, track.stamp};
@@ -291,8 +292,12 @@ void Worker::prioritize(const Track& track) {
     if (track.offline) return;
     std::lock_guard lock(mutex);
     const Identity identity{track.path, track.bytes, track.stamp};
+    const bool ready = selected == identity && selectedReady;
+    selected = identity;
+    if (!ready) selectedReady = false;
     const auto found = std::find(pending.begin(), pending.end(), identity);
     if (found != pending.end()) { pending.erase(found); pending.push_front(identity); wake.notify_all(); }
+    else if (!ready && active != identity) { pending.push_front(identity); wake.notify_all(); }
 }
 std::vector<Summary> Worker::collect() {
     std::lock_guard lock(mutex); auto result = std::move(completed); completed.clear(); return result;
@@ -313,6 +318,7 @@ void Worker::run(std::stop_token stop) {
         std::stop_callback stopTask(stop, [&] { taskStop.request_stop(); });
         const auto taskToken = taskStop.get_token();
         Summary summary; summary.identity = identity;
+        std::shared_ptr<const Result> waveform;
         try {
             cancelled(taskToken);
             if (identify(identity.path) != identity) throw std::runtime_error("Source changed before analysis.");
@@ -326,10 +332,20 @@ void Worker::run(std::stop_token stop) {
             cancelled(taskToken);
             if (identify(identity.path) != identity) throw std::runtime_error("Source changed during analysis.");
             summary.duration = result.duration(); summary.loudness = result.loudness;
+            const auto& peak = result.levels.back()[0];
+            summary.samplePeak = std::max({std::abs(peak.leftMin), std::abs(peak.leftMax), std::abs(peak.rightMin), std::abs(peak.rightMax)});
             if (!summary.cached) { fs::create_directories(directory); stateio::write(file, serialize(identity, result), false); }
+            waveform = std::make_shared<Result>(std::move(result));
         } catch (const std::exception& e) { summary.error = e.what(); }
         if (stop.stop_requested()) break;
-        { std::lock_guard lock(mutex); if (!taskToken.stop_requested()) completed.push_back(std::move(summary)); active.reset(); }
+        {
+            std::lock_guard lock(mutex);
+            if (!taskToken.stop_requested()) {
+                if (selected == identity) { summary.waveform = std::move(waveform); selectedReady = true; }
+                completed.push_back(std::move(summary));
+            }
+            active.reset();
+        }
     }
 }
 }

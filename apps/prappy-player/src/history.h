@@ -26,52 +26,98 @@ struct HistoryEntry {
     std::filesystem::path path;
     double position = 0;
     std::wstring search;
+    bool queued = false;
 };
 struct History {
     PagedVector<HistoryEntry> entries;
     std::vector<uint64_t> trail;
     size_t cursor = 0, limit = 10000;
     uint64_t nextId = 1, revision = 0;
+    uint64_t visitsRevision = 0;
+    size_t playedCount = 0;
     RepeatMode repeat = RepeatMode::Off;
     std::map<uint64_t, size_t> index;
-    void reindex() { index.clear(); for (size_t i = 0; i < entries.size(); ++i) index.emplace(entries[i].id, i); }
+    void reindex() {
+        index.clear(); playedCount = 0;
+        for (size_t i = 0; i < entries.size(); ++i) { index.emplace(entries[i].id, i); if (!entries[i].queued) ++playedCount; }
+    }
     const HistoryEntry* find(uint64_t id) const {
         const auto it = index.find(id); return it == index.end() ? nullptr : &entries[it->second];
     }
-    const HistoryEntry* current() const { return cursor < trail.size() ? find(trail[cursor]) : nullptr; }
+    const HistoryEntry* current() const {
+        const auto entry = cursor < trail.size() ? find(trail[cursor]) : nullptr;
+        return entry && !entry->queued ? entry : nullptr;
+    }
+    static int64_t now() { return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count(); }
     std::optional<size_t> adjacent(int direction) const {
         if (trail.empty() || (direction < 0 && cursor == 0) || (direction > 0 && cursor + 1 >= trail.size())) return {};
         return direction < 0 ? cursor - 1 : cursor + 1;
     }
     void prune() {
         const auto active = current() ? current()->id : 0;
-        if (entries.size() > limit) {
-            const auto count = entries.size() - limit;
-            // Retain the active old visit when a config change lowers the limit.
+        const auto played = playedCount;
+        const auto cap = std::min(limit, stateio::MaxRecords - (entries.size() - playedCount));
+        if (played > cap) {
+            ++visitsRevision;
+            const auto drop = played - cap;
+            std::vector<std::pair<int64_t, uint64_t>> oldest;
+            for (const auto& entry : entries) if (!entry.queued && entry.id != active) oldest.emplace_back(entry.time, entry.id);
+            const auto boundary = oldest.begin() + static_cast<ptrdiff_t>(drop - 1);
+            std::nth_element(oldest.begin(), boundary, oldest.end());
+            const auto threshold = *boundary;
             std::vector<HistoryEntry> kept;
-            for (size_t i = 0; i < entries.size(); ++i)
-                if (i >= count && (active == 0 || i != count || index.at(active) >= count)) kept.push_back(std::move(entries[i]));
-            if (active && index.at(active) < count) kept.insert(kept.begin(), std::move(entries[index.at(active)]));
+            for (const auto& entry : entries) {
+                if (entry.queued || entry.id == active || std::make_pair(entry.time, entry.id) > threshold) kept.push_back(entry);
+            }
             entries = std::move(kept); reindex();
         }
         std::erase_if(trail, [&](uint64_t id) { return !index.contains(id); });
-        if (trail.size() > limit) trail.erase(trail.begin(), trail.end() - static_cast<ptrdiff_t>(limit));
         const auto it = std::find(trail.begin(), trail.end(), active);
         cursor = it == trail.end() ? (trail.empty() ? 0 : trail.size() - 1) : static_cast<size_t>(it - trail.begin());
     }
     void setLimit(size_t value) { if (value != limit) { limit = value; prune(); ++revision; } }
     uint64_t add(const std::filesystem::path& path) {
         if (nextId == UINT64_MAX) throw std::runtime_error("History visit IDs exhausted.");
-        if (!trail.empty()) trail.resize(cursor + 1);
+        std::vector<uint64_t> scheduled;
+        const auto first = current() ? cursor + 1 : 0;
+        for (size_t i = first; i < trail.size(); ++i) if (find(trail[i])->queued) scheduled.push_back(trail[i]);
+        trail.resize(first);
         const auto id = nextId++;
-        entries.push_back({id, std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count(), path, 0, searchText(utf8(path))});
+        entries.push_back({id, now(), path, 0, searchText(utf8(path)), false});
+        ++playedCount;
         index.emplace(id, entries.size() - 1); trail.push_back(id); cursor = trail.size() - 1;
-        if (entries.size() > limit) prune();
+        trail.insert(trail.end(), scheduled.begin(), scheduled.end());
+        if (playedCount > limit || entries.size() > stateio::MaxRecords) prune();
+        ++revision; ++visitsRevision; return id;
+    }
+    uint64_t enqueue(const fs::path& path, bool next) {
+        if (nextId == UINT64_MAX || entries.size() >= stateio::MaxRecords) throw std::runtime_error("Queue/history limit reached.");
+        const auto queued = entries.size() - playedCount;
+        if (queued >= 10000) throw std::runtime_error("Queue is limited to 10000 tracks.");
+        const auto id = nextId++;
+        entries.push_back({id, 0, path, 0, searchText(utf8(path)), true}); index.emplace(id, entries.size() - 1);
+        const auto place = next ? (current() ? cursor + 1 : 0) : trail.size();
+        trail.insert(trail.begin() + static_cast<ptrdiff_t>(place), id);
         ++revision; return id;
+    }
+    void removeQueued(uint64_t id) {
+        const auto entry = find(id); if (!entry || !entry->queued) return;
+        const auto active = current() ? current()->id : 0;
+        std::vector<HistoryEntry> kept;
+        for (const auto& item : entries) if (item.id != id) kept.push_back(item);
+        entries = std::move(kept); reindex(); std::erase(trail, id);
+        const auto found = std::find(trail.begin(), trail.end(), active);
+        cursor = found == trail.end() ? 0 : static_cast<size_t>(found - trail.begin()); ++revision;
     }
     void visit(size_t target) {
         if (target >= trail.size()) throw std::runtime_error("Invalid history destination.");
+        const bool scheduled = find(trail[target])->queued;
+        if (scheduled) {
+            auto& entry = entries[index.at(trail[target])]; entry.queued = false; entry.time = now();
+            ++visitsRevision; ++playedCount;
+        }
         cursor = target; ++revision;
+        if (scheduled && playedCount > limit) prune();
     }
     void position(double value) {
         if (!std::isfinite(value) || value < 0 || !current()) return;
@@ -88,7 +134,7 @@ struct History {
             std::ostringstream out; out.imbue(std::locale::classic());
             out << "PRAPPY_HISTORY 1\nNEXT_ID " << nextId << "\nREPEAT " << static_cast<int>(repeat) << '\n';
             for (const auto& entry : entries) {
-                out << "ENTRY " << entry.id << ' ' << entry.time << ' ' << std::setprecision(17) << entry.position << ' '
+                out << (entry.queued ? "QUEUED " : "ENTRY ") << entry.id << ' ' << entry.time << ' ' << std::setprecision(17) << entry.position << ' '
                     << std::quoted(stateio::pathText(entry.path)) << '\n';
                 if (out.tellp() > static_cast<std::streamoff>(stateio::MaxFile)) throw std::runtime_error("History exceeds file size limit.");
             }
@@ -123,14 +169,16 @@ struct History {
             if (line.size() > 24 * stateio::MaxRecords) throw std::runtime_error("History record too large.");
             std::istringstream record(line); record.imbue(std::locale::classic());
             std::string kind; record >> kind;
-            if (kind == "ENTRY") {
+            if (kind == "ENTRY" || kind == "QUEUED") {
                 if (line.size() > stateio::MaxString + 256 || result.entries.size() >= stateio::MaxRecords)
                     throw std::runtime_error("History entry exceeds limits.");
                 HistoryEntry entry; std::string path;
+                entry.queued = kind == "QUEUED";
                 if (!(record >> entry.id >> entry.time >> entry.position >> std::quoted(path)) || entry.id == 0 || entry.id <= previousId ||
                     entry.time < 0 || !std::isfinite(entry.position) || entry.position < 0 || entry.position > 1e12)
                     throw std::runtime_error("Invalid history entry.");
                 entry.path = stateio::pathFromText(path); entry.search = searchText(path);
+                if (entry.queued && (entry.time != 0 || entry.position != 0)) throw std::runtime_error("Invalid queued visit.");
                 previousId = entry.id; result.entries.push_back(std::move(entry));
             } else if (kind == "NEXT_ID" && !nextSeen) {
                 if (!(record >> result.nextId) || result.nextId == 0 || result.nextId == UINT64_MAX) throw std::runtime_error("Invalid next visit ID.");
@@ -154,6 +202,7 @@ struct History {
         if (!nextSeen || !trailSeen || !cursorSeen || !repeatSeen || result.nextId <= previousId)
             throw std::runtime_error("Incomplete history file.");
         result.reindex();
+        if (result.entries.size() - result.playedCount > 10000) throw std::runtime_error("Saved queue exceeds 10000 tracks.");
         std::erase_if(result.trail, [&](uint64_t id) { return !result.index.contains(id); });
         const auto it = std::find(result.trail.begin(), result.trail.end(), currentId);
         result.cursor = it == result.trail.end() ? (result.trail.empty() ? 0 : result.trail.size() - 1) : static_cast<size_t>(it - result.trail.begin());
@@ -171,16 +220,20 @@ struct History {
         std::istringstream input(bytes.starts_with("\xef\xbb\xbf") ? bytes.substr(3) : bytes); std::string line;
         if (!std::getline(input, line) || (line != "PRAPPY_HISTORY 1" && line != "PRAPPY_HISTORY 1\r"))
             throw std::runtime_error("History cannot be safely salvaged.");
-        uint64_t previous = 0;
+        uint64_t previous = 0; size_t queuedCount = 0;
         while (std::getline(input, line)) {
             if (!line.empty() && line.back() == '\r') line.pop_back();
-            if (!line.starts_with("ENTRY ") || line.size() > stateio::MaxString + 256 || result.entries.size() >= stateio::MaxRecords) continue;
+            if ((!line.starts_with("ENTRY ") && !line.starts_with("QUEUED ")) || line.size() > stateio::MaxString + 256 || result.entries.size() >= stateio::MaxRecords) continue;
             std::istringstream record(line); record.imbue(std::locale::classic());
             std::string kind, path; HistoryEntry entry;
             if (!(record >> kind >> entry.id >> entry.time >> entry.position >> std::quoted(path)) || entry.id <= previous ||
                 entry.id >= UINT64_MAX - 1 || entry.time < 0 || !std::isfinite(entry.position) || entry.position < 0 || entry.position > 1e12) continue;
             record >> std::ws; if (!record.eof()) continue;
+            entry.queued = kind == "QUEUED";
+            if (entry.queued && (entry.time != 0 || entry.position != 0)) continue;
+            if (entry.queued && queuedCount >= 10000) continue;
             try { entry.path = stateio::pathFromText(path); entry.search = searchText(path); } catch (const std::exception&) { continue; }
+            if (entry.queued) ++queuedCount;
             previous = entry.id; result.trail.push_back(entry.id); result.entries.push_back(std::move(entry));
         }
         if (result.entries.empty()) throw std::runtime_error("No valid history entries to recover.");

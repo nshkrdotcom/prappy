@@ -7,6 +7,7 @@
 #include <utility>
 #include <cmath>
 #include <cstdint>
+#include <charconv>
 struct AudioInfo {
     std::string codec, sampleFormat, channelLayout;
     int64_t sampleRate = 0, channels = 0;
@@ -41,8 +42,10 @@ struct Audio {
     uint64_t serial = 0, loadedSerial = 0;
     double position = 0, duration = 0, volume = 70;
     AudioInfo info;
+    double gain = 0, meterPeak = 0;
+    bool metering = false;
     ~Audio() { if (handle) terminate_destroy(handle); if (dll) FreeLibrary(dll); }
-    void open(bool silent = false, std::initializer_list<std::pair<const char*, const char*>> options = {}) {
+    void open(bool silent = false, std::initializer_list<std::pair<const char*, const char*>> options = {}, bool meter = true) {
         if (dll) throw std::logic_error("Audio is already open.");
         auto path = executableDir() / "libmpv-2.dll";
         dll = LoadLibraryExW(path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
@@ -57,6 +60,12 @@ struct Audio {
             {"input-default-bindings", "no"}, {"load-scripts", "no"}, {"ytdl", "no"}, {"idle", "yes"}}})
             check(set_option_string(handle, name, value));
         if (silent) check(set_option_string(handle, "ao", "null"));
+        check(set_option_string(handle, "audio-channels", "stereo"));
+        check(set_option_string(handle, "audio-samplerate", "48000"));
+        if (meter) {
+            check(set_option_string(handle, "af", "@prappy-meter:lavfi=[astats=metadata=1:reset=1:measure_overall=Peak_level:measure_perchannel=none]"));
+            metering = true;
+        }
         for (const auto& [name, value] : options) check(set_option_string(handle, name, value));
         check(initialize(handle)); check(set_property(handle, "volume", MPV_FORMAT_DOUBLE, &volume));
     }
@@ -72,6 +81,7 @@ struct Audio {
         int pauseValue = startPaused ? 1 : 0;
         const int result = set_property(handle, "pause", MPV_FORMAT_FLAG, &pauseValue);
         if (result < 0) { error = error_string(result); return false; }
+        setGain(0); meterPeak = 0;
         const auto options = std::string(startPaused ? "pause=yes,start=" : "pause=no,start=") + std::to_string(std::max(0.0, startPosition));
         if (!run({"loadfile", file.c_str(), "replace", "-1", options.c_str()})) return false;
         if (get_property(handle, "playlist/0/id", MPV_FORMAT_INT64, &desiredEntry) < 0) {
@@ -96,6 +106,12 @@ struct Audio {
     void setVolume(double value) {
         int result = set_property(handle, "volume", MPV_FORMAT_DOUBLE, &value);
         if (result < 0) error = error_string(result); else volume = value;
+    }
+    void setGain(double value) {
+        if (!std::isfinite(value)) return;
+        value = std::clamp(value, -96.0, 12.0);
+        const auto result = set_property(handle, "volume-gain", MPV_FORMAT_DOUBLE, &value);
+        if (result < 0) error = error_string(result); else gain = value;
     }
     std::string textProperty(const char* name) const {
         char* value = nullptr;
@@ -136,7 +152,15 @@ struct Audio {
             get_property(handle, "duration", MPV_FORMAT_DOUBLE, &duration);
             int flag = paused ? 1 : 0;
             if (get_property(handle, "pause", MPV_FORMAT_FLAG, &flag) >= 0) paused = flag != 0;
+            meterPeak = 0;
+            if (metering && !paused) {
+                const auto text = textProperty("af-metadata/prappy-meter/lavfi.astats.Overall.Peak_level");
+                double db = 0; const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), db);
+                if (ec == std::errc{} && end == text.data() + text.size() && std::isfinite(db) && db < 36)
+                    meterPeak = std::pow(10.0, db / 20);
+            }
         }
+        if (!active || paused) meterPeak = 0;
         return eof;
     }
 };

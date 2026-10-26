@@ -11,7 +11,7 @@
 // Tests wait for observed hover/press/activation instead of guessing frame delays.
 struct UiProbe {
     bool enabled = false;
-    bool scripted = false, mouseDown = false;
+    bool scripted = false, mouseDown = false, rightDown = false;
     ImVec2 mousePosition{};
     uint64_t acknowledged = 0;
     float scrollX = 0, scrollY = 0, scrollMaxY = 0;
@@ -20,6 +20,7 @@ struct UiProbe {
     std::vector<std::string> controls;
     std::map<std::string, uint64_t> activations;
     std::string tooltip, previous;
+    std::string features;
     void input(const std::filesystem::path& directory) {
         if (!enabled) return;
         std::string characters;
@@ -37,11 +38,16 @@ struct UiProbe {
                         if (valid) mousePosition = {x, y};
                     } else if (action == "DOWN") mouseDown = true;
                     else if (action == "UP") mouseDown = false;
+                    else if (action == "RIGHT_DOWN") rightDown = true;
+                    else if (action == "RIGHT_UP") rightDown = false;
                     else if (action == "WHEEL") valid = static_cast<bool>(command >> wheel) && std::isfinite(wheel) && std::abs(wheel) <= 100;
                     else if (action == "KEY") {
                         std::string name; int down = 0;
                         valid = static_cast<bool>(command >> name >> down) && (down == 0 || down == 1);
-                        const auto key = name == "HOME" ? ImGuiKey_Home : name == "DOWN" ? ImGuiKey_DownArrow : name == "ENTER" ? ImGuiKey_Enter : ImGuiKey_None;
+                        const auto key = name == "HOME" ? ImGuiKey_Home : name == "DOWN" ? ImGuiKey_DownArrow : name == "ENTER" ? ImGuiKey_Enter :
+                            name == "ESC" ? ImGuiKey_Escape : name == "LEFT" ? ImGuiKey_LeftArrow : name == "RIGHT" ? ImGuiKey_RightArrow :
+                            name == "END" ? ImGuiKey_End : name == "CTRL" ? ImGuiMod_Ctrl : name == "SHIFT" ? ImGuiMod_Shift :
+                            name == "A" ? ImGuiKey_A : name == "M" ? ImGuiKey_M : name == "T" ? ImGuiKey_T : ImGuiKey_None;
                         if (valid && key != ImGuiKey_None) keys[key] = down != 0; else valid = false;
                     }
                     else if (action == "TEXT") valid = static_cast<bool>(command >> std::quoted(characters));
@@ -58,6 +64,7 @@ struct UiProbe {
             io.AddFocusEvent(true);
             io.AddMousePosEvent(mousePosition.x, mousePosition.y);
             io.AddMouseButtonEvent(0, mouseDown);
+            io.AddMouseButtonEvent(1, rightDown);
             for (const auto& [key, down] : keys) io.AddKeyEvent(key, down);
             if (wheel != 0) io.AddMouseWheelEvent(0, wheel);
             if (!characters.empty()) io.AddInputCharactersUTF8(characters.c_str());
@@ -78,6 +85,8 @@ struct UiProbe {
         std::ostringstream out; out << state << ' ' << acknowledged << '\n';
         out << "SCROLL " << scrollX << ' ' << scrollY << ' ' << scrollMaxY << '\n';
         out << "ORDER " << order << '\n';
+        if (!features.empty()) out << features << '\n';
+        for (const auto& [name, count] : activations) out << "ACTIVATION " << std::quoted(name) << ' ' << count << '\n';
         for (const auto& control : controls) out << control;
         auto text = tooltip; std::replace(text.begin(), text.end(), '\n', ' ');
         out << "TOOLTIP " << std::quoted(text) << '\n';

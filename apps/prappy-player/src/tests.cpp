@@ -3,6 +3,7 @@
 #include "playback.h"
 #include "scan.h"
 #include "status.h"
+#include "feature_tests.h"
 #include <SDL3/SDL.h>
 #include <cmath>
 #include <fstream>
@@ -221,6 +222,7 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
         restored.finish(); onePlayer.finish(); player.finish();
         log << "PASS repeat: One preserves visits/manual navigation; All wraps; Off stops; one-track and empty libraries\n";
         analysisTests(root, fixture, log);
+        featureTests(root, fixture, log);
         log << "ALL PASS\n";
         return 0;
     } catch (const std::exception& e) { log << "FAIL " << e.what() << '\n'; return 1; }
@@ -241,13 +243,13 @@ int selfTest(const fs::path& config, const fs::path& logFile) {
         for (int order = 0; order < 3; ++order) {
             searchLibrary.order = order; searchLibrary.sort();
             for (const char* query : {"NIGHT jazz", "jazz/night", "alternate OPUS"}) {
-                const auto matches = searchLibrary.filter(query);
+                const auto matches = Browse{}.select(searchLibrary, query);
                 if (matches.size() != 1 || searchLibrary.tracks[matches[0]].id != L"night")
                     throw std::runtime_error("Search lost track identity or failed word/path/alias matching.");
             }
         }
-        if (searchLibrary.filter("BEYONCÉ").size() != 1 || searchLibrary.filter("  ").size() != 3 ||
-            !searchLibrary.filter("no-such-track").empty() || searchLibrary.tracks.size() != 3)
+        if (Browse{}.select(searchLibrary, "BEYONCÉ").size() != 1 || Browse{}.select(searchLibrary, "  ").size() != 3 ||
+            !Browse{}.select(searchLibrary, "no-such-track").empty() || searchLibrary.tracks.size() != 3)
             throw std::runtime_error("Search failed Unicode, clear or no-match behavior.");
         log << "PASS search: words / case / Unicode / paths / copies / sorting / clear / no matches\n";
         Library library;

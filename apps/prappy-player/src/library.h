@@ -19,7 +19,10 @@ struct Track {
     bool offline = false;
     fs::path sourceRoot;
     std::wstring search;
+    std::wstring searchName;
+    size_t searchLabelLength = 0;
     std::string sortName;
+    std::optional<double> duration;
 };
 struct ScanProgress {
     std::atomic<size_t> found{0}, checked{0}, total{0};
@@ -184,33 +187,30 @@ struct Library {
     static bool matches(const Track& track, const std::wstring& id) {
         return track.id == id || std::any_of(track.copies.begin(), track.copies.end(), [&](auto& p) { return key(p) == id; });
     }
+    static fs::path pathInFolder(const Track& track, const fs::path& folder) {
+        const auto id = key(folder);
+        if (key(track.path.parent_path()) == id) return track.path;
+        const auto copy = std::find_if(track.copies.begin(), track.copies.end(), [&](const auto& path) { return key(path.parent_path()) == id; });
+        return copy == track.copies.end() ? fs::path{} : *copy;
+    }
     void rebuildSearch() {
         for (auto& track : tracks) {
             track.sortName = lower(track.name);
             track.search = searchText(track.label);
+            track.searchLabelLength = track.search.size(); track.searchName = searchText(track.name);
             for (const auto& copy : track.copies) track.search += L'\n' + searchText(pathLabel(copy));
         }
     }
     void sort() {
         std::sort(tracks.begin(), tracks.end(), [&](const Track& a, const Track& b) {
+            if (order == 3 && a.duration != b.duration) {
+                if (!a.duration || !b.duration) return a.duration.has_value();
+                return *a.duration < *b.duration;
+            }
             if (order == 1 && a.directory != b.directory) return a.directory < b.directory;
             if (order == 2 && a.type != b.type) return a.type < b.type;
             return a.sortName == b.sortName ? a.id < b.id : a.sortName < b.sortName;
         });
-    }
-    std::vector<size_t> filter(const std::string& query) const {
-        std::wistringstream input(searchText(query));
-        std::vector<std::wstring> terms;
-        for (std::wstring term; input >> term;) terms.push_back(std::move(term));
-        std::vector<size_t> visible;
-        visible.reserve(tracks.size());
-        for (size_t i = 0; i < tracks.size(); ++i) {
-            if (terms.empty()) { visible.push_back(i); continue; }
-            const auto& track = tracks[i];
-            if (std::all_of(terms.begin(), terms.end(), [&](const auto& term) { return track.search.find(term) != std::wstring::npos; }))
-                visible.push_back(i);
-        }
-        return visible;
     }
     bool refresh(const fs::path& configFile, std::stop_token stop = {}, ScanProgress* progress = nullptr) {
         try {

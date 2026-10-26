@@ -31,6 +31,11 @@ Back/Forward traversal do not. Clicking an old history row starts it from the
 beginning as a new visit. Unavailable paths are marked after a failed attempt;
 history remains available even while the catalog is scanning or a root is offline.
 
+The library's view selector offers **Unplayed**, **Most played** and **Last played**.
+These use retained successful visits, combine identical-copy paths, and exclude
+pending queue entries. Counts are not lifetime statistics: a track can become
+Unplayed again after its visits age out of the configured retention limit.
+
 **Back** returns to the preceding visit. **Next** follows forward history first,
 then library order. After A → B → C, Back returns to B and Next returns to C.
 Choosing D while at B makes the navigation trail A → B → D; C stays searchable
@@ -44,6 +49,28 @@ library sequence after forward history is exhausted. Off stops at the final
 library track; explicit Next can still wrap. Failed playback is not retried in a
 loop. The enabled icon uses the accent color, with a **1** mark for Repeat One;
 its tooltip explains the current state and next click.
+
+Right-click a library/history row or the current track name to **Play next** or
+**Add to queue**. These insert pending slots into the existing navigation trail;
+they become visits only after a successful load. Play next inserts immediately
+after the current visit, ahead of forward history; Add to queue appends after
+the forward trail. Repeated Play next actions put the newest selection first.
+An explicit new selection branches away from played forward history while
+preserving explicitly queued tracks. Failed loads leave the queued slot pending
+and restore the previous recording. Rapid Next during a pending queued load
+does not skip that uncommitted slot. **More** lists forward/queued tracks and
+lets you remove queued slots, including cancelling a pending queued load.
+Queue entries are saved with history, are excluded from visit statistics, and
+have their own 10,000-track bound within the overall one-million-record limit.
+
+The same context menu offers **Play this folder** and **Repeat this folder**.
+The scope is the file's immediate parent directory, excluding subdirectories.
+Folders containing only hidden identical copies remain playable using those
+copies' paths, without duplicating the library entries.
+Fallback Next/EOF progression uses that directory in the selected library order;
+Repeat All wraps it. Explicit queued tracks and forward history take priority,
+including paths outside the folder. The status line shows the active scope;
+**More → Play all folders** clears it. Folder scope and repeat restore on restart.
 
 Restarting restores the selected visit, position, navigation trail and repeat
 mode **paused**. Completed recordings restart at zero. State is checkpointed on
@@ -65,6 +92,8 @@ Third-party libraries keep their own warning policies.
 pwsh scripts/verify-health.ps1
 # Repeat tests against existing diagnostic builds.
 pwsh scripts/verify-health.ps1 -SkipBuild
+# Build/test beside a running Release player without replacing its executable:
+pwsh scripts/verify-health.ps1 -VariantSuffix Features
 # Individual diagnostic builds:
 pwsh scripts/build.ps1 -Analyze
 pwsh scripts/build.ps1 -Config Debug -Asan
@@ -117,7 +146,7 @@ pwsh scripts/build.ps1 -Run    # Release; add -Config Debug for a debug build
 
 Executable: `build/Release/PrappyPlayer.exe`. Launch it directly without a
 console, including from Explorer. To relocate it, copy the executable,
-`PrappyPlayer.ico`, `libmpv-2.dll`, `licenses/`, `player.ini`, `player-history.txt`
+`PrappyPlayer.ico`, `libmpv-2.dll`, `licenses/`, `player.ini`, `player-ui.txt`, `player-history.txt`
 and `player-catalog.bin` together, including their `.bak` files if present. The MSVC runtime and
 SDL are statically linked. Build output and the downloaded DLL are gitignored.
 
@@ -156,7 +185,7 @@ same-size edits that deliberately preserve modification times need **Shift+Refre
 to force content revalidation. Initial or forced full-content verification can
 be slower over WSL because audio crosses the Windows/Linux filesystem boundary.
 No media is changed or deleted. The window shows scan/duplicate-check progress. A single
-temporary worker runs only at startup or when Refresh is clicked; controls stay
+temporary scan worker runs only at startup or when Refresh is clicked; controls stay
 responsive and the previous list remains usable until the new list is ready.
 Closing cancels the scan. Refresh is disabled while a scan is already running.
 Reopening the executable or its pinned taskbar shortcut restores the existing
@@ -180,15 +209,18 @@ operate the scraper, change its recordings or interfere with collection jobs.
 
 ## Controls
 
-- **List** expands/collapses the library. Choose filename order, directory groups
-  or file type groups. Rows show each track's relative path, including its
+- **List** expands/collapses the library. Choose filename order, directory groups,
+  file type groups, or duration order (unknown durations last). Rows show each track's relative path, including its
   filename. Paths under `scraper` start after that directory, for example
   `library\beat-suite\render\mix.flac`. Other roots use their folder name as
   the prefix. Hover for the same path and any identical-copy locations;
   scroll horizontally to read longer rows.
 - **Search** sits below the expanded list, above playback. Type words from a
   filename or relative path to filter instantly; all words must match, in any
-  order, ignoring case. Hidden duplicate paths are searchable too. The count
+  order, ignoring case. Matching filenames rank above directory and hidden-copy
+  matches; matching tokens are highlighted in the displayed row. Searches use
+  a flat ranked list even when grouped browsing is selected. Hidden duplicate
+  paths are searchable too. The count
   shows matches out of the full library. **Ctrl+F** focuses search; **Escape**
   or **Clear** clears it. Filtering keeps the playing track and playback order.
 - Back, Play/Pause, Next, seek, volume and repeat are always available.
@@ -196,6 +228,25 @@ operate the scraper, change its recordings or interfere with collection jobs.
   With repeat Off, automatic progression stops after the final library track;
   explicit Next wraps after forward history is exhausted.
   Playback errors stop progression and appear in the status line.
+- **Filters** offers extension, online/offline availability, minimum/maximum
+  duration in seconds, and measured-duration-only filtering. Zero maximum means
+  no upper bound. Active duration bounds exclude tracks awaiting analysis.
+  Filters and history-derived views affect browsing; folder scope, the trail
+  and queue determine playback progression.
+- The seekbar draws cached stereo peaks with a gold playhead and mint played
+  region. Drag anywhere to seek; keyboard focus supports Left/Right (five seconds),
+  Home and End. It stays seekable while waveform analysis is pending. Display
+  amplitude is scaled to the track's peak so quiet files remain readable.
+- A small meter shows live decoded sample peaks before volume/normalization,
+  with a release decay. It is not a hardware-output or true-peak meter.
+- Right-click a track to **Copy full path**, **Copy WSL Linux path**, or
+  **Reveal in Explorer**. WSL conversion supports `\\wsl.localhost\distro\...`,
+  `\\wsl$\distro\...`, and extended UNC paths, preserving Unicode and spaces.
+  The WSL action is disabled for other Windows paths/shares.
+- **More** contains **Always on top**, **Slim strip** and **Normalize to -18 LUFS**.
+  Strip mode keeps transport, waveform and meter in 86 content pixels of height;
+  use More to return. Ctrl+Shift+M toggles strip mode, and Ctrl+Shift+T toggles
+  topmost. These settings and folder scope are saved in `player-ui.txt`.
 - Sorting changes fallback library progression without reordering history.
   Refresh reloads config and scans once, preserving playback by full path.
   If the playing file disappears from the list, it can finish; Next starts at
@@ -223,7 +274,10 @@ prioritizing the current track when it is still queued. It uses the bundled
 libmpv decoder and a bounded Windows pipe, without temporary PCM files or another
 installed tool. Each decode produces frame-count duration, stereo min/max peaks
 at 1,024-frame resolution with successively halved levels, and gated integrated
-loudness. There is no waveform or histogram display yet.
+loudness. The seekbar uses these cached peaks; only the selected track's full
+peak pyramid is handed to the UI. Other tracks retain lightweight summaries.
+Selecting an already analyzed track reads its cache on the same worker, without
+another decode pass. No histogram view is implemented.
 
 Analysis uses a 48 kHz floating-point **stereo render** at unity gain with
 ReplayGain disabled. Its LUFS value describes that render, including mono
@@ -231,7 +285,19 @@ duplication or surround downmixing; it is not a native multichannel measurement
 or a true-peak measurement. K-weighting and the 400 ms/100 ms absolute/relative
 gates follow [ITU-R BS.1770-5, Annex 1](https://www.itu.int/rec/R-REC-BS.1770-5-202311-I/).
 Silence and audio shorter than 400 ms have no integrated loudness value.
-Analysis does not adjust playback gain.
+Playback uses a 48 kHz stereo output path matching the analysis render. When
+**Normalize to -18 LUFS** is enabled, measured loudness selects a constant gain
+per track, capped at +12 dB and reduced as needed for a -1 dB sample-peak ceiling.
+Silence, short tracks and pending/failed analysis use zero gain. Newly available
+measurements ramp toward the target during playback; a known gain is applied
+while a track loads paused, before it becomes audible. The volume slider stays
+independent. This preserves dynamics and does not promise true-peak limiting or
+an exact target when the boost/headroom bounds apply.
+
+The live meter uses a lightweight `astats` filter on the playback decoder; it
+does not open the source a second time. Playback gain uses mpv's separate
+`volume-gain` property. Playback and analysis disable automatic ReplayGain
+adjustments so measured gain has one authority.
 
 Disposable, checksummed per-track files live in `player-analysis/` beside the
 executable, separately from the catalog and history. Reuse requires the same
@@ -261,15 +327,18 @@ history saving own separate workers; their results are collected by the UI.
   changes detach only their affected page. Library and history searches reuse
   normalized text; sorting reuses cached names.
 - `analysis.h`, `analysis.cpp`: streaming analysis, DSP, cache and cancellation.
-- `tests.cpp`, `analysis_tests.h`: playback/state and analysis regression checks.
+- `browse.h`, `preferences.h`, `feature_ui.h`: retained-history views, ranked
+  filtering, settings, shell actions, waveform and peak widgets.
+- `tests.cpp`, `analysis_tests.h`, `feature_tests.h`: playback/state, analysis,
+  queue, browsing, normalization and feature regression checks.
 
-The navigation trail records successful visits; it is not an editable upcoming
-queue. A future “play next” feature needs explicit ordering, consumption, failure
-and Back/Forward rules before implementation. A future A/B comparison can switch
+The navigation trail contains both successful visits and explicitly queued
+future slots, distinguished in the history model and persisted as `QUEUED`
+records until a successful load commits them as visits. A future A/B comparison can switch
 sources on one decoder while restoring the playhead; two concurrent decoders
 are an optional latency/synchronization tradeoff. Loudness matching would use
-measured gain separately from the comparison transport. Neither feature is
-implemented in this change.
+measured gain separately from the comparison transport. A/B comparison is not
+implemented.
 
 ## Verification
 

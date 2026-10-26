@@ -1,6 +1,6 @@
 #Requires -Version 7.0
 param([ValidateSet('Release','Debug')][string]$Config='Release', [switch]$Run,
-    [switch]$Analyze, [switch]$Asan)
+    [switch]$Analyze, [switch]$Asan, [ValidatePattern('^[A-Za-z0-9-]*$')][string]$VariantSuffix='')
 $ErrorActionPreference='Stop'
 $app = Split-Path $PSScriptRoot -Parent
 $candidates = @(
@@ -15,6 +15,7 @@ Assert-NativeCppToolchain
 $variant = $Config
 if ($Analyze) { $variant += '-Analyze' }
 if ($Asan) { $variant += '-Asan' }
+if ($VariantSuffix) { $variant += "-$VariantSuffix" }
 $build = Join-Path $app "build\$variant"
 & cmake -S $app -B $build -G Ninja "-DCMAKE_BUILD_TYPE=$Config" "-DPRAPPY_ANALYZE:BOOL=$($Analyze.IsPresent)" "-DPRAPPY_ASAN:BOOL=$($Asan.IsPresent)"
 if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed. Stop and report this error.' }

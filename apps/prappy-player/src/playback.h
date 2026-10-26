@@ -2,6 +2,7 @@
 #include "audio.h"
 #include "library.h"
 #include "history.h"
+#include <functional>
 // Playback intents are committed by matching successful mpv playlist entry IDs.
 struct Playback {
     enum class Kind { NewVisit, Traverse, Restore, Restart, Rollback };
@@ -14,6 +15,8 @@ struct Playback {
     std::set<std::wstring> unavailable;
     std::string notice;
     uint64_t generation = 0;
+    fs::path folder;
+    std::function<void(const fs::path&)> prepare;
     Playback(Audio& source, Library& catalog, History& visits, HistoryFile& storage)
         : audio(source), library(catalog), history(visits), file(storage) {}
     ~Playback() { try { finish(); } catch (const std::exception& e) { OutputDebugStringA(e.what()); } }
@@ -36,24 +39,51 @@ struct Playback {
         if (const auto entry = history.current()) request(entry->path, Kind::Restore, history.cursor, true, entry->position);
     }
     std::optional<size_t> adjacent(int direction) const {
+        if (!history.current())
+            return direction > 0 && !history.trail.empty() ? std::optional<size_t>(0) : std::nullopt;
         auto cursor = history.cursor;
         if (pending && pending->kind == Kind::Traverse) {
             const auto it = std::find(history.trail.begin(), history.trail.end(), pending->targetId);
-            if (it != history.trail.end()) cursor = static_cast<size_t>(it - history.trail.begin());
+            if (it != history.trail.end() && !history.find(*it)->queued) cursor = static_cast<size_t>(it - history.trail.begin());
         }
         if (history.trail.empty() || (direction < 0 && cursor == 0) || (direction > 0 && cursor + 1 >= history.trail.size())) return {};
         return direction < 0 ? cursor - 1 : cursor + 1;
     }
     fs::path libraryNext(bool automatic) const {
-        if (library.tracks.empty()) return {};
         const auto id = key(audio.current);
-        auto it = std::find_if(library.tracks.begin(), library.tracks.end(), [&](const auto& track) { return Library::matches(track, id); });
-        size_t index = it == library.tracks.end() ? 0 : static_cast<size_t>(it - library.tracks.begin()) + 1;
-        if (index >= library.tracks.size()) {
-            if (automatic && history.repeat != RepeatMode::All) return {};
-            index = 0;
+        fs::path first;
+        bool found = false;
+        for (const auto& track : library.tracks) {
+            fs::path scoped;
+            const fs::path* path = &track.path;
+            if (!folder.empty()) { scoped = Library::pathInFolder(track, folder); path = &scoped; }
+            if (path->empty()) continue;
+            if (first.empty()) first = *path;
+            if (found) return *path;
+            if (Library::matches(track, id)) found = true;
         }
-        return library.tracks[index].path;
+        if (found && automatic && history.repeat != RepeatMode::All) return {};
+        return first;
+    }
+    bool enqueue(const fs::path& path, bool next) {
+        try { history.enqueue(path, next); ++generation; file.save(history, true); return true; }
+        catch (const std::exception& e) { notice = e.what(); return false; }
+    }
+    void removeQueued(uint64_t id) {
+        if (pending && pending->targetId == id && history.find(id) && history.find(id)->queued) {
+            const bool paused = pending->oldPaused; pending.reset();
+            audio.run({"stop"}); audio.loaded = audio.active = false;
+            if (const auto entry = history.current()) request(entry->path, Kind::Rollback, history.cursor, paused, entry->position);
+            else audio.current.clear();
+        }
+        history.removeQueued(id); ++generation; file.save(history, true);
+    }
+    bool playFolder(const fs::path& path, bool repeat) {
+        const auto first = std::find_if(library.tracks.begin(), library.tracks.end(), [&](const auto& t) { return !Library::pathInFolder(t, path).empty(); });
+        if (first == library.tracks.end()) return false;
+        folder = path;
+        history.repeat = repeat ? RepeatMode::All : RepeatMode::Off; ++history.revision;
+        return request(Library::pathInFolder(*first, path));
     }
     fs::path destination(int direction) const {
         if (auto target = adjacent(direction)) return history.find(history.trail[*target])->path;
@@ -87,6 +117,7 @@ struct Playback {
                 const double position = audio.duration > .25 && completed.position < audio.duration - .1 ? completed.position : 0;
                 audio.seek(position); audio.position = position; history.position(position);
             }
+            if (prepare) prepare(audio.current);
             audio.setPaused(completed.paused);
             ++generation; file.save(history, true);
         }

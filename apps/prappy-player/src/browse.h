@@ -1,0 +1,80 @@
+#pragma once
+#include "library.h"
+#include "history.h"
+#include "analysis.h"
+#include <cmath>
+
+struct ListeningStats { size_t count = 0; int64_t last = 0; };
+struct Browse {
+    enum class View { All, Unplayed, MostPlayed, LastPlayed };
+    View view = View::All;
+    int availability = 0;
+    std::string extension;
+    double minimum = 0, maximum = 0;
+    bool measuredOnly = false;
+    std::map<std::wstring, ListeningStats> stats;
+    std::map<std::wstring, std::wstring> canonical;
+    void rebuild(const Library& library, const History& history, bool reindex = true) {
+        if (reindex) {
+            canonical.clear();
+            for (const auto& track : library.tracks) {
+                canonical.emplace(track.id, track.id);
+                for (const auto& copy : track.copies) canonical.emplace(key(copy), track.id);
+            }
+        }
+        stats.clear();
+        for (const auto& entry : history.entries) if (!entry.queued) {
+            const auto alias = canonical.find(key(entry.path));
+            if (alias != canonical.end()) { auto& value = stats[alias->second]; ++value.count; value.last = std::max(value.last, entry.time); }
+        }
+    }
+    ListeningStats played(const Track& track) const {
+        const auto found = stats.find(track.id); return found == stats.end() ? ListeningStats{} : found->second;
+    }
+    static std::vector<std::wstring> tokens(const std::string& query) {
+        std::wistringstream input(searchText(query)); std::vector<std::wstring> result;
+        for (std::wstring term; input >> term;) result.push_back(std::move(term)); return result;
+    }
+    static int score(const Track& track, const std::vector<std::wstring>& terms) {
+        int rank = 0; const auto& name = track.searchName;
+        for (const auto& term : terms) {
+            if (track.search.find(term) == std::wstring::npos) return -1;
+            if (name == term) rank += 100;
+            else if (name.starts_with(term)) rank += 50;
+            else if (name.find(term) != std::wstring::npos) rank += 25;
+            else if (track.search.find(term) + term.size() <= track.searchLabelLength) rank += 10;
+            else ++rank;
+        }
+        return rank;
+    }
+    std::vector<size_t> select(const Library& library, const std::string& query) const {
+        const auto terms = tokens(query); std::vector<std::pair<size_t, int>> matches;
+        for (size_t i = 0; i < library.tracks.size(); ++i) {
+            const auto& track = library.tracks[i]; const auto activity = view == View::All ? ListeningStats{} : played(track);
+            if ((view == View::Unplayed && activity.count) ||
+                ((view == View::MostPlayed || view == View::LastPlayed) && !activity.count) ||
+                (availability == 1 && track.offline) || (availability == 2 && !track.offline) ||
+                (!extension.empty() && track.type != extension) ||
+                (!track.duration && (measuredOnly || minimum > 0 || maximum > 0)) ||
+                (track.duration && (*track.duration < minimum || (maximum > 0 && *track.duration > maximum)))) continue;
+            const auto rank = score(track, terms); if (rank >= 0) matches.emplace_back(i, rank);
+        }
+        if (!terms.empty() || view == View::MostPlayed || view == View::LastPlayed) std::stable_sort(matches.begin(), matches.end(), [&](const auto& a, const auto& b) {
+            if (!terms.empty() && a.second != b.second) return a.second > b.second;
+            const auto left = played(library.tracks[a.first]), right = played(library.tracks[b.first]);
+            if (view == View::MostPlayed && left.count != right.count) return left.count > right.count;
+            if (view == View::LastPlayed && left.last != right.last) return left.last > right.last;
+            return false;
+        });
+        std::vector<size_t> result; result.reserve(matches.size());
+        for (const auto& match : matches) result.push_back(match.first); return result;
+    }
+};
+
+inline double normalizationGain(const analysis::Summary* summary, bool enabled) {
+    if (!enabled || !summary || !summary->error.empty() || !summary->loudness || !std::isfinite(*summary->loudness) ||
+        !std::isfinite(summary->samplePeak) || summary->samplePeak <= 0) return 0;
+    const auto desired = -18.0 - *summary->loudness;
+    const auto headroom = -1.0 - 20 * std::log10(summary->samplePeak);
+    return std::clamp(std::min(desired, headroom), -96.0, 12.0);
+}

@@ -297,3 +297,55 @@ FLAC, Opus and WavPack measured 3.000 seconds / -21.76 LUFS; MP3 measured
 values describe the decoded 48 kHz stereo render, not native multichannel
 loudness or true peak. Logs are in `build/final-health.log`,
 `build/formats-selftest.log` and `build/formats-analysis.log`.
+
+## Browsing, queue and playback features — 2026-10-26
+
+Final verification passed with:
+
+```powershell
+pwsh scripts/verify-health.ps1 -VariantSuffix Features -Repetitions 1
+```
+
+Release-Features, Release-Analyze-Features, Debug-Features and Debug-Asan-Features
+compiled with warnings treated as errors. Static analysis passed. Release,
+Debug and ASan passed playback/search/dedup regressions, state and analysis
+tests, the expanded UI suite and native window checks. This final matrix
+included 36 playback lifecycle/refresh/scan cancellation cycles. Debug CRT leak
+checks passed, including both feature-test instances across the restart check;
+ASan reported no memory errors. Logs: `build/features-final.log`.
+
+New model and playback regressions cover:
+
+- WSL hostname/alias/extended UNC conversion, Unicode, spaces and rejection of
+  other Windows shares.
+- Planned slots in the existing navigation trail: next/append ordering, saved
+  queue, branching, idle/rapid Next, successful consumption, failed-load rollback,
+  in-flight removal without ghost visits and retention by successful-play time.
+- Unplayed/most/last views over retained visits, duplicate-copy statistics,
+  filename/path/alias ranking, duration/type/offline filters and unknown-duration
+  sorting.
+- Normalization target, boost cap, sample-peak headroom, missing measurements,
+  independent mpv gain/volume, live decoded PCM metering and pause reset.
+- Folder playback/repeat, empty folders and a folder containing only a hidden
+  identical copy, with its copy path preserved during progression.
+- Saved topmost/strip/normalization/folder preferences.
+
+The UI suite uses acknowledged input events and observed state. It checks
+waveform mouse seeking while paused, keyboard Home, context path actions,
+queue creation/consumption, all history-derived views, visible gold token
+highlighting in a captured row, duration sorting and filters, directory repeat,
+native topmost style, applied normalization gain, strip layout, and combined
+paused queue/preferences restoration. It then checks both strip and topmost
+keyboard shortcuts, including native style removal. ImGui layout/input errors
+fail the suite. Token highlighting and strip/waveform screenshots were visually
+inspected. Clipboard contents and Explorer windows were left untouched by
+automation; path conversion and menu availability are covered without those
+desktop side effects.
+
+WAV, FLAC, MP3, Opus, M4A and WavPack fixtures also passed the playback
+integration check with the new stereo signal path (`build/features-formats.log`).
+The running Release player was preserved; the suffix builds isolate verification
+from its executable and state. Catalog format and analysis-cache schema remain
+unchanged. The waveform reads selected-track peaks through the existing single
+analysis worker, and metering uses the playback decoder rather than another
+source read.
