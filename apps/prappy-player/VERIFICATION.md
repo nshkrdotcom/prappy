@@ -84,6 +84,13 @@ it from minimized state with exactly one player process. Closing during the scan
 cancelled it and exited in **137 ms**. The renamed-copy/hard-link/collision and
 playback integration regression passed after this change.
 
+The decorative angled strip and its row were removed; collapsed height is now
+250px. Native dragging uses unused space throughout the window. Per-frame widget
+rectangles exclude buttons, sliders, song rows, group headers and scrollbars;
+active controls and open menus retain mouse handling. Native hit tests verify
+empty header/transport areas drag while header buttons, Play, seek and volume
+remain client input. Top/bottom edges still resize height.
+
 Limitations: audible output was not listened to; hardware output initialization
 was checked while muted. Scraper metadata is not part of the player's scope.
 Dragging between physical monitors with different DPIs and a manual visual

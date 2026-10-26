@@ -87,7 +87,9 @@ operate the scraper, change its recordings or interfere with collection jobs.
   If the playing file disappears from the list, it can finish; Next starts at
   the first remaining track.
 - **Refresh** is the single rescan action. Hover over the status for full errors.
-- Drag the title or the angled strip above now-playing. Resize the top/bottom
+- Drag any unused space, including the title and blank list/transport areas.
+  Buttons, sliders, song rows, group headers and scrollbars retain normal input.
+  Resize the top/bottom
   edges. **Pin** toggles always-on-top; `_` minimizes and `X` closes. Normal
   taskbar and Alt-Tab presence are preserved; maximize is disabled.
 

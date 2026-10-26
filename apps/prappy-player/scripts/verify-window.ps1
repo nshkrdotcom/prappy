@@ -68,7 +68,7 @@ $initial = Rect
 try {
     # Bring just this app forward for input; preserve its final topmost state below.
     $ex = [PlayerNative]::GetWindowLongPtr($hwnd,-20)
-    [PlayerNative]::SetWindowPos($hwnd,[IntPtr](-1),120,120,500,276,0x40) | Out-Null
+    [PlayerNative]::SetWindowPos($hwnd,[IntPtr](-1),120,120,500,250,0x40) | Out-Null
     [PlayerNative]::SetForegroundWindow($hwnd) | Out-Null
     Start-Sleep -Milliseconds 250
     $r = Rect
@@ -93,7 +93,7 @@ try {
     Capture 'player-expanded'
     Click 365 20
     $r = Rect
-    Require (($r.Bottom-$r.Top) -eq 276) 'List collapses'
+    Require (($r.Bottom-$r.Top) -eq 250) 'List collapses'
     # Synchronize the app toggle with the topmost state forced by this harness.
     Click 417 17
     $before = [PlayerNative]::GetWindowLongPtr($hwnd,-20)
@@ -101,7 +101,7 @@ try {
     $after = [PlayerNative]::GetWindowLongPtr($hwnd,-20)
     Require (($before -band 8) -ne ($after -band 8)) 'Pin toggles always-on-top'
     }
-    [PlayerNative]::SetWindowPos($hwnd,[IntPtr]::Zero,0,0,500,276,0x6) | Out-Null
+    [PlayerNative]::SetWindowPos($hwnd,[IntPtr]::Zero,0,0,500,250,0x6) | Out-Null
     Start-Sleep -Milliseconds 100
     $r = Rect
     $packed = [IntPtr]((($r.Top+1) -shl 16) -bor ($r.Left+250))
@@ -109,7 +109,18 @@ try {
     $packed = [IntPtr]((($r.Bottom-2) -shl 16) -bor ($r.Left+250))
     Require ([PlayerNative]::SendMessage($hwnd,0x84,[IntPtr]::Zero,$packed).ToInt32() -eq 15) 'Bottom edge offers native height resizing'
     $packed = [IntPtr]((($r.Top+60) -shl 16) -bor ($r.Left+30))
-    Require ([PlayerNative]::SendMessage($hwnd,0x84,[IntPtr]::Zero,$packed).ToInt32() -eq 2) 'Angled transport strip offers native dragging'
+    Require ([PlayerNative]::SendMessage($hwnd,0x84,[IntPtr]::Zero,$packed).ToInt32() -eq 2) 'Noninteractive text offers native dragging'
+    foreach ($check in @(
+        @{X=250;Y=190;Hit=2;Name='Empty transport space is draggable'},
+        @{X=250;Y=17;Hit=2;Name='Empty header space is draggable'},
+        @{X=365;Y=17;Hit=1;Name='Header buttons retain mouse input'},
+        @{X=100;Y=150;Hit=1;Name='Play button retains mouse input'},
+        @{X=250;Y=90;Hit=1;Name='Seek slider retains mouse input'},
+        @{X=300;Y=150;Hit=1;Name='Volume slider retains mouse input'}
+    )) {
+        $packed = [IntPtr]((($r.Top+$check.Y) -shl 16) -bor ($r.Left+$check.X))
+        Require ([PlayerNative]::SendMessage($hwnd,0x84,[IntPtr]::Zero,$packed).ToInt32() -eq $check.Hit) $check.Name
+    }
     $bytes = [IO.File]::ReadAllBytes($p.Path)
     $pe = [BitConverter]::ToInt32($bytes,0x3c)
     Require ([BitConverter]::ToInt16($bytes,$pe+24+68) -eq 2) 'Windows GUI executable (no console subsystem)'

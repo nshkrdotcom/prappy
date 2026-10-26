@@ -34,8 +34,17 @@ namespace fs = std::filesystem;
 constexpr int Width = 500;
 constexpr float Scale = Width / 350.0f;
 constexpr float u(float value) { return value * Scale; }
-constexpr int MinHeight = 276, TransportHeight = 228;
+constexpr int MinHeight = 250, TransportHeight = 202;
 static WNDPROC originalProc;
+static std::vector<SDL_FRect> controls, nextControls;
+static void rememberControl() {
+    if (!ImGui::IsItemVisible()) return;
+    auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+    const auto window = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
+    min.x = std::max(min.x, window.x); min.y = std::max(min.y, window.y);
+    max.x = std::min(max.x, window.x + size.x); max.y = std::min(max.y, window.y + size.y);
+    nextControls.push_back({min.x, min.y, max.x - min.x, max.y - min.y});
+}
 
 static std::string utf8(const fs::path& p) {
     auto s = p.u8string(); return {reinterpret_cast<const char*>(s.data()), s.size()};
@@ -437,10 +446,12 @@ static SDL_HitTestResult SDLCALL hitTest(SDL_Window* window, const SDL_Point* po
     int w, h; SDL_GetWindowSize(window, &w, &h);
     if (point->y < 3) return SDL_HITTEST_RESIZE_TOP;
     if (point->y >= h - 5) return SDL_HITTEST_RESIZE_BOTTOM;
-    if ((point->y >= 5 && point->y < u(26) && point->x < u(138)) ||
-        (point->y >= h - TransportHeight + 3 && point->y < h - TransportHeight + u(19) && point->x < u(100)))
-        return SDL_HITTEST_DRAGGABLE;
-    return SDL_HITTEST_NORMAL;
+    if (ImGui::GetCurrentContext() && (ImGui::IsAnyItemActive() ||
+        ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel))) return SDL_HITTEST_NORMAL;
+    for (const auto& rect : controls)
+        if (point->x >= rect.x && point->x < rect.x + rect.w && point->y >= rect.y && point->y < rect.y + rect.h)
+            return SDL_HITTEST_NORMAL;
+    return SDL_HITTEST_DRAGGABLE;
 }
 static void tooltip(const std::string& text) {
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", text.c_str());
@@ -627,6 +638,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             scan.update(library);
             if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) { SDL_Delay(80); continue; }
             ImGui_ImplSDLRenderer3_NewFrame(); ImGui_ImplSDL3_NewFrame(); ImGui::NewFrame();
+            nextControls.clear();
             int width, height; SDL_GetWindowSize(window, &width, &height);
             ImGui::SetNextWindowPos({0, 0}); ImGui::SetNextWindowSize({static_cast<float>(width), static_cast<float>(height)});
             ImGui::Begin("Player", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
@@ -642,29 +654,36 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                 else SDL_SetWindowSize(window, Width, expandedHeight);
                 expanded = !expanded;
             }
+            rememberControl();
             ImGui::SameLine();
             if (ImGui::SmallButton(pinLabel)) { onTop = !onTop; SDL_SetWindowAlwaysOnTop(window, onTop); }
+            rememberControl();
             tooltip("Keep above other windows"); ImGui::SameLine();
             if (ImGui::SmallButton("_")) SDL_MinimizeWindow(window);
+            rememberControl();
             tooltip("Minimize"); ImGui::SameLine();
             if (ImGui::SmallButton("X")) done = true;
+            rememberControl();
             tooltip("Close");
             const float transportY = static_cast<float>(height - TransportHeight);
             if (expanded && transportY > u(58)) {
                 ImGui::SetNextItemWidth(u(153));
                 const char* choices[] = {"Filename", "Directory groups", "File type groups"};
                 if (ImGui::Combo("##order", &library.order, choices, 3)) library.sort();
+                rememberControl();
                 ImGui::SameLine();
                 if (ImGui::Button("Config")) {
                     auto result = ShellExecuteW(hwnd, L"open", config.c_str(), nullptr, config.parent_path().c_str(), SW_SHOWNORMAL);
                     if (reinterpret_cast<INT_PTR>(result) <= 32) library.notice = "Could not open player.ini.";
                 }
+                rememberControl();
                 if (ImGui::BeginChild("Tracks", {0, std::max(1.0f, transportY - ImGui::GetCursorPosY() - u(4))}, ImGuiChildFlags_None)) {
                     const auto current = key(audio.current);
                     auto row = [&](size_t i) {
                         const auto& t = library.tracks[i];
                         ImGui::PushID(static_cast<int>(i));
                         if (ImGui::Selectable(t.name.c_str(), Library::matches(t, current))) audio.play(t.path);
+                        rememberControl();
                         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
                             std::string paths = utf8(t.path);
                             if (!t.copies.empty()) {
@@ -687,6 +706,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                             while (end < library.tracks.size() && (library.order == 1 ? library.tracks[end].directory : library.tracks[end].type) == group) ++end;
                             ImGui::PushID(static_cast<int>(begin));
                             const bool open = ImGui::CollapsingHeader((group + " (" + std::to_string(end - begin) + ")").c_str(), ImGuiTreeNodeFlags_DefaultOpen);
+                            rememberControl();
                             tooltip(group);
                             if (open) {
                                 ImGuiListClipper clipper; clipper.Begin(static_cast<int>(end - begin));
@@ -696,16 +716,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                         }
                     }
                     if (library.tracks.empty()) ImGui::TextWrapped("Add music roots in Config, then Refresh.");
+                    if (ImGui::GetScrollMaxY() > 0) {
+                        auto pos = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
+                        const auto bar = ImGui::GetStyle().ScrollbarSize;
+                        nextControls.push_back({pos.x + size.x - bar, pos.y, bar, size.y});
+                    }
                 }
                 ImGui::EndChild();
             }
-            // The angled strip is a native drag region. All playback controls stay below it.
             auto draw = ImGui::GetWindowDrawList();
             draw->AddRectFilled({0, transportY}, {static_cast<float>(width), static_cast<float>(height)}, IM_COL32(49, 53, 56, 255));
-            const ImVec2 strip[] = {{0, transportY}, {u(96), transportY}, {u(108), transportY + u(16)}, {0, transportY + u(16)}};
-            draw->AddConvexPolyFilled(strip, 4, IM_COL32(38, 102, 82, 255));
-            for (int x = 14; x < 73; x += 7) draw->AddLine({u(static_cast<float>(x)), transportY + u(6)}, {u(static_cast<float>(x + 3)), transportY + u(10)}, IM_COL32(64, 240, 184, 255));
-            ImGui::SetCursorPos({u(8), transportY + u(22)});
+            ImGui::SetCursorPos({u(8), transportY + u(4)});
             ImGui::TextUnformatted(audio.current.empty() ? "Choose a track from List" : utf8(audio.current.filename()).c_str());
             tooltip(utf8(audio.current));
             ImGui::SetNextItemWidth(u(332));
@@ -714,11 +735,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, {1, .84f, .55f, 1});
             ImGui::BeginDisabled(!audio.loaded || duration <= 0);
             if (ImGui::SliderFloat("##seek", &seek, 0, std::max(duration, .01f), "")) audio.seek(seek);
+            rememberControl();
             ImGui::EndDisabled();
             ImGui::PopStyleColor(2);
             ImGui::TextDisabled("%s / %s", timeText(audio.position).c_str(), timeText(audio.duration).c_str());
             ImGui::SameLine(u(248)); ImGui::TextDisabled("%s", audio.active ? (audio.paused ? "PAUSED" : "PLAYING") : "READY");
             if (ImGui::Button("|<", {u(32), u(24)})) advance(audio, library, -1);
+            rememberControl();
             tooltip("Previous"); ImGui::SameLine();
             ImGui::PushStyleColor(ImGuiCol_Button, {.96f, .74f, .39f, 1});
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {1, .84f, .55f, 1});
@@ -729,14 +752,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                 else if (!audio.current.empty()) audio.play(audio.current);
                 else advance(audio, library, 1);
             }
+            rememberControl();
             ImGui::PopStyleColor(4);
             ImGui::SameLine(); if (ImGui::Button(">|", {u(32), u(24)})) advance(audio, library, 1);
+            rememberControl();
             tooltip("Next"); ImGui::SameLine();
             ImGui::SetNextItemWidth(u(105)); float volume = static_cast<float>(audio.volume);
             if (ImGui::SliderFloat("##volume", &volume, 0, 100, "Vol %.0f")) audio.setVolume(volume);
+            rememberControl();
             ImGui::SameLine();
             ImGui::BeginDisabled(scan.running());
             if (ImGui::Button(scan.running() ? "Scanning" : "Refresh", {u(65), u(24)})) scan.begin(config, library.order);
+            rememberControl();
             ImGui::EndDisabled();
             tooltip("Reload config and rebuild the music list");
             ImGui::SetCursorPosY(static_cast<float>(height) - u(24));
@@ -744,7 +771,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             const auto message = !audio.error.empty() ? audio.error : (scan.running() ? scan.status() : library.notice);
             ImGui::TextUnformatted(message.c_str()); tooltip(message); ImGui::PopStyleColor();
             draw->AddRect({0, 0}, {static_cast<float>(width - 1), static_cast<float>(height - 1)}, IM_COL32(90, 99, 99, 255));
-            ImGui::End(); ImGui::Render();
+            ImGui::End(); controls.swap(nextControls); ImGui::Render();
             SDL_SetRenderDrawColor(renderer, 46, 49, 51, 255); SDL_RenderClear(renderer);
             ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer); SDL_RenderPresent(renderer);
             const auto elapsed = SDL_GetTicks() - start;
