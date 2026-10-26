@@ -1,5 +1,7 @@
 #pragma once
 #include "state_io.h"
+#include "paths.h"
+#include "paged_vector.h"
 #include <chrono>
 #include <cmath>
 #include <iomanip>
@@ -23,9 +25,10 @@ struct HistoryEntry {
     int64_t time = 0;
     std::filesystem::path path;
     double position = 0;
+    std::wstring search;
 };
 struct History {
-    std::vector<HistoryEntry> entries;
+    PagedVector<HistoryEntry> entries;
     std::vector<uint64_t> trail;
     size_t cursor = 0, limit = 10000;
     uint64_t nextId = 1, revision = 0;
@@ -61,7 +64,7 @@ struct History {
         if (nextId == UINT64_MAX) throw std::runtime_error("History visit IDs exhausted.");
         if (!trail.empty()) trail.resize(cursor + 1);
         const auto id = nextId++;
-        entries.push_back({id, std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count(), path, 0});
+        entries.push_back({id, std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count(), path, 0, searchText(utf8(path))});
         index.emplace(id, entries.size() - 1); trail.push_back(id); cursor = trail.size() - 1;
         if (entries.size() > limit) prune();
         ++revision; return id;
@@ -76,19 +79,29 @@ struct History {
         if (entry.position != value) { entry.position = value; ++revision; }
     }
     void cycleRepeat() { repeat = static_cast<RepeatMode>((static_cast<int>(repeat) + 1) % 3); ++revision; }
-    std::string serialize() const {
-        std::ostringstream out; out.imbue(std::locale::classic());
-        out << "PRAPPY_HISTORY 1\nNEXT_ID " << nextId << "\nREPEAT " << static_cast<int>(repeat) << '\n';
-        for (const auto& entry : entries) {
-            out << "ENTRY " << entry.id << ' ' << entry.time << ' ' << std::setprecision(17) << entry.position << ' '
-                << std::quoted(stateio::pathText(entry.path)) << '\n';
-            if (out.tellp() > static_cast<std::streamoff>(stateio::MaxFile)) throw std::runtime_error("History exceeds file size limit.");
+    struct Snapshot {
+        PagedVector<HistoryEntry> entries;
+        std::vector<uint64_t> trail;
+        uint64_t nextId, currentId;
+        RepeatMode repeat;
+        std::string serialize() const {
+            std::ostringstream out; out.imbue(std::locale::classic());
+            out << "PRAPPY_HISTORY 1\nNEXT_ID " << nextId << "\nREPEAT " << static_cast<int>(repeat) << '\n';
+            for (const auto& entry : entries) {
+                out << "ENTRY " << entry.id << ' ' << entry.time << ' ' << std::setprecision(17) << entry.position << ' '
+                    << std::quoted(stateio::pathText(entry.path)) << '\n';
+                if (out.tellp() > static_cast<std::streamoff>(stateio::MaxFile)) throw std::runtime_error("History exceeds file size limit.");
+            }
+            out << "TRAIL"; for (auto id : trail) out << ' ' << id;
+            out << "\nCURSOR " << currentId << '\n';
+            const auto result = out.str();
+            if (result.size() > stateio::MaxFile) throw std::runtime_error("History exceeds the file size limit.");
+            return result;
         }
-        out << "TRAIL"; for (auto id : trail) out << ' ' << id;
-        out << "\nCURSOR " << (current() ? current()->id : 0) << '\n';
-        const auto result = out.str();
-        if (result.size() > stateio::MaxFile) throw std::runtime_error("History exceeds the file size limit.");
-        return result;
+    };
+    Snapshot snapshot() const { return {entries, trail, nextId, current() ? current()->id : 0, repeat}; }
+    std::string serialize() const {
+        return snapshot().serialize();
     }
     static History parse(const std::string& bytes, size_t cap) {
         if (!cap || cap > stateio::MaxRecords) throw std::runtime_error("Invalid history limit.");
@@ -117,7 +130,8 @@ struct History {
                 if (!(record >> entry.id >> entry.time >> entry.position >> std::quoted(path)) || entry.id == 0 || entry.id <= previousId ||
                     entry.time < 0 || !std::isfinite(entry.position) || entry.position < 0 || entry.position > 1e12)
                     throw std::runtime_error("Invalid history entry.");
-                entry.path = stateio::pathFromText(path); previousId = entry.id; result.entries.push_back(std::move(entry));
+                entry.path = stateio::pathFromText(path); entry.search = searchText(path);
+                previousId = entry.id; result.entries.push_back(std::move(entry));
             } else if (kind == "NEXT_ID" && !nextSeen) {
                 if (!(record >> result.nextId) || result.nextId == 0 || result.nextId == UINT64_MAX) throw std::runtime_error("Invalid next visit ID.");
                 nextSeen = true;
@@ -166,7 +180,7 @@ struct History {
             if (!(record >> kind >> entry.id >> entry.time >> entry.position >> std::quoted(path)) || entry.id <= previous ||
                 entry.id >= UINT64_MAX - 1 || entry.time < 0 || !std::isfinite(entry.position) || entry.position < 0 || entry.position > 1e12) continue;
             record >> std::ws; if (!record.eof()) continue;
-            try { entry.path = stateio::pathFromText(path); } catch (const std::exception&) { continue; }
+            try { entry.path = stateio::pathFromText(path); entry.search = searchText(path); } catch (const std::exception&) { continue; }
             previous = entry.id; result.trail.push_back(entry.id); result.entries.push_back(std::move(entry));
         }
         if (result.entries.empty()) throw std::runtime_error("No valid history entries to recover.");
@@ -218,7 +232,7 @@ struct HistoryFile {
         if (!writable || writer.busy() || history.revision == saved || (!finish && !urgent && now < nextSave)) return;
         if (!finish && !writer.error.empty() && now < nextSave) return;
         try {
-            writer.start(path, history.serialize(), history.revision);
+            writer.startGenerated(path, [snapshot = history.snapshot()] { return snapshot.serialize(); }, history.revision);
             urgent = false;
             nextSave = now + std::chrono::seconds(15);
         } catch (const std::exception& e) { notice = e.what(); nextSave = now + std::chrono::seconds(5); }

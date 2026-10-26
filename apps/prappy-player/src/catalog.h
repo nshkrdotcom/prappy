@@ -1,8 +1,10 @@
 #pragma once
+#include "library.h"
+#include <cstring>
 // Included after the catalog model. This schema is independent of product builds.
 #include <bit>
 inline constexpr uint64_t CatalogVersion = 1;
-static std::string catalogBytes(const Library& library) {
+inline std::string catalogBytes(const Library& library) {
     stateio::BinaryWriter payload;
     payload.number(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count()));
     payload.number(library.roots.size()); for (const auto& root : library.roots) payload.text(utf8(root));
@@ -32,7 +34,7 @@ static std::string catalogBytes(const Library& library) {
     if (header.bytes.size() > stateio::MaxFile) throw std::runtime_error("Catalog exceeds file size limit.");
     return header.bytes;
 }
-static Library parseCatalog(const std::string& bytes, const Config& config) {
+inline Library parseCatalog(const std::string& bytes, const Config& config) {
     if (bytes.size() < 32 || bytes.size() > stateio::MaxFile || bytes.substr(0, 8) != "PRAPCAT\n") throw std::runtime_error("Invalid catalog header.");
     stateio::BinaryReader header{std::string_view(bytes).substr(8, 24)};
     if (header.number() != CatalogVersion) throw std::runtime_error("Catalog format changed; rebuilding.");
@@ -86,12 +88,12 @@ static Library parseCatalog(const std::string& bytes, const Config& config) {
         library.tracks.push_back(std::move(track));
     }
     if (assigned.size() != count) throw std::runtime_error("Incomplete catalog tracks.");
-    input.finish(); library.sort();
+    input.finish(); library.rebuildSearch(); library.sort();
     library.notice = "Cached catalog: " + std::to_string(library.tracks.size()) + " tracks";
     return library;
 }
-static void saveCatalog(const fs::path& file, const Library& library) { stateio::write(file, catalogBytes(library), library.catalogBackup); }
-static bool loadCatalog(const fs::path& file, const Config& config, Library& library) {
+inline void saveCatalog(const fs::path& file, const Library& library) { stateio::write(file, catalogBytes(library), library.catalogBackup); }
+inline bool loadCatalog(const fs::path& file, const Config& config, Library& library) {
     std::error_code ec;
     if (!fs::exists(file, ec) && !fs::exists(file.wstring() + L".bak", ec)) return false;
     std::string failure;

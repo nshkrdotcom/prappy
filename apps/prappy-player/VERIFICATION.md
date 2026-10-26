@@ -260,3 +260,40 @@ Dragging between physical monitors with different DPIs and a manual visual
 taskbar/Alt-Tab inspection were not performed. Native styles, icons and constraints
 were checked through Win32 APIs. The old visualizer's source was moved intact;
 its shared-tooling resolution and doctor passed, but it was not rebuilt here.
+
+## Module refactor and audio analysis — 2026-10-26
+
+`pwsh scripts/verify-health.ps1` passed for the completed refactor and analysis
+implementation. Release, Release-Analyze, Debug and Debug-Asan compiled with
+warnings treated as errors; MSVC static analysis passed. Release, Debug and
+Debug-Asan each passed two playback/dedup/search regression runs (72 lifecycle,
+refresh and scan-cancellation cycles across the matrix), state/recovery tests,
+acknowledged UI tests and native window checks. All five Debug CRT reports
+reported no leaks; ASan reported no memory errors. The mpv DLL retains the
+separate instrumentation limitations described in the README.
+
+New checks cover immutable history snapshots during position changes, append
+and pruning; decoded audio format details; a stereo 1 kHz reference signal,
+6.0206 dB gain difference, loudness gating, silence/short signals, nonfinite
+samples, peak extrema and pyramid tails. Cache tests cover source path/size/time
+invalidation, checksum damage, truncation, unknown versions, inconsistent peak
+levels, fresh analysis, reuse, forced recomputation and corrupt-cache rebuild.
+Decoder tests cover missing/invalid media, cancellation before and during
+decoding, and worker shutdown. State test directories include a monotonic-time
+suffix to avoid stale fixtures when Windows reuses process IDs.
+
+The UI test restores a history path that is a hidden identical copy, observes
+its codec/rate/channel/loudness tooltip, and checks that two independent analysis
+cache files are written. It establishes ImGui focus before the initial text
+hover. Existing repeat, history branching, list-scroll, geometry, native input
+and clean-close checks continue to pass. The format tooltip screenshot was
+visually inspected; waveform/histogram rendering remains deferred.
+
+Additional existing representative fixtures passed playback checks for WAV,
+FLAC, MP3, Opus, M4A and WavPack. A separate production-worker run generated
+valid analysis caches, finite loudness and nine peak levels for all six. WAV,
+FLAC, Opus and WavPack measured 3.000 seconds / -21.76 LUFS; MP3 measured
+3.000 seconds / -22.20 LUFS; M4A measured 2.977 seconds / -21.76 LUFS. These
+values describe the decoded 48 kHz stereo render, not native multichannel
+loudness or true peak. Logs are in `build/final-health.log`,
+`build/formats-selftest.log` and `build/formats-analysis.log`.

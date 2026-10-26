@@ -1,6 +1,13 @@
-#pragma once
+#include "tests.h"
+#include "analysis_tests.h"
+#include "playback.h"
+#include "scan.h"
+#include "status.h"
+#include <SDL3/SDL.h>
+#include <cmath>
+#include <fstream>
 // Integration checks run only in explicit --state-test fixture directories.
-static int stateTests(const fs::path& configPath, const fs::path& logPath) {
+int stateTests(const fs::path& configPath, const fs::path& logPath) {
     std::ofstream log(logPath);
     const auto require = [](bool value, const char* message) { if (!value) throw std::runtime_error(message); };
     const auto rejects = [&](const auto& operation, const char* message) {
@@ -11,7 +18,7 @@ static int stateTests(const fs::path& configPath, const fs::path& logPath) {
         require(statusText("", "Checking duplicates: 4 / 10") == "Checking duplicates: 4 / 10", "Empty status adds a leading separator.");
         require(statusText("10 tracks | 2 identical copies hidden", "Checking duplicates: 4 / 10") ==
             "10 tracks \xc2\xb7 2 identical copies hidden \xc2\xb7 Checking duplicates: 4 / 10", "Status sections are not joined with middle dots.");
-        const auto root = logPath.parent_path() / ("state-test-" + std::to_string(GetCurrentProcessId()));
+        const auto root = logPath.parent_path() / ("state-test-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
         fs::create_directories(root);
         const auto a = fs::absolute(root / L"space Beyonc\u00e9" / L"a.wav"), b = fs::absolute(root / "b.wav"), c = fs::absolute(root / "c.wav");
         History history;
@@ -33,6 +40,11 @@ static int stateTests(const fs::path& configPath, const fs::path& logPath) {
         for (int i = 0; i < 10005; ++i) large.add(a);
         require(large.entries.size() == 10000 && large.trail.size() == 10000 && large.entries.front().id == 6, "Default retention limit failed.");
         require(History::parse(large.serialize(), 10000).entries.size() == 10000, "Large history restore failed.");
+        const auto snapshot = large.snapshot();
+        large.position(2); large.add(b); large.visit(0); large.setLimit(1);
+        const auto unchangedSnapshot = History::parse(snapshot.serialize(), 10000);
+        require(unchangedSnapshot.entries.size() == 10000 && unchangedSnapshot.current()->position == 0 &&
+            unchangedSnapshot.entries.front().id == 6, "Background snapshot changed during append/position/pruning.");
         rejects([&] { History::parse("PRAPPY_HISTORY 1\nENTRY 1 1 nan \"C:/bad.wav\"\n", 10000); }, "Malformed history accepted.");
         rejects([&] { History::parse(history.serialize().substr(0, 90), 10000); }, "Truncated history accepted.");
         rejects([&] { stateio::pathFromText(std::string("C:/bad\0path", 11)); }, "Embedded NUL path accepted.");
@@ -131,6 +143,9 @@ static int stateTests(const fs::path& configPath, const fs::path& logPath) {
         };
         const auto play = [&](const fs::path& path) { require(player.request(path), "Playback request failed."); wait(player, audio); };
         play(fixture.tracks[0].path); const auto visitA = visits.current()->id;
+        require(audio.info.codec == "pcm_s16le" && audio.info.sampleRate == 44100 && audio.info.channels == 1 &&
+            !audio.info.sampleFormat.empty() && audio.info.describe().find("44100 Hz") != std::string::npos,
+            "Source audio format details are missing or incorrect.");
         play(fixture.tracks[1].path); const auto visitB = visits.current()->id;
         play(fixture.tracks[0].path); const auto visitC = visits.current()->id;
         require(player.navigate(-1), "Back unavailable."); wait(player, audio);
@@ -204,7 +219,152 @@ static int stateTests(const fs::path& configPath, const fs::path& logPath) {
         Library empty; History noHistory; HistoryFile noFile(root / "empty.txt"); Playback noPlayer(oneAudio, empty, noHistory, noFile);
         require(!noPlayer.navigate(1), "Empty library should not start/retry playback.");
         restored.finish(); onePlayer.finish(); player.finish();
-        log << "PASS repeat: One preserves visits/manual navigation; All wraps; Off stops; one-track and empty libraries\nALL PASS\n";
+        log << "PASS repeat: One preserves visits/manual navigation; All wraps; Off stops; one-track and empty libraries\n";
+        analysisTests(root, fixture, log);
+        log << "ALL PASS\n";
+        return 0;
+    } catch (const std::exception& e) { log << "FAIL " << e.what() << '\n'; return 1; }
+}
+int selfTest(const fs::path& config, const fs::path& logFile) {
+    std::ofstream log(logFile);
+    try {
+        Library searchLibrary;
+        Track lead; lead.label = "library\\Jazz\\Night Bus.flac"; lead.name = "Night Bus.flac";
+        lead.directory = "Jazz"; lead.type = "flac"; lead.id = L"night";
+        lead.copies = {L"C:/scraper/library/Alternate Take.opus"};
+        Track other; other.label = "library\\Jazz\\Morning.flac"; other.name = "Morning.flac";
+        other.directory = "Jazz"; other.type = "flac"; other.id = L"morning";
+        Track unicode; unicode.label = "library\\Beyoncé\\Live.m4a"; unicode.name = "Live.m4a";
+        unicode.directory = "Beyoncé"; unicode.type = "m4a"; unicode.id = L"live";
+        searchLibrary.tracks = {lead, other, unicode};
+        searchLibrary.rebuildSearch();
+        for (int order = 0; order < 3; ++order) {
+            searchLibrary.order = order; searchLibrary.sort();
+            for (const char* query : {"NIGHT jazz", "jazz/night", "alternate OPUS"}) {
+                const auto matches = searchLibrary.filter(query);
+                if (matches.size() != 1 || searchLibrary.tracks[matches[0]].id != L"night")
+                    throw std::runtime_error("Search lost track identity or failed word/path/alias matching.");
+            }
+        }
+        if (searchLibrary.filter("BEYONCÉ").size() != 1 || searchLibrary.filter("  ").size() != 3 ||
+            !searchLibrary.filter("no-such-track").empty() || searchLibrary.tracks.size() != 3)
+            throw std::runtime_error("Search failed Unicode, clear or no-match behavior.");
+        log << "PASS search: words / case / Unicode / paths / copies / sorting / clear / no matches\n";
+        Library library;
+        if (!library.refresh(config) || library.tracks.empty()) throw std::runtime_error(library.notice);
+        if (library.tracks.size() < 2) throw std::runtime_error("Self-test needs at least two tracks.");
+        log << "Scan: " << library.notice << '\n';
+        Audio audio; audio.open(true);
+        std::set<std::string> formats;
+        const auto testTracks = library.tracks;
+        for (auto track : testTracks) {
+            if (!formats.insert(track.type).second) continue;
+            log << "Testing " << track.label << std::endl;
+            if (!audio.play(track.path)) throw std::runtime_error(audio.error);
+            auto waitLoaded = [&] {
+                for (int i = 0; i < 500; ++i) { audio.poll(); if (audio.loaded) return; if (!audio.error.empty()) throw std::runtime_error(audio.error); SDL_Delay(10); }
+                throw std::runtime_error("Playback load timeout: " + track.name);
+            };
+            waitLoaded(); SDL_Delay(120); audio.poll();
+            if (audio.duration <= 0) throw std::runtime_error("No duration: " + track.name);
+            audio.pause(); audio.poll();
+            int paused = 0; audio.get_property(audio.handle, "pause", MPV_FORMAT_FLAG, &paused);
+            if (!paused) throw std::runtime_error("Pause failed.");
+            double seek = std::min(1.0, audio.duration / 2); audio.seek(seek);
+            for (int i = 0; i < 100; ++i) {
+                SDL_Delay(10); audio.poll();
+                if (std::abs(audio.position - seek) <= .25) break;
+            }
+            // mpv reports audible position, including the paused audio output buffer.
+            if (std::abs(audio.position - seek) > .25) throw std::runtime_error("Seek failed: wanted " + std::to_string(seek) + ", got " + std::to_string(audio.position) + ": " + audio.error);
+            audio.setVolume(37); double volume = 0; audio.get_property(audio.handle, "volume", MPV_FORMAT_DOUBLE, &volume);
+            if (std::abs(volume - 37) > .1) throw std::runtime_error("Volume failed.");
+            auto id = key(audio.current);
+            for (int order = 0; order < 3; ++order) { library.order = order; library.sort(); if (key(audio.current) != id) throw std::runtime_error("Sort changed current track."); }
+            if (!library.refresh(config) || key(audio.current) != id) throw std::runtime_error("Refresh changed current track.");
+            audio.pause(); log << "PASS " << track.type << ": decode / duration / pause / seek / volume / sort / refresh\n";
+        }
+        History navigation; HistoryFile navigationFile(config.parent_path() / "selftest-history.txt");
+        Playback playback(audio, library, navigation, navigationFile);
+        const auto waitPlayback = [&] {
+            for (int i = 0; i < 1000; ++i) {
+                playback.tick();
+                if (audio.loaded && !playback.pending) return;
+                SDL_Delay(5);
+            }
+            throw std::runtime_error("Navigation timeout: " + playback.notice);
+        };
+        if (!playback.request(audio.current)) throw std::runtime_error("Cannot initialize navigation.");
+        waitPlayback();
+        for (const auto& track : testTracks) {
+            if (track.copies.empty()) continue;
+            const auto copy = track.copies.front();
+            playback.request(copy); waitPlayback();
+            if (!library.refresh(config)) throw std::runtime_error("Alias refresh failed.");
+            const auto id = key(copy);
+            auto current = std::find_if(library.tracks.begin(), library.tracks.end(), [&](auto& t) { return Library::matches(t, id); });
+            if (current == library.tracks.end()) throw std::runtime_error("Refresh lost alternate-copy identity.");
+            auto nextIndex = (static_cast<size_t>(current - library.tracks.begin()) + 1) % library.tracks.size();
+            if (!playback.navigate(1) || !Library::matches(library.tracks[nextIndex], key(audio.current)))
+                throw std::runtime_error("Next from alternate copy failed.");
+            waitPlayback();
+            log << "PASS alternate-copy identity across refresh and next\n";
+            break;
+        }
+        if (!playback.navigate(1)) throw std::runtime_error("Next failed.");
+        waitPlayback();
+        auto next = key(audio.current);
+        if (!playback.navigate(-1) || key(audio.current) == next) throw std::runtime_error("Previous failed.");
+        waitPlayback();
+        log << "PASS next / previous\n";
+        library.order = 0; library.sort();
+        playback.request(library.tracks.front().path); waitPlayback();
+        audio.seek(std::max(0.0, audio.duration - .15));
+        const auto beforeEof = audio.serial;
+        for (int i = 0; i < 500 && audio.serial == beforeEof; ++i) { playback.tick(); SDL_Delay(10); }
+        if (audio.serial == beforeEof || key(audio.current) != library.tracks[1].id)
+            throw std::runtime_error("Automatic progression failed.");
+        waitPlayback();
+        log << "PASS end-of-track progression\n";
+        audio.play(config.parent_path() / L"missing-audio.flac");
+        for (int i = 0; i < 300 && audio.error.empty(); ++i) { audio.poll(); SDL_Delay(10); }
+        if (audio.error.empty()) throw std::runtime_error("Playback error was not surfaced.");
+        log << "PASS visible playback error state: " << audio.error << '\n';
+        // Check a real Windows output without producing a test tone in the room.
+        Audio output; output.open(); output.setVolume(0); output.play(testTracks.front().path);
+        std::string outputDriver;
+        for (int i = 0; i < 300; ++i) {
+            output.poll();
+            char* driver = nullptr;
+            if (output.get_property(output.handle, "current-ao", MPV_FORMAT_STRING, &driver) >= 0 && driver) {
+                outputDriver = driver; output.free(driver);
+            }
+            if (!outputDriver.empty()) break;
+            if (!output.error.empty()) throw std::runtime_error(output.error);
+            SDL_Delay(10);
+        }
+        if (outputDriver.empty() || outputDriver == "null") throw std::runtime_error("Windows audio output did not initialize.");
+        log << "PASS Windows audio output initialized (muted): " << outputDriver << '\n';
+        const auto id = key(audio.current);
+        const auto count = library.tracks.size();
+        if (library.refresh(logFile.parent_path() / "nonexistent-player-config.ini") || library.tracks.size() != count || key(audio.current) != id)
+            throw std::runtime_error("Bad config did not preserve playback/library.");
+        log << "PASS missing config preserves library and playback\n";
+        for (int cycle = 0; cycle < 12; ++cycle) {
+            Audio repeated; repeated.open(true);
+            if (!repeated.play(testTracks[static_cast<size_t>(cycle) % testTracks.size()].path))
+                throw std::runtime_error(repeated.error);
+            for (int i = 0; i < 300 && !repeated.loaded; ++i) {
+                repeated.poll();
+                if (!repeated.error.empty()) throw std::runtime_error(repeated.error);
+                SDL_Delay(10);
+            }
+            if (!repeated.loaded) throw std::runtime_error("Repeated playback load timeout.");
+            if (!library.refresh(config)) throw std::runtime_error("Repeated refresh failed.");
+            Scan cancelled; cancelled.begin(config, cycle % 3);
+            // Destruction requests cancellation and joins even while a scan is active.
+        }
+        log << "PASS 12 playback create/load/destroy, refresh and scan cancellation cycles\nALL PASS\n";
         return 0;
     } catch (const std::exception& e) { log << "FAIL " << e.what() << '\n'; return 1; }
 }

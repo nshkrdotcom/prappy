@@ -7,6 +7,8 @@ $stateDirectory = Join-Path $app ("build/feature-ui/$BuildVariant-" + [Guid]::Ne
 New-Item -ItemType Directory -Force "$stateDirectory/media" | Out-Null
 Copy-Item -LiteralPath "$fixture/a/same.wav" -Destination "$stateDirectory/media/alpha.wav"
 Copy-Item -LiteralPath "$fixture/b/same.wav" -Destination "$stateDirectory/media/beta.wav"
+# Force the restored beta path to be a hidden duplicate, exercising canonical analysis identity.
+Copy-Item -LiteralPath "$fixture/b/same.wav" -Destination "$stateDirectory/media/a-beta-copy.wav"
 @("directory=$stateDirectory/media",'extensions=wav','history_limit=10000') | Set-Content "$stateDirectory/player.ini" -Encoding utf8
 $alpha = ('"{0}"' -f ("$stateDirectory/media/alpha.wav".Replace('\','\\')))
 $beta = ('"{0}"' -f ("$stateDirectory/media/beta.wav".Replace('\','\\')))
@@ -160,6 +162,14 @@ try {
     Require ($hwnd -ne [IntPtr]::Zero) 'Feature test window opened'
     [FeatureNative]::SetWindowPos($hwnd,[IntPtr]::Zero,120,120,0,0,0x45) | Out-Null
     $null=Wait-Ui {param($s) $s.Count -eq 2 -and !$s.Pending -and $s.Paused} 'session restored paused'
+    # Establish ImGui window focus before testing a non-interactive text hover.
+    Send-UiInput 'MOVE 250 220'
+    Send-UiInput 'DOWN'
+    Send-UiInput 'UP'
+    $info=(Read-Ui).Controls['audio-info']
+    Send-UiInput ('MOVE {0} {1}' -f $info.X.ToString([Globalization.CultureInfo]::InvariantCulture),$info.Y.ToString([Globalization.CultureInfo]::InvariantCulture))
+    $null=Wait-Ui {param($s) $s.Tooltip -match 'pcm_s16le.*44100 Hz.*1 ch.*Stereo analysis:.*LUFS'} 'audio format and measured loudness tooltip'
+    Require ((Get-ChildItem -LiteralPath "$stateDirectory/player-analysis" -Filter '*.bin').Count -eq 2) 'analysis writes its independent per-track cache'
     Capture 'startup'
     $layout=Read-Ui
     Check-HeaderText 'startup' $layout

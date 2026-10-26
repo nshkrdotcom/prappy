@@ -119,10 +119,10 @@ struct Writer {
         if (error.empty()) backup = true;
         return true;
     }
-    void start(const fs::path& path, std::string bytes, uint64_t version) {
+    template<class Generate> void startGenerated(const fs::path& path, Generate generate, uint64_t version) {
         revision = version;
-        job = std::async(std::launch::async, [path, bytes = std::move(bytes), keep = backup] {
-            try { write(path, bytes, keep); return std::string{}; }
+        job = std::async(std::launch::async, [path, generate = std::move(generate), keep = backup] {
+            try { write(path, generate(), keep); return std::string{}; }
             catch (const std::exception& e) { return std::string(e.what()); }
         });
     }

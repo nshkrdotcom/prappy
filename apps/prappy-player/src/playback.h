@@ -1,4 +1,7 @@
 #pragma once
+#include "audio.h"
+#include "library.h"
+#include "history.h"
 // Playback intents are committed by matching successful mpv playlist entry IDs.
 struct Playback {
     enum class Kind { NewVisit, Traverse, Restore, Restart, Rollback };

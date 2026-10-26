@@ -201,7 +201,10 @@ operate the scraper, change its recordings or interfere with collection jobs.
   If the playing file disappears from the list, it can finish; Next starts at
   the first remaining track.
 - **Refresh** checks roots/settings again; **Shift+Refresh** also revalidates
-  duplicate contents. Hover over the status for full errors.
+  duplicate contents and rebuilds audio analysis. Hover over the status for full errors.
+- Hover the current track name for source codec, sample rate, channel layout,
+  decoder sample format, available source bitrate, and measured duration/loudness.
+  Decoder sample format is not a claim about the source's original bit depth.
 - Drag any unused space, including the title and blank list/transport areas.
   Buttons, sliders, song rows, group headers and scrollbars retain normal input.
   Resize any native window edge or corner.
@@ -212,6 +215,61 @@ operate the scraper, change its recordings or interfere with collection jobs.
 The content uses physical pixels; Windows sizes the native frame for each monitor's
 DPI. The compact layout was enlarged
 from the initial 350px / 12px design at the user's request.
+
+## Audio analysis
+
+After a successful catalog scan, one background worker analyzes online tracks,
+prioritizing the current track when it is still queued. It uses the bundled
+libmpv decoder and a bounded Windows pipe, without temporary PCM files or another
+installed tool. Each decode produces frame-count duration, stereo min/max peaks
+at 1,024-frame resolution with successively halved levels, and gated integrated
+loudness. There is no waveform or histogram display yet.
+
+Analysis uses a 48 kHz floating-point **stereo render** at unity gain with
+ReplayGain disabled. Its LUFS value describes that render, including mono
+duplication or surround downmixing; it is not a native multichannel measurement
+or a true-peak measurement. K-weighting and the 400 ms/100 ms absolute/relative
+gates follow [ITU-R BS.1770-5, Annex 1](https://www.itu.int/rec/R-REC-BS.1770-5-202311-I/).
+Silence and audio shorter than 400 ms have no integrated loudness value.
+Analysis does not adjust playback gain.
+
+Disposable, checksummed per-track files live in `player-analysis/` beside the
+executable, separately from the catalog and history. Reuse requires the same
+path, byte length, modification time and analysis schema. Invalid or incompatible
+files are rebuilt directly; there are no cache migration paths. Shift+Refresh
+also handles edits that preserve size and modification time. Deleting this
+directory safely resets analysis. It may be omitted when relocating the player;
+unused entries are not automatically pruned.
+
+The worker skips offline roots, rejects sources that change during processing,
+and reports analysis failures in the current track tooltip without interrupting
+playback. Closing cancels pending pipe I/O and decoding; refreshing cancels work
+for a removed or changed source. Each track is bounded to eight hours, and a
+decoder that makes no progress for 30 seconds is stopped. Scanning, analysis and
+history saving own separate workers; their results are collected by the UI.
+
+## Code organization and design boundaries
+
+- `main.cpp`: Windows entry point and Debug leak reporting.
+- `player_ui.cpp`, `ui_probe.h`: window, controls and acknowledged test input.
+- `paths.h`, `config.h`: path handling, search normalization and settings.
+- `library.h`, `catalog.h`, `scan.h`: library model, deduplication, cache and scan lifecycle.
+- `audio.h`, `playback.h`: decoder access and acknowledged playback/history transitions.
+- `history.h`, `paged_vector.h`, `state_io.h`: persistence and immutable paged
+  snapshots. Serialization and file writes run off the UI thread. Snapshotting
+  shares record pages and copies the numeric navigation trail; subsequent record
+  changes detach only their affected page. Library and history searches reuse
+  normalized text; sorting reuses cached names.
+- `analysis.h`, `analysis.cpp`: streaming analysis, DSP, cache and cancellation.
+- `tests.cpp`, `analysis_tests.h`: playback/state and analysis regression checks.
+
+The navigation trail records successful visits; it is not an editable upcoming
+queue. A future “play next” feature needs explicit ordering, consumption, failure
+and Back/Forward rules before implementation. A future A/B comparison can switch
+sources on one decoder while restoring the playhead; two concurrent decoders
+are an optional latency/synchronization tradeoff. Loudness matching would use
+measured gain separately from the comparison transport. Neither feature is
+implemented in this change.
 
 ## Verification
 
