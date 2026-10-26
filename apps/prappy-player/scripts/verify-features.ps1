@@ -17,6 +17,8 @@ using System;
 using System.Runtime.InteropServices;
 public static class FeatureNative {
  [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left,Top,Right,Bottom; }
+ [StructLayout(LayoutKind.Sequential)] public struct Point { public int X,Y; }
+ [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h,ref Point p);
  [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr value);
  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out Rect r);
  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h,IntPtr after,int x,int y,int w,int height,uint flags);
@@ -105,6 +107,43 @@ function Capture([string]$name) {
     finally { $graphics.ReleaseHdc($dc) }
     try { $bitmap.Save("$stateDirectory/$name.png") } finally { $graphics.Dispose(); $bitmap.Dispose() }
 }
+function Check-HeaderText([string]$name,$layout) {
+    $window=[FeatureNative+Rect]::new(); $origin=[FeatureNative+Point]::new()
+    [FeatureNative]::GetWindowRect($hwnd,[ref]$window) | Out-Null
+    [FeatureNative]::ClientToScreen($hwnd,[ref]$origin) | Out-Null
+    $bitmap=[Drawing.Bitmap]::new("$stateDirectory/$name.png")
+    try {
+        $bounds=@{}
+        foreach ($controlName in @('history','list')) {
+            $control=$layout.Controls[$controlName]
+            $left=[int]$control.Left+$origin.X-$window.Left
+            $right=[int]$control.Right+$origin.X-$window.Left
+            $top=[int]$control.Top+$origin.Y-$window.Top
+            $bottom=[int]$control.Bottom+$origin.Y-$window.Top
+            $firstInk=$right
+            for ($x=$left+3; $x -lt $right-3; $x++) {
+                for ($y=$top+2; $y -lt $bottom-2; $y++) {
+                    $pixel=$bitmap.GetPixel($x,$y)
+                    if ($pixel.R -gt 140 -and $pixel.G -gt 140 -and $pixel.B -gt 140) { $firstInk=$x; break }
+                }
+                if ($firstInk -ne $right) { break }
+            }
+            Require ($firstInk -lt $right) "$controlName label is visible in screenshot"
+            $inkTop=$bottom; $inkBottom=$top
+            # Compare the initial capitals H and L, excluding History's y descender.
+            for ($x=$firstInk; $x -lt $firstInk+3; $x++) {
+                for ($y=$top+2; $y -lt $bottom-2; $y++) {
+                    $pixel=$bitmap.GetPixel($x,$y)
+                    if ($pixel.R -gt 140 -and $pixel.G -gt 140 -and $pixel.B -gt 140) {
+                        $inkTop=[Math]::Min($inkTop,$y); $inkBottom=[Math]::Max($inkBottom,$y)
+                    }
+                }
+            }
+            $bounds[$controlName]=@($inkTop,$inkBottom)
+        }
+        Require ($bounds.history[0] -eq $bounds.list[0] -and $bounds.history[1] -eq $bounds.list[1]) "History/List rendered capitals share top and baseline ($name): H=$($bounds.history -join ',') L=$($bounds.list -join ',')"
+    } finally { $bitmap.Dispose() }
+}
 try {
     $timer=[Diagnostics.Stopwatch]::StartNew()
     while ($timer.Elapsed.TotalSeconds -lt 10) {
@@ -118,6 +157,7 @@ try {
     $null=Wait-Ui {param($s) $s.Count -eq 2 -and !$s.Pending -and $s.Paused} 'session restored paused'
     Capture 'startup'
     $layout=Read-Ui
+    Check-HeaderText 'startup' $layout
     Require ($layout.Controls.ContainsKey('volume-value') -and $layout.Controls.ContainsKey('volume')) 'Volume value is outside the interactive slider'
     Require ($layout.Controls['volume-value'].Right -lt $layout.Controls['volume'].Left) 'Volume value cannot be covered by the slider thumb'
     $header=$layout.Controls['history']; $list=$layout.Controls['list']
@@ -148,12 +188,14 @@ try {
     Require ($wide.Controls['history'].Top -eq $wide.Controls['list'].Top -and $wide.Controls['history'].Bottom -eq $wide.Controls['list'].Bottom) 'Wide header controls remain aligned'
     Require ($wide.Controls['volume'].Right -lt $wide.Controls['repeat'].Left -and $wide.Controls['refresh'].Right -le 900) 'Wide transport remains spaced within the window'
     Capture 'wide-layout'
+    Check-HeaderText 'wide-layout' $wide
     [FeatureNative]::SetWindowPos($hwnd,[IntPtr]::Zero,0,0,(500+$borderWidth),(250+$borderHeight),0x6) | Out-Null
     $null=Wait-Ui {param($s) $s.Width -eq 500} 'compact width restored'
     Click 'history'
     $null=Wait-Ui {param($s) $s.History -and $s.Height -ge 600 -and $s.Visible -eq 2} 'History expanded with restored visits'
     Write-Host 'PASS History opens directly from compact controls'
     Capture 'history-restored'
+    Check-HeaderText 'history-restored' (Read-Ui)
     foreach ($mode in @(1,2,0)) {
         Click 'repeat'
         Wait-State "(?m)^REPEAT $mode\r?$"

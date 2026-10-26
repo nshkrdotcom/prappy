@@ -1,5 +1,14 @@
 # Windows verification
 
+## Shared text baseline, 2026-10-26
+
+Centering each word's full visible bounds caused History's descender to shift
+its capitals two pixels above List. Labels now share the font's cap-height
+baseline while retaining horizontal ink centering. A screenshot regression
+checks actual pixels of the initial H and L, independently of button rectangles.
+Before the fix it measured H=59..67 and L=61..69; afterward both are 61..69.
+The check covers compact, expanded and 900-pixel-wide layouts.
+
 ## Layout polish, 2026-10-26
 
 History and List now share identical 74-by-26-pixel bounds. List uses a drawn

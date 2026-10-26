@@ -685,7 +685,8 @@ static void tooltip(const std::string& text) {
     }
 }
 static void centeredLabel(const char* label, ImVec2 min, ImVec2 max, ImU32 color) {
-    // Measure visible ink; the font's line box includes uneven empty space.
+    // Center horizontal ink, but share one cap-height baseline across labels.
+    // Centering each word vertically moves descenders (History's y) off baseline.
     const char* end = label;
     float pen = 0;
     ImVec2 inkMin{ImGui::GetFontSize(), ImGui::GetFontSize()}, inkMax{};
@@ -702,8 +703,9 @@ static void centeredLabel(const char* label, ImVec2 min, ImVec2 max, ImU32 color
         pen += glyph->AdvanceX;
     }
     if (visible) {
+        const auto capital = font->FindGlyph('H');
         const ImVec2 pos{std::round((min.x + max.x - inkMin.x - inkMax.x) * .5f),
-                         std::round((min.y + max.y - inkMin.y - inkMax.y) * .5f)};
+                         std::round((min.y + max.y - capital->Y0 - capital->Y1) * .5f)};
         auto draw = ImGui::GetWindowDrawList();
         draw->PushClipRect(min, max, true);
         draw->AddText(pos, color, label, end);
