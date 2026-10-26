@@ -636,10 +636,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         scan.begin(config, library.order);
         bool done = false, expanded = false;
         int expandedHeight = 710;
+        const auto togglePlayback = [&] {
+            if (audio.active) audio.pause();
+            else if (!audio.current.empty()) audio.play(audio.current);
+            else advance(audio, library, 1);
+        };
         while (!done) {
             const auto start = SDL_GetTicks();
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
+                if ((event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) &&
+                    event.key.key == SDLK_SPACE && !io.WantTextInput &&
+                    !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
+                    if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) togglePlayback();
+                    continue;
+                }
                 ImGui_ImplSDL3_ProcessEvent(&event);
                 if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) done = true;
             }
@@ -754,11 +765,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {1, .84f, .55f, 1});
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, {.84f, .59f, .24f, 1});
             ImGui::PushStyleColor(ImGuiCol_Text, {.12f, .15f, .16f, 1});
-            if (ImGui::Button(audio.active && !audio.paused ? "Pause" : "Play", {u(56), u(24)})) {
-                if (audio.active) audio.pause();
-                else if (!audio.current.empty()) audio.play(audio.current);
-                else advance(audio, library, 1);
-            }
+            if (ImGui::Button(audio.active && !audio.paused ? "Pause" : "Play", {u(56), u(24)})) togglePlayback();
             rememberControl();
             ImGui::PopStyleColor(4);
             ImGui::SameLine(); if (ImGui::Button(">|", {u(32), u(24)})) advance(audio, library, 1);

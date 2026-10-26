@@ -7,6 +7,17 @@ the list collapsed; playback controls always stay at the bottom.
 The UI uses SDL's software renderer with a native Windows framebuffer, avoiding
 a Direct3D/OpenGL game graphics device that can trigger GPU overlay notices.
 
+## Screenshots
+
+Keep the list tucked away for playback in a small window.
+
+![Compact Prappy Player with playback controls](assets/player-compact.jpg)
+
+Widen the window and open the list to browse tracks by their relative paths.
+The playback controls stay at the bottom.
+
+![Prappy Player showing ten tracks with readable library-relative paths](assets/player-library.jpg)
+
 ## Build and run
 
 PowerShell 7, MSVC 2022 C++ Build Tools / Windows SDK, CMake 3.25+ and Ninja.
@@ -87,6 +98,7 @@ operate the scraper, change its recordings or interfere with collection jobs.
   the prefix. Hover for the same path and any identical-copy locations;
   scroll horizontally to read longer rows.
 - Previous, Play/Pause, Next, seek and volume are always at the bottom.
+  **Space** toggles play/pause when the player has focus.
   Automatic progression stops after the final track; explicit Next wraps.
   Playback errors stop progression and appear in the status line.
 - Sorting changes next/previous order without changing the playing track.

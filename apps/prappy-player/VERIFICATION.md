@@ -38,6 +38,9 @@ Passed:
 - Missing/unsupported playback file yields an error instead of a crash.
 - Missing config retains the previous in-memory library and playback identity.
 - Actual Windows WASAPI audio output initialized successfully with volume muted.
+- Space was checked in the live player: one press resumed playback and the next
+  paused it. The shortcut and transport button use the same playback action;
+  held-key repeats do not toggle it repeatedly.
 - Launch from outside the source/output working directory.
 - Updated window checks at 144 DPI (150% scale): minimum content width is 500
   physical pixels; width and height resize freely, native maximize fills the
