@@ -97,6 +97,11 @@ operate the scraper, change its recordings or interfere with collection jobs.
   `library\beat-suite\render\mix.flac`. Other roots use their folder name as
   the prefix. Hover for the same path and any identical-copy locations;
   scroll horizontally to read longer rows.
+- **Search** sits below the expanded list, above playback. Type words from a
+  filename or relative path to filter instantly; all words must match, in any
+  order, ignoring case. Hidden duplicate paths are searchable too. The count
+  shows matches out of the full library. **Ctrl+F** focuses search; **Escape**
+  or **Clear** clears it. Filtering keeps the playing track and playback order.
 - Previous, Play/Pause, Next, seek and volume are always at the bottom.
   **Space** toggles play/pause when the player has focus.
   Automatic progression stops after the final track; explicit Next wraps.

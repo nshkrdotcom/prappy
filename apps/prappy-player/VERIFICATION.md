@@ -41,6 +41,10 @@ Passed:
 - Space was checked in the live player: one press resumed playback and the next
   paused it. The shortcut and transport button use the same playback action;
   held-key repeats do not toggle it repeatedly.
+- Search integration checks cover words in any order, case and Unicode matching,
+  either path separator, hidden-copy paths, identity under all sort modes, an
+  empty query restoring the list, and a query with no matches. Filtering leaves
+  the underlying library intact. Native window and playback checks also pass.
 - Launch from outside the source/output working directory.
 - Updated window checks at 144 DPI (150% scale): minimum content width is 500
   physical pixels; width and height resize freely, native maximize fills the

@@ -63,6 +63,14 @@ static std::string lower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return s;
 }
+static std::wstring searchText(const std::string& text) {
+    const int count = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    std::wstring value(count, L'\0');
+    if (count) MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), value.data(), count);
+    CharLowerBuffW(value.data(), static_cast<DWORD>(value.size()));
+    std::replace(value.begin(), value.end(), L'\\', L'/');
+    return value;
+}
 static std::wstring key(const fs::path& p) {
     auto s = p.lexically_normal().wstring();
     CharLowerBuffW(s.data(), static_cast<DWORD>(s.size())); return s;
@@ -282,6 +290,22 @@ struct Library {
             return an == bn ? a.id < b.id : an < bn;
         });
     }
+    std::vector<size_t> filter(const std::string& query) const {
+        std::wistringstream input(searchText(query));
+        std::vector<std::wstring> terms;
+        for (std::wstring term; input >> term;) terms.push_back(std::move(term));
+        std::vector<size_t> visible;
+        visible.reserve(tracks.size());
+        for (size_t i = 0; i < tracks.size(); ++i) {
+            if (terms.empty()) { visible.push_back(i); continue; }
+            const auto& track = tracks[i];
+            auto text = searchText(track.label);
+            for (const auto& copy : track.copies) text += L'\n' + searchText(pathLabel(copy));
+            if (std::all_of(terms.begin(), terms.end(), [&](const auto& term) { return text.find(term) != std::wstring::npos; }))
+                visible.push_back(i);
+        }
+        return visible;
+    }
     bool refresh(const fs::path& configFile, std::stop_token stop = {}, ScanProgress* progress = nullptr) {
         try {
             const auto config = readConfig(configFile);
@@ -345,11 +369,12 @@ struct Scan {
             return std::make_pair(std::move(next), success);
         });
     }
-    void update(Library& library) {
-        if (!running() || job.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+    bool update(Library& library) {
+        if (!running() || job.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return false;
         auto [next, success] = job.get();
         if (success) { next.order = library.order; next.sort(); library = std::move(next); }
         else library.notice = std::move(next.notice);
+        return success;
     }
     std::string status() const {
         if (progress.dedup) return "Checking duplicates: " + std::to_string(progress.checked.load()) + " / " + std::to_string(progress.total.load());
@@ -514,6 +539,27 @@ static void style() {
 static int selfTest(const fs::path& config, const fs::path& logFile) {
     std::ofstream log(logFile);
     try {
+        Library searchLibrary;
+        Track lead; lead.label = "library\\Jazz\\Night Bus.flac"; lead.name = "Night Bus.flac";
+        lead.directory = "Jazz"; lead.type = "flac"; lead.id = L"night";
+        lead.copies = {L"C:/scraper/library/Alternate Take.opus"};
+        Track other; other.label = "library\\Jazz\\Morning.flac"; other.name = "Morning.flac";
+        other.directory = "Jazz"; other.type = "flac"; other.id = L"morning";
+        Track unicode; unicode.label = "library\\Beyoncé\\Live.m4a"; unicode.name = "Live.m4a";
+        unicode.directory = "Beyoncé"; unicode.type = "m4a"; unicode.id = L"live";
+        searchLibrary.tracks = {lead, other, unicode};
+        for (int order = 0; order < 3; ++order) {
+            searchLibrary.order = order; searchLibrary.sort();
+            for (const char* query : {"NIGHT jazz", "jazz/night", "alternate OPUS"}) {
+                const auto matches = searchLibrary.filter(query);
+                if (matches.size() != 1 || searchLibrary.tracks[matches[0]].id != L"night")
+                    throw std::runtime_error("Search lost track identity or failed word/path/alias matching.");
+            }
+        }
+        if (searchLibrary.filter("BEYONCÉ").size() != 1 || searchLibrary.filter("  ").size() != 3 ||
+            !searchLibrary.filter("no-such-track").empty() || searchLibrary.tracks.size() != 3)
+            throw std::runtime_error("Search failed Unicode, clear or no-match behavior.");
+        log << "PASS search: words / case / Unicode / paths / copies / sorting / clear / no matches\n";
         Library library;
         if (!library.refresh(config) || library.tracks.empty()) throw std::runtime_error(library.notice);
         if (library.tracks.size() < 2) throw std::runtime_error("Self-test needs at least two tracks.");
@@ -667,6 +713,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         SDL_ShowWindow(window);
         scan.begin(config, library.order);
         bool done = false, expanded = false;
+        char search[256]{};
+        bool filterDirty = true;
+        std::vector<size_t> visible;
         int expandedHeight = 710;
         const auto togglePlayback = [&] {
             if (audio.active) audio.pause();
@@ -687,7 +736,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                 if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) done = true;
             }
             if (audio.poll()) advance(audio, library, 1, true);
-            scan.update(library);
+            if (scan.update(library)) filterDirty = true;
             if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) { SDL_Delay(80); continue; }
             ImGui_ImplSDLRenderer3_NewFrame(); ImGui_ImplSDL3_NewFrame(); ImGui::NewFrame();
             nextControls.clear();
@@ -708,10 +757,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             }
             rememberControl();
             const float transportY = static_cast<float>(height - TransportHeight);
-            if (expanded && transportY > u(58)) {
+            if (expanded && transportY > u(90)) {
                 ImGui::SetNextItemWidth(u(153));
                 const char* choices[] = {"Filename", "Directory groups", "File type groups"};
-                if (ImGui::Combo("##order", &library.order, choices, 3)) library.sort();
+                if (ImGui::Combo("##order", &library.order, choices, 3)) { library.sort(); filterDirty = true; }
                 rememberControl();
                 ImGui::SameLine();
                 if (ImGui::Button("Config")) {
@@ -719,7 +768,26 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                     if (reinterpret_cast<INT_PTR>(result) <= 32) library.notice = "Could not open player.ini.";
                 }
                 rememberControl();
-                if (ImGui::BeginChild("Tracks", {0, std::max(1.0f, transportY - ImGui::GetCursorPosY() - u(4))}, ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar)) {
+                const auto listStart = ImGui::GetCursorPos();
+                const float searchY = transportY - ImGui::GetFrameHeight() - uiStyle.ItemSpacing.y - u(4);
+                ImGui::SetCursorPos({listStart.x, searchY});
+                const float clearWidth = ImGui::CalcTextSize("Clear").x + uiStyle.FramePadding.x * 2;
+                const float countWidth = ImGui::CalcTextSize("00000 / 00000").x;
+                ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - clearWidth - countWidth - uiStyle.ItemSpacing.x * 2);
+                if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_F)) ImGui::SetKeyboardFocusHere();
+                if (ImGui::InputTextWithHint("##search", "Search names or paths...", search, sizeof(search), ImGuiInputTextFlags_EscapeClearsAll)) filterDirty = true;
+                rememberControl();
+                tooltip("Match all words, in any order, ignoring case. Ctrl+F focuses search; Escape clears it.");
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!search[0]);
+                if (ImGui::Button("Clear")) { search[0] = '\0'; filterDirty = true; }
+                rememberControl(); ImGui::EndDisabled();
+                const bool resetScroll = filterDirty;
+                if (filterDirty) { visible = library.filter(search); filterDirty = false; }
+                ImGui::SameLine(); ImGui::TextDisabled("%zu / %zu", visible.size(), library.tracks.size());
+                ImGui::SetCursorPos(listStart);
+                if (ImGui::BeginChild("Tracks", {0, std::max(1.0f, searchY - listStart.y - uiStyle.ItemSpacing.y)}, ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar)) {
+                    if (resetScroll) { ImGui::SetScrollY(0); ImGui::SetScrollX(0); }
                     const auto current = key(audio.current);
                     auto row = [&](size_t i) {
                         const auto& t = library.tracks[i];
@@ -740,27 +808,28 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                         ImGui::PopID();
                     };
                     if (library.order == 0) {
-                        ImGuiListClipper clipper; clipper.Begin(static_cast<int>(library.tracks.size()));
-                        while (clipper.Step()) for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) row(static_cast<size_t>(i));
+                        ImGuiListClipper clipper; clipper.Begin(static_cast<int>(visible.size()));
+                        while (clipper.Step()) for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) row(visible[static_cast<size_t>(i)]);
                     } else {
                         size_t begin = 0;
-                        while (begin < library.tracks.size()) {
-                            const auto& first = library.tracks[begin];
+                        while (begin < visible.size()) {
+                            const auto& first = library.tracks[visible[begin]];
                             const auto group = library.order == 1 ? first.directory : first.type;
                             size_t end = begin + 1;
-                            while (end < library.tracks.size() && (library.order == 1 ? library.tracks[end].directory : library.tracks[end].type) == group) ++end;
-                            ImGui::PushID(static_cast<int>(begin));
+                            while (end < visible.size() && (library.order == 1 ? library.tracks[visible[end]].directory : library.tracks[visible[end]].type) == group) ++end;
+                            ImGui::PushID(group.c_str());
                             const bool open = ImGui::CollapsingHeader((group + " (" + std::to_string(end - begin) + ")").c_str(), ImGuiTreeNodeFlags_DefaultOpen);
                             rememberControl();
                             tooltip(group);
                             if (open) {
                                 ImGuiListClipper clipper; clipper.Begin(static_cast<int>(end - begin));
-                                while (clipper.Step()) for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) row(begin + static_cast<size_t>(i));
+                                while (clipper.Step()) for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) row(visible[begin + static_cast<size_t>(i)]);
                             }
                             ImGui::PopID(); begin = end;
                         }
                     }
                     if (library.tracks.empty()) ImGui::TextWrapped("Add music roots in Config, then Refresh.");
+                    else if (visible.empty()) ImGui::TextDisabled("No matching tracks.");
                     if (ImGui::GetScrollMaxY() > 0) {
                         auto pos = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
                         const auto bar = ImGui::GetStyle().ScrollbarSize;
