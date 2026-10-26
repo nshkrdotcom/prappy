@@ -4,6 +4,7 @@
 #include <windowsx.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <dwmapi.h>
 #include <SDL3/SDL.h>
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
@@ -443,28 +444,15 @@ static bool advance(Audio& audio, const Library& library, int direction, bool au
 }
 
 static LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
-    if (message == WM_GETMINMAXINFO) {
-        auto info = reinterpret_cast<MINMAXINFO*>(l);
-        info->ptMinTrackSize = {Width, MinHeight}; info->ptMaxTrackSize.x = Width;
-        info->ptMaxSize.x = Width; return 0;
+    if (message == WM_NCHITTEST) {
+        // Leave the native frame/caption to Windows (including Snap Layouts).
+        // SDL's hit test applies only to whitespace inside the client area.
+        auto hit = DefWindowProcW(hwnd, message, w, l);
+        if (hit != HTCLIENT) return hit;
     }
-    if (message == WM_WINDOWPOSCHANGING) {
-        auto pos = reinterpret_cast<WINDOWPOS*>(l);
-        if (!(pos->flags & SWP_NOSIZE)) pos->cx = Width;
-    }
-    if (message == WM_DPICHANGED) {
-        auto rect = reinterpret_cast<RECT*>(l);
-        RECT old{}; GetWindowRect(hwnd, &old);
-        SetWindowPos(hwnd, nullptr, rect->left, rect->top, Width, old.bottom - old.top, SWP_NOZORDER | SWP_NOACTIVATE);
-        return 0;
-    }
-    if (message == WM_SYSCOMMAND && (w & 0xfff0) == SC_MAXIMIZE) return 0;
     return CallWindowProcW(originalProc, hwnd, message, w, l);
 }
-static SDL_HitTestResult SDLCALL hitTest(SDL_Window* window, const SDL_Point* point, void*) {
-    int w, h; SDL_GetWindowSize(window, &w, &h);
-    if (point->y < 3) return SDL_HITTEST_RESIZE_TOP;
-    if (point->y >= h - 5) return SDL_HITTEST_RESIZE_BOTTOM;
+static SDL_HitTestResult SDLCALL hitTest(SDL_Window*, const SDL_Point* point, void*) {
     if (ImGui::GetCurrentContext() && (ImGui::IsAnyItemActive() ||
         ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel))) return SDL_HITTEST_NORMAL;
     for (const auto& rect : controls)
@@ -619,12 +607,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         audio.open();
         if (!SDL_Init(SDL_INIT_VIDEO)) throw std::runtime_error(SDL_GetError());
         window = SDL_CreateWindow("Prappy Player", Width, MinHeight,
-            SDL_WINDOW_HIDDEN | SDL_WINDOW_BORDERLESS | SDL_WINDOW_RESIZABLE);
+            SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE);
         if (!window) throw std::runtime_error(SDL_GetError());
         SDL_SetWindowMinimumSize(window, Width, MinHeight);
-        SDL_SetWindowMaximumSize(window, Width, 8192);
         auto hwnd = static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
         originalProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(windowProc)));
+        const BOOL darkCaption = TRUE;
+        DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkCaption, sizeof(darkCaption));
         auto icon = LoadIconW(instance, MAKEINTRESOURCEW(1));
         SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
         SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
@@ -666,25 +655,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             const char* listLabel = expanded ? "List ^" : "List v";
             const char* pinLabel = onTop ? "Pin *" : "Pin";
             const auto& uiStyle = ImGui::GetStyle();
-            float buttonsWidth = uiStyle.ItemSpacing.x * 3 + uiStyle.FramePadding.x * 8;
-            for (const char* label : {listLabel, pinLabel, "_", "X"}) buttonsWidth += ImGui::CalcTextSize(label).x;
+            float buttonsWidth = uiStyle.ItemSpacing.x + uiStyle.FramePadding.x * 4;
+            for (const char* label : {listLabel, pinLabel}) buttonsWidth += ImGui::CalcTextSize(label).x;
             ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - buttonsWidth);
             if (ImGui::SmallButton(listLabel)) {
-                if (expanded) { expandedHeight = height; SDL_SetWindowSize(window, Width, MinHeight); }
-                else SDL_SetWindowSize(window, Width, expandedHeight);
+                if (!(SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED)) {
+                    if (expanded) { expandedHeight = height; SDL_SetWindowSize(window, width, MinHeight); }
+                    else SDL_SetWindowSize(window, width, expandedHeight);
+                }
                 expanded = !expanded;
             }
             rememberControl();
             ImGui::SameLine();
             if (ImGui::SmallButton(pinLabel)) { onTop = !onTop; SDL_SetWindowAlwaysOnTop(window, onTop); }
             rememberControl();
-            tooltip("Keep above other windows"); ImGui::SameLine();
-            if (ImGui::SmallButton("_")) SDL_MinimizeWindow(window);
-            rememberControl();
-            tooltip("Minimize"); ImGui::SameLine();
-            if (ImGui::SmallButton("X")) done = true;
-            rememberControl();
-            tooltip("Close");
+            tooltip("Keep above other windows");
             const float transportY = static_cast<float>(height - TransportHeight);
             if (expanded && transportY > u(58)) {
                 ImGui::SetNextItemWidth(u(153));
@@ -757,7 +742,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             ImGui::SetCursorPos({u(8), transportY + u(4)});
             ImGui::TextUnformatted(audio.current.empty() ? "Choose a track from List" : library.pathLabel(audio.current).c_str());
             tooltip(library.pathLabel(audio.current));
-            ImGui::SetNextItemWidth(u(332));
+            ImGui::SetNextItemWidth(static_cast<float>(width) - u(16));
             float seek = static_cast<float>(audio.position), duration = static_cast<float>(audio.duration);
             ImGui::PushStyleColor(ImGuiCol_SliderGrab, {.96f, .74f, .39f, 1});
             ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, {1, .84f, .55f, 1});

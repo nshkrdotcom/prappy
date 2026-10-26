@@ -1,7 +1,8 @@
 # Prappy Player
 
 Compact Windows x64 music player: SDL3, Dear ImGui and audio-only libmpv.
-Fixed **500 physical pixels** wide, 18px text, adjustable height. Starts with
+Defaults to **500 physical pixels** of content width (also the minimum), with
+18px text and adjustable width and height. Starts with
 the list collapsed; playback controls always stay at the bottom.
 The UI uses SDL's software renderer with a native Windows framebuffer, avoiding
 a Direct3D/OpenGL game graphics device that can trigger GPU overlay notices.
@@ -95,12 +96,13 @@ operate the scraper, change its recordings or interfere with collection jobs.
 - **Refresh** is the single rescan action. Hover over the status for full errors.
 - Drag any unused space, including the title and blank list/transport areas.
   Buttons, sliders, song rows, group headers and scrollbars retain normal input.
-  Resize the top/bottom
-  edges. **Pin** toggles always-on-top; `_` minimizes and `X` closes. Normal
-  taskbar and Alt-Tab presence are preserved; maximize is disabled.
+  Resize any native window edge or corner. **Pin** toggles always-on-top.
+  The dark Windows title bar provides minimize, maximize/restore and close,
+  plus the system menu and Windows 11 Snap Layouts when enabled in Windows.
+  List toggles preserve your chosen width and leave maximized windows maximized.
 
-Width and text use physical pixels deliberately, including on high-DPI displays;
-moving between monitors does not expand the width. The compact layout was enlarged
+The content uses physical pixels; Windows sizes the native frame for each monitor's
+DPI. The compact layout was enlarged
 from the initial 350px / 12px design at the user's request.
 
 ## Verification

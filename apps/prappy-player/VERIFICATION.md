@@ -5,6 +5,11 @@ CMake 4.4.4 and Ninja 1.13.2. Final Release build succeeded without compiler
 warnings from the player. These checks were run against the executable, not only
 source inspection.
 
+The resize/title-bar build passed the updated window checks. The subsequent
+rebuild embedding the slimmer PP icon also compiled successfully, but Windows
+Application Control blocked its launch, so those runtime checks could not be
+repeated against the icon rebuild. No security settings were changed.
+
 Commands, from this app directory:
 
 ```powershell
@@ -29,9 +34,13 @@ Passed:
 - Missing config retains the previous in-memory library and playback identity.
 - Actual Windows WASAPI audio output initialized successfully with volume muted.
 - Launch from outside the source/output working directory.
-- Width remains exactly 500 physical pixels at 144 DPI (150% scale), including
-  native resize and attempted maximize. Height resize, list expansion/collapse,
-  pin toggle and native top/bottom resize/transport drag hit regions passed.
+- Updated window checks at 144 DPI (150% scale): minimum content width is 500
+  physical pixels; width and height resize freely, native maximize fills the
+  screen width, and restore preserves the previous width. Native left/right,
+  top/bottom and diagonal corner hit regions passed, along with whitespace
+  dragging and normal input for buttons and sliders. The dark native title bar
+  supplies standard minimize/maximize/close controls. Snap Layouts use the native
+  maximize button; the flyout itself has not been exercised automatically.
 - Per-monitor-v2 DPI awareness, runtime icon, ordinary taskbar/Alt-Tab window
   style, and Windows GUI executable subsystem (no console) confirmed.
 - Temporary window-test instances close after verification; normal app launch

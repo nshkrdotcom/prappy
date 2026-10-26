@@ -14,6 +14,11 @@ public static class PlayerNative {
  [DllImport("user32.dll")] public static extern IntPtr GetWindowDpiAwarenessContext(IntPtr h);
  [DllImport("user32.dll")] public static extern bool AreDpiAwarenessContextsEqual(IntPtr a,IntPtr b);
  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
+ [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h,out Rect r);
+ [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h,ref Point p);
+ [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
+ [StructLayout(LayoutKind.Sequential)] public struct MinMax { public Point Reserved,MaxSize,MaxPosition,MinTrackSize,MaxTrackSize; }
+ [DllImport("user32.dll",EntryPoint="SendMessageW")] public static extern IntPtr GetMinMax(IntPtr h,uint m,IntPtr w,ref MinMax info);
  [DllImport("user32.dll",EntryPoint="GetWindowRect")] static extern bool NativeGetWindowRect(IntPtr h,out Rect r);
  public static bool GetWindowRect(IntPtr h,out Rect r) { SetThreadDpiAwarenessContext(new IntPtr(-4)); return NativeGetWindowRect(h,out r); }
  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h,IntPtr after,int x,int y,int w,int height,uint flags);
@@ -44,8 +49,9 @@ function Rect {
 function Require($condition, $message) { if (!$condition) { throw $message }; Write-Host "PASS $message" }
 function Click($x, $y) {
     [PlayerNative]::SetForegroundWindow($hwnd) | Out-Null
-    $r = Rect
-    [PlayerNative]::SetCursorPos($r.Left+$x,$r.Top+$y) | Out-Null
+    $origin = [PlayerNative+Point]::new()
+    [PlayerNative]::ClientToScreen($hwnd,[ref]$origin) | Out-Null
+    [PlayerNative]::SetCursorPos($origin.X+$x,$origin.Y+$y) | Out-Null
     Start-Sleep -Milliseconds 80
     [PlayerNative]::mouse_event(2,0,0,0,[UIntPtr]::Zero)
     Start-Sleep -Milliseconds 80
@@ -73,7 +79,17 @@ try {
     Start-Sleep -Milliseconds 250
     $r = Rect
     Write-Host "Test HWND $hwnd, rect $($r.Left),$($r.Top) $($r.Right-$r.Left)x$($r.Bottom-$r.Top)"
-    Require (($r.Right-$r.Left) -eq 500) '500 physical pixel width'
+    $client = [PlayerNative+Rect]::new()
+    [PlayerNative]::GetClientRect($hwnd,[ref]$client) | Out-Null
+    $frameWidth = ($r.Right-$r.Left)-$client.Right
+    $frameHeight = ($r.Bottom-$r.Top)-$client.Bottom
+    [PlayerNative]::SetWindowPos($hwnd,[IntPtr]::Zero,0,0,(500+$frameWidth),(250+$frameHeight),0x6) | Out-Null
+    $r = Rect
+    $minimum = [PlayerNative+MinMax]::new()
+    [PlayerNative]::GetMinMax($hwnd,0x24,[IntPtr]::Zero,[ref]$minimum) | Out-Null
+    Require ($minimum.MinTrackSize.X -eq (500+$frameWidth)) '500 pixel minimum content width'
+    Require ($minimum.MaxTrackSize.X -eq 0 -or ($minimum.MaxTrackSize.X-$frameWidth) -gt 900) 'No fixed width maximum'
+    Require (([PlayerNative]::GetWindowLongPtr($hwnd,-16) -band 0xcf0000) -eq 0xcf0000) 'Native caption, resize frame and minimize/maximize controls'
     Require ([PlayerNative]::AreDpiAwarenessContextsEqual([PlayerNative]::GetWindowDpiAwarenessContext($hwnd),[IntPtr](-4))) 'Per-monitor v2 DPI awareness'
     Write-Host "Window DPI: $([PlayerNative]::GetDpiForWindow($hwnd))"
     Require (($ex -band 0x80) -eq 0) 'Normal taskbar/Alt-Tab window (not a tool window)'
@@ -81,44 +97,61 @@ try {
     Capture 'player-collapsed'
     [PlayerNative]::SetWindowPos($hwnd,[IntPtr]::Zero,0,0,900,520,0x6) | Out-Null
     $r = Rect
-    Require (($r.Right-$r.Left) -eq 500 -and ($r.Bottom-$r.Top) -eq 520) 'Width clamped during native height resize'
+    Require (($r.Right-$r.Left) -eq 900 -and ($r.Bottom-$r.Top) -eq 520) 'Width and height resize freely'
     [PlayerNative]::SendMessage($hwnd,0x112,[IntPtr](0xf030),[IntPtr]::Zero) | Out-Null
     $r = Rect
-    Require (($r.Right-$r.Left) -eq 500) 'Maximize cannot expand width'
+    Require ([PlayerNative]::IsZoomed($hwnd)) 'Native maximize works'
+    Require (($r.Right-$r.Left) -gt 900) 'Maximize uses screen width'
+    Capture 'player-maximized'
+    [PlayerNative]::SendMessage($hwnd,0x112,[IntPtr](0xf120),[IntPtr]::Zero) | Out-Null
+    $r = Rect
+    Require ((!([PlayerNative]::IsZoomed($hwnd))) -and ($r.Right-$r.Left) -eq 900) 'Restore preserves chosen width'
     if ($Interactive) {
+    [PlayerNative]::SetWindowPos($hwnd,[IntPtr]::Zero,0,0,(500+$frameWidth),(250+$frameHeight),0x6) | Out-Null
     Start-Sleep -Milliseconds 300
-    Click 365 20
+    Click 410 17
     $r = Rect
     Require (($r.Bottom-$r.Top) -ge 600) 'List expands'
     Capture 'player-expanded'
-    Click 365 20
+    Click 410 17
     $r = Rect
-    Require (($r.Bottom-$r.Top) -eq 250) 'List collapses'
+    Require (($r.Bottom-$r.Top) -eq (250+$frameHeight)) 'List collapses'
     # Synchronize the app toggle with the topmost state forced by this harness.
-    Click 417 17
+    Click 475 17
     $before = [PlayerNative]::GetWindowLongPtr($hwnd,-20)
-    Click 417 17
+    Click 475 17
     $after = [PlayerNative]::GetWindowLongPtr($hwnd,-20)
     Require (($before -band 8) -ne ($after -band 8)) 'Pin toggles always-on-top'
     }
-    [PlayerNative]::SetWindowPos($hwnd,[IntPtr]::Zero,0,0,500,250,0x6) | Out-Null
+    [PlayerNative]::SetWindowPos($hwnd,[IntPtr]::Zero,0,0,(500+$frameWidth),(250+$frameHeight),0x6) | Out-Null
     Start-Sleep -Milliseconds 100
     $r = Rect
     $packed = [IntPtr]((($r.Top+1) -shl 16) -bor ($r.Left+250))
     Require ([PlayerNative]::SendMessage($hwnd,0x84,[IntPtr]::Zero,$packed).ToInt32() -eq 12) 'Top edge offers native height resizing'
     $packed = [IntPtr]((($r.Bottom-2) -shl 16) -bor ($r.Left+250))
     Require ([PlayerNative]::SendMessage($hwnd,0x84,[IntPtr]::Zero,$packed).ToInt32() -eq 15) 'Bottom edge offers native height resizing'
-    $packed = [IntPtr]((($r.Top+60) -shl 16) -bor ($r.Left+30))
+    foreach ($check in @(
+        @{X=$r.Left+1;Y=$r.Top+100;Hit=10;Name='Left edge resizes horizontally'},
+        @{X=$r.Right-2;Y=$r.Top+100;Hit=11;Name='Right edge resizes horizontally'},
+        @{X=$r.Right-2;Y=$r.Bottom-2;Hit=17;Name='Bottom right corner offers diagonal resizing'},
+        @{X=$r.Left+1;Y=$r.Top+1;Hit=13;Name='Top left corner offers diagonal resizing'}
+    )) {
+        $packed = [IntPtr](($check.Y -shl 16) -bor $check.X)
+        Require ([PlayerNative]::SendMessage($hwnd,0x84,[IntPtr]::Zero,$packed).ToInt32() -eq $check.Hit) $check.Name
+    }
+    $origin = [PlayerNative+Point]::new()
+    [PlayerNative]::ClientToScreen($hwnd,[ref]$origin) | Out-Null
+    $packed = [IntPtr]((($origin.Y+60) -shl 16) -bor ($origin.X+30))
     Require ([PlayerNative]::SendMessage($hwnd,0x84,[IntPtr]::Zero,$packed).ToInt32() -eq 2) 'Noninteractive text offers native dragging'
     foreach ($check in @(
         @{X=250;Y=190;Hit=2;Name='Empty transport space is draggable'},
         @{X=250;Y=17;Hit=2;Name='Empty header space is draggable'},
-        @{X=365;Y=17;Hit=1;Name='Header buttons retain mouse input'},
+        @{X=410;Y=17;Hit=1;Name='Header buttons retain mouse input'},
         @{X=100;Y=150;Hit=1;Name='Play button retains mouse input'},
         @{X=250;Y=90;Hit=1;Name='Seek slider retains mouse input'},
         @{X=300;Y=150;Hit=1;Name='Volume slider retains mouse input'}
     )) {
-        $packed = [IntPtr]((($r.Top+$check.Y) -shl 16) -bor ($r.Left+$check.X))
+        $packed = [IntPtr]((($origin.Y+$check.Y) -shl 16) -bor ($origin.X+$check.X))
         Require ([PlayerNative]::SendMessage($hwnd,0x84,[IntPtr]::Zero,$packed).ToInt32() -eq $check.Hit) $check.Name
     }
     $bytes = [IO.File]::ReadAllBytes($p.Path)
