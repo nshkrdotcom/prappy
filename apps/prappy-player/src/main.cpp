@@ -543,6 +543,40 @@ static SDL_HitTestResult SDLCALL hitTest(SDL_Window*, const SDL_Point* point, vo
 static void tooltip(const std::string& text) {
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", text.c_str());
 }
+static bool centeredButton(const char* label, ImVec2 size = {}) {
+    // Center the visible glyph bounds, rather than Segoe UI's padded line box.
+    // Retain the standard button for layout, focus, disabled state and input.
+    const auto color = ImGui::GetColorU32(ImGuiCol_Text);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 0));
+    const bool pressed = ImGui::Button(label, size);
+    ImGui::PopStyleColor();
+    if (!ImGui::IsItemVisible()) return pressed;
+    const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+    const char* end = label;
+    float pen = 0;
+    ImVec2 inkMin{ImGui::GetFontSize(), ImGui::GetFontSize()}, inkMax{};
+    bool visible = false;
+    auto font = ImGui::GetFontBaked();
+    // Player button labels are ASCII; ## suffixes remain standard hidden IDs.
+    for (; *end && !(end[0] == '#' && end[1] == '#'); ++end) {
+        const auto glyph = font->FindGlyph(static_cast<unsigned char>(*end));
+        if (glyph->Visible) {
+            inkMin.x = std::min(inkMin.x, pen + glyph->X0); inkMin.y = std::min(inkMin.y, glyph->Y0);
+            inkMax.x = std::max(inkMax.x, pen + glyph->X1); inkMax.y = std::max(inkMax.y, glyph->Y1);
+            visible = true;
+        }
+        pen += glyph->AdvanceX;
+    }
+    if (visible) {
+        const ImVec2 pos{std::round((min.x + max.x - inkMin.x - inkMax.x) * .5f),
+                         std::round((min.y + max.y - inkMin.y - inkMax.y) * .5f)};
+        auto draw = ImGui::GetWindowDrawList();
+        draw->PushClipRect(min, max, true);
+        draw->AddText(pos, color, label, end);
+        draw->PopClipRect();
+    }
+    return pressed;
+}
 static std::string timeText(double seconds) {
     int n = static_cast<int>(std::max(0.0, seconds));
     char buf[32]; std::snprintf(buf, sizeof(buf), "%d:%02d", n / 60, n % 60); return buf;
@@ -801,7 +835,7 @@ static int runPlayer(HINSTANCE instance) {
             const auto& uiStyle = ImGui::GetStyle();
             const float buttonsWidth = uiStyle.FramePadding.x * 2 + ImGui::CalcTextSize(listLabel).x;
             ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - buttonsWidth);
-            if (ImGui::SmallButton(listLabel)) {
+            if (centeredButton(listLabel, {buttonsWidth, ImGui::GetFontSize()})) {
                 if (!(SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED)) {
                     if (expanded) { expandedHeight = height; SDL_SetWindowSize(window, width, MinHeight); }
                     else SDL_SetWindowSize(window, width, expandedHeight);
@@ -816,7 +850,7 @@ static int runPlayer(HINSTANCE instance) {
                 if (ImGui::Combo("##order", &library.order, choices, 3)) { library.sort(); filterDirty = true; }
                 rememberControl();
                 ImGui::SameLine();
-                if (ImGui::Button("Config")) {
+                if (centeredButton("Config")) {
                     auto result = ShellExecuteW(hwnd, L"open", config.c_str(), nullptr, config.parent_path().c_str(), SW_SHOWNORMAL);
                     if (reinterpret_cast<INT_PTR>(result) <= 32) library.notice = "Could not open player.ini.";
                 }
@@ -833,7 +867,7 @@ static int runPlayer(HINSTANCE instance) {
                 tooltip("Match all words, in any order, ignoring case. Ctrl+F focuses search; Escape clears it.");
                 ImGui::SameLine();
                 ImGui::BeginDisabled(!search[0]);
-                if (ImGui::Button("Clear")) { search[0] = '\0'; filterDirty = true; }
+                if (centeredButton("Clear")) { search[0] = '\0'; filterDirty = true; }
                 rememberControl(); ImGui::EndDisabled();
                 const bool resetScroll = filterDirty;
                 if (filterDirty) { visible = library.filter(search); filterDirty = false; }
@@ -912,25 +946,28 @@ static int runPlayer(HINSTANCE instance) {
             ImGui::PopStyleColor(2);
             ImGui::TextDisabled("%s / %s", timeText(audio.position).c_str(), timeText(audio.duration).c_str());
             ImGui::SameLine(u(248)); ImGui::TextDisabled("%s", audio.active ? (audio.paused ? "PAUSED" : "PLAYING") : "READY");
-            if (ImGui::Button("|<", {u(32), u(24)})) advance(audio, library, -1);
+            const float transportRowY = ImGui::GetCursorPosY();
+            if (centeredButton("|<", {u(32), u(24)})) advance(audio, library, -1);
             rememberControl();
             tooltip("Previous"); ImGui::SameLine();
             ImGui::PushStyleColor(ImGuiCol_Button, {.96f, .74f, .39f, 1});
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {1, .84f, .55f, 1});
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, {.84f, .59f, .24f, 1});
             ImGui::PushStyleColor(ImGuiCol_Text, {.12f, .15f, .16f, 1});
-            if (ImGui::Button(audio.active && !audio.paused ? "Pause" : "Play", {u(56), u(24)})) togglePlayback();
+            if (centeredButton(audio.active && !audio.paused ? "Pause" : "Play", {u(56), u(24)})) togglePlayback();
             rememberControl();
             ImGui::PopStyleColor(4);
-            ImGui::SameLine(); if (ImGui::Button(">|", {u(32), u(24)})) advance(audio, library, 1);
+            ImGui::SameLine(); if (centeredButton(">|", {u(32), u(24)})) advance(audio, library, 1);
             rememberControl();
             tooltip("Next"); ImGui::SameLine();
+            ImGui::SetCursorPosY(transportRowY + (u(24) - ImGui::GetFrameHeight()) * .5f);
             ImGui::SetNextItemWidth(u(105)); float volume = static_cast<float>(audio.volume);
             if (ImGui::SliderFloat("##volume", &volume, 0, 100, "Vol %.0f")) audio.setVolume(volume);
             rememberControl();
             ImGui::SameLine();
+            ImGui::SetCursorPosY(transportRowY);
             ImGui::BeginDisabled(scan.running());
-            if (ImGui::Button(scan.running() ? "Scanning" : "Refresh", {u(65), u(24)})) scan.begin(config, library.order);
+            if (centeredButton(scan.running() ? "Scanning" : "Refresh", {u(65), u(24)})) scan.begin(config, library.order);
             rememberControl();
             ImGui::EndDisabled();
             tooltip("Reload config and rebuild the music list");

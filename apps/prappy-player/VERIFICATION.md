@@ -1,5 +1,18 @@
 # Windows verification
 
+## Button alignment, 2026-10-26
+
+Button labels now center their visible glyph bounds, including the compact List
+button and the Previous, Play/Pause, Next, Refresh/Scanning, Config and Clear
+buttons. The volume slider is vertically centered within the transport row.
+Standard ImGui button input, focus, hover, disabled state and hit regions remain
+in use. The helper handles the player's ASCII control labels and hidden IDs.
+
+Debug, Release and `/analyze` builds passed with warnings treated as errors.
+`verify-window.ps1 -Interactive` passed for Debug and Release, including List
+expansion/collapse, transport hit regions, resize/DPI behavior and clean shutdown.
+Compact and expanded screenshots were visually inspected for label alignment.
+
 ## C++ robustness checks, 2026-10-26
 
 MSVC 19.44 built Release, Release-Analyze, Debug and Debug-Asan successfully.
