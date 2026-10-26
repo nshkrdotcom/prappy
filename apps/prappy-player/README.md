@@ -3,6 +3,8 @@
 Compact Windows x64 music player: SDL3, Dear ImGui and audio-only libmpv.
 Fixed **500 physical pixels** wide, 18px text, adjustable height. Starts with
 the list collapsed; playback controls always stay at the bottom.
+The UI uses SDL's software renderer with a native Windows framebuffer, avoiding
+a Direct3D/OpenGL game graphics device that can trigger GPU overlay notices.
 
 ## Build and run
 

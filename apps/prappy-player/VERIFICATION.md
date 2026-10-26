@@ -91,6 +91,13 @@ active controls and open menus retain mouse handling. Native hit tests verify
 empty header/transport areas drag while header buttons, Play, seek and volume
 remain client input. Top/bottom edges still resize height.
 
+NVIDIA overlay mitigation: the prior GPU-rendered process loaded `d3d11.dll`,
+`DXGI.DLL` and NVIDIA's `nvspcap64.dll`. The player now explicitly uses SDL's
+software renderer with framebuffer acceleration disabled. After rebuilding and
+launching through the existing pinned shortcut, none of those three modules
+were loaded. The UI screenshot and native window/control hit tests passed.
+NVIDIA's global settings were not changed.
+
 Limitations: audible output was not listened to; hardware output initialization
 was checked while muted. Scraper metadata is not part of the player's scope.
 Dragging between physical monitors with different DPIs and a manual visual

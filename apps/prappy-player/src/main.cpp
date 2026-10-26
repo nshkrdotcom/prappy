@@ -610,9 +610,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
         SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
         SDL_SetWindowHitTest(window, hitTest, nullptr);
-        renderer = SDL_CreateRenderer(window, nullptr);
+        // A small desktop UI does not need a game graphics device/overlay hook.
+        SDL_SetHint(SDL_HINT_FRAMEBUFFER_ACCELERATION, "0");
+        renderer = SDL_CreateRenderer(window, SDL_SOFTWARE_RENDERER);
         if (!renderer) throw std::runtime_error(SDL_GetError());
-        SDL_SetRenderVSync(renderer, 1);
         IMGUI_CHECKVERSION(); ImGui::CreateContext(); imgui = true;
         auto& io = ImGui::GetIO(); io.IniFilename = nullptr; io.LogFilename = nullptr;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
