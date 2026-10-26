@@ -433,14 +433,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             ImGui::SetNextWindowPos({0, 0}); ImGui::SetNextWindowSize({static_cast<float>(width), static_cast<float>(height)});
             ImGui::Begin("Player", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
             ImGui::TextColored({.59f, .83f, .75f, 1}, "PRAPPY  /  PLAYER");
-            ImGui::SameLine(u(141));
-            if (ImGui::SmallButton(expanded ? "List ^" : "List v")) {
+            const char* listLabel = expanded ? "List ^" : "List v";
+            const char* pinLabel = onTop ? "Pin *" : "Pin";
+            const auto& uiStyle = ImGui::GetStyle();
+            float buttonsWidth = uiStyle.ItemSpacing.x * 3 + uiStyle.FramePadding.x * 8;
+            for (const char* label : {listLabel, pinLabel, "_", "X"}) buttonsWidth += ImGui::CalcTextSize(label).x;
+            ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - buttonsWidth);
+            if (ImGui::SmallButton(listLabel)) {
                 if (expanded) { expandedHeight = height; SDL_SetWindowSize(window, Width, MinHeight); }
                 else SDL_SetWindowSize(window, Width, expandedHeight);
                 expanded = !expanded;
             }
             ImGui::SameLine();
-            if (ImGui::SmallButton(onTop ? "Pin *" : "Pin")) { onTop = !onTop; SDL_SetWindowAlwaysOnTop(window, onTop); }
+            if (ImGui::SmallButton(pinLabel)) { onTop = !onTop; SDL_SetWindowAlwaysOnTop(window, onTop); }
             tooltip("Keep above other windows"); ImGui::SameLine();
             if (ImGui::SmallButton("_")) SDL_MinimizeWindow(window);
             tooltip("Minimize"); ImGui::SameLine();

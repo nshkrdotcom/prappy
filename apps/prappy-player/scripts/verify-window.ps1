@@ -82,20 +82,20 @@ try {
     [PlayerNative]::SendMessage($hwnd,0x112,[IntPtr](0xf030),[IntPtr]::Zero) | Out-Null
     $r = Rect
     Require (($r.Right-$r.Left) -eq 500) 'Maximize cannot expand width'
-    Click 229 20
+    Click 365 20
     $r = Rect
     Require (($r.Bottom-$r.Top) -ge 600) 'List expands'
     Capture 'player-expanded'
-    Click 229 20
+    Click 365 20
     $r = Rect
     Require (($r.Bottom-$r.Top) -eq 276) 'List collapses'
     $originalTop = if ($ex -band 8) { [IntPtr](-1) } else { [IntPtr](-2) }
     [PlayerNative]::SetWindowPos($hwnd,$originalTop,0,0,0,0,0x13) | Out-Null
     $before = [PlayerNative]::GetWindowLongPtr($hwnd,-20)
-    Click 270 17
+    Click 417 17
     $after = [PlayerNative]::GetWindowLongPtr($hwnd,-20)
     Require (($before -band 8) -ne ($after -band 8)) 'Pin toggles always-on-top'
-    Click 270 17
+    Click 417 17
     $r = Rect
     $packed = [IntPtr]((($r.Top+1) -shl 16) -bor ($r.Left+250))
     Require ([PlayerNative]::SendMessage($hwnd,0x84,[IntPtr]::Zero,$packed).ToInt32() -eq 12) 'Top edge offers native height resizing'
