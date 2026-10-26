@@ -5,6 +5,9 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <dwmapi.h>
+#include <initguid.h>
+#include <propkey.h>
+#include <propsys.h>
 #include <SDL3/SDL.h>
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
@@ -37,6 +40,7 @@ constexpr float Scale = Width / 350.0f;
 constexpr float u(float value) { return value * Scale; }
 constexpr int MinHeight = 250, TransportHeight = 202;
 static WNDPROC originalProc;
+static constexpr wchar_t AppId[] = L"nshkrdotcom.Prappy.Player";
 static std::vector<SDL_FRect> controls, nextControls;
 static void rememberControl() {
     if (!ImGui::IsItemVisible()) return;
@@ -443,6 +447,28 @@ static bool advance(Audio& audio, const Library& library, int direction, bool au
     return audio.play(library.tracks[static_cast<size_t>(index)].path);
 }
 
+static void setTaskbarIdentity(HWND hwnd) {
+    IPropertyStore* properties = nullptr;
+    if (FAILED(SHGetPropertyStoreForWindow(hwnd, IID_PPV_ARGS(&properties))))
+        throw std::runtime_error("Cannot set player taskbar identity.");
+    HRESULT result = S_OK;
+    auto set = [&](REFPROPERTYKEY property, const std::wstring& text) {
+        PROPVARIANT value{}; value.vt = VT_LPWSTR;
+        value.pwszVal = const_cast<wchar_t*>(text.c_str());
+        if (SUCCEEDED(result)) result = properties->SetValue(property, value);
+    };
+    const auto directory = executableDir();
+    const auto executable = (directory / L"PrappyPlayer.exe").wstring();
+    // Pinning uses shell metadata, separately from the live WM_SETICON icon.
+    // A dedicated icon path also avoids the EXE's old cached icon association.
+    set(PKEY_AppUserModel_RelaunchCommand, L"\"" + executable + L"\"");
+    set(PKEY_AppUserModel_RelaunchDisplayNameResource, L"@" + executable + L",-101");
+    set(PKEY_AppUserModel_RelaunchIconResource, (directory / L"PrappyPlayer.ico").wstring() + L",0");
+    set(PKEY_AppUserModel_ID, AppId);
+    if (SUCCEEDED(result)) result = properties->Commit();
+    properties->Release();
+    if (FAILED(result)) throw std::runtime_error("Cannot set player taskbar properties.");
+}
 static LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
     if (message == WM_NCHITTEST) {
         // Leave the native frame/caption to Windows (including Snap Layouts).
@@ -585,6 +611,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     SDL_Window* window = nullptr; SDL_Renderer* renderer = nullptr;
     bool imgui = false, platform = false, graphics = false;
     int exitCode = 0;
+    HRESULT comResult = E_FAIL;
     std::unique_ptr<void, decltype(&CloseHandle)> singleton(nullptr, CloseHandle);
     try {
         const bool windowTest = args.size() == 1 && args[0] == L"--window-test";
@@ -600,6 +627,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                 return 0;
             }
         }
+        comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        SetCurrentProcessExplicitAppUserModelID(AppId);
+        SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON, "1");
+        SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON_SMALL, "1");
         const auto config = executableDir() / "player.ini";
         Library library; Audio audio;
         Scan scan;
@@ -611,6 +642,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         if (!window) throw std::runtime_error(SDL_GetError());
         SDL_SetWindowMinimumSize(window, Width, MinHeight);
         auto hwnd = static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+        setTaskbarIdentity(hwnd);
         originalProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(windowProc)));
         const BOOL darkCaption = TRUE;
         DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkCaption, sizeof(darkCaption));
@@ -799,5 +831,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     if (imgui) ImGui::DestroyContext();
     if (renderer) SDL_DestroyRenderer(renderer);
     if (window) SDL_DestroyWindow(window);
-    SDL_Quit(); return exitCode;
+    SDL_Quit();
+    if (SUCCEEDED(comResult)) CoUninitialize();
+    return exitCode;
 }

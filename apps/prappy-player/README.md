@@ -33,7 +33,7 @@ pwsh scripts/build.ps1 -Run    # Release; add -Config Debug for a debug build
 
 Executable: `build/Release/PrappyPlayer.exe`. Launch it directly without a
 console, including from Explorer. To relocate it, copy the executable,
-`libmpv-2.dll`, `licenses/` and your `player.ini` together. The MSVC runtime and
+`PrappyPlayer.ico`, `libmpv-2.dll`, `licenses/` and your `player.ini` together. The MSVC runtime and
 SDL are statically linked. Build output and the downloaded DLL are gitignored.
 
 ## Music roots
