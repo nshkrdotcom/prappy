@@ -1,5 +1,19 @@
 # Windows verification
 
+## Preserve list scroll during playback, 2026-10-26
+
+Playback generation changes previously dirtied the visible rows and implicitly
+requested a scroll reset, jumping the library to the top after a song loaded.
+Row invalidation and explicit scroll reset are now separate. Playback updates
+refresh History as needed without scrolling either view; library selection only
+updates its highlight. Search, sorting and view switches still reset scroll.
+
+The feature UI regression adds 120 distinct WAV fixtures across six directories,
+scrolls below the top and clicks a visible song in each sort mode. It checks the
+actual child scroll offset after playback commits and after the following frame
+(when ImGui applies queued scroll targets). The test failed before the fix in
+Filename mode, then passed for Filename, Directory groups and File type groups.
+
 ## Shared text baseline, 2026-10-26
 
 Centering each word's full visible bounds caused History's descender to shift

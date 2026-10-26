@@ -14,12 +14,16 @@ struct UiProbe {
     bool scripted = false, mouseDown = false;
     ImVec2 mousePosition{};
     uint64_t acknowledged = 0;
+    float scrollX = 0, scrollY = 0, scrollMaxY = 0;
+    int order = 0;
+    std::map<ImGuiKey, bool> keys;
     std::vector<std::string> controls;
     std::map<std::string, uint64_t> activations;
     std::string tooltip, previous;
     void input(const std::filesystem::path& directory) {
         if (!enabled) return;
         std::string characters;
+        float wheel = 0;
         try {
             const auto bytes = stateio::read(directory / "ui-command.txt");
             if (!bytes.empty() && bytes.size() < 4096 && bytes.back() == '\n') {
@@ -33,6 +37,13 @@ struct UiProbe {
                         if (valid) mousePosition = {x, y};
                     } else if (action == "DOWN") mouseDown = true;
                     else if (action == "UP") mouseDown = false;
+                    else if (action == "WHEEL") valid = static_cast<bool>(command >> wheel) && std::isfinite(wheel) && std::abs(wheel) <= 100;
+                    else if (action == "KEY") {
+                        std::string name; int down = 0;
+                        valid = static_cast<bool>(command >> name >> down) && (down == 0 || down == 1);
+                        const auto key = name == "HOME" ? ImGuiKey_Home : name == "DOWN" ? ImGuiKey_DownArrow : name == "ENTER" ? ImGuiKey_Enter : ImGuiKey_None;
+                        if (valid && key != ImGuiKey_None) keys[key] = down != 0; else valid = false;
+                    }
                     else if (action == "TEXT") valid = static_cast<bool>(command >> std::quoted(characters));
                     else valid = false;
                     command >> std::ws;
@@ -47,10 +58,12 @@ struct UiProbe {
             io.AddFocusEvent(true);
             io.AddMousePosEvent(mousePosition.x, mousePosition.y);
             io.AddMouseButtonEvent(0, mouseDown);
+            for (const auto& [key, down] : keys) io.AddKeyEvent(key, down);
+            if (wheel != 0) io.AddMouseWheelEvent(0, wheel);
             if (!characters.empty()) io.AddInputCharactersUTF8(characters.c_str());
         }
     }
-    void begin() { if (enabled) { controls.clear(); tooltip.clear(); } }
+    void begin() { if (enabled) { controls.clear(); tooltip.clear(); scrollX = scrollY = scrollMaxY = 0; } }
     void observe(const char* name, bool activated) {
         if (!enabled || !ImGui::IsItemVisible()) return;
         if (activated) ++activations[name];
@@ -63,6 +76,8 @@ struct UiProbe {
     void flush(const std::filesystem::path& directory, const std::string& state) {
         if (!enabled) return;
         std::ostringstream out; out << state << ' ' << acknowledged << '\n';
+        out << "SCROLL " << scrollX << ' ' << scrollY << ' ' << scrollMaxY << '\n';
+        out << "ORDER " << order << '\n';
         for (const auto& control : controls) out << control;
         auto text = tooltip; std::replace(text.begin(), text.end(), '\n', ' ');
         out << "TOOLTIP " << std::quoted(text) << '\n';

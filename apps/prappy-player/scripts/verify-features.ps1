@@ -44,7 +44,7 @@ function Read-Ui {
     catch [IO.IOException] { return $null } # Replacement may overlap this read; poll for the next complete snapshot.
     $lines = $text -split '\r?\n'; $ready = $lines[0] -split ' '
     if ($ready[0] -ne 'READY') { return $null }
-    $state = [pscustomobject]@{Width=[int]$ready[1];Height=[int]$ready[2];Repeat=[int]$ready[3];Cursor=[uint64]$ready[4];Count=[int]$ready[5];Pending=[bool][int]$ready[6];Paused=[bool][int]$ready[7];History=[bool][int]$ready[8];Visible=[int]$ready[9];Ack=[uint64]$ready[10];Controls=@{};Tooltip=''}
+    $state = [pscustomobject]@{Width=[int]$ready[1];Height=[int]$ready[2];Repeat=[int]$ready[3];Cursor=[uint64]$ready[4];Count=[int]$ready[5];Pending=[bool][int]$ready[6];Paused=[bool][int]$ready[7];History=[bool][int]$ready[8];Visible=[int]$ready[9];Ack=[uint64]$ready[10];Controls=@{};Tooltip='';ScrollY=0;ScrollMaxY=0;SortOrder=0}
     foreach ($line in $lines) {
         if ($line -match '^CONTROL "([^"]+)" ([^ ]+) ([^ ]+) ([^ ]+) ([^ ]+) ([01]) ([01]) ([0-9]+)$') {
             $state.Controls[$matches[1]] = [pscustomobject]@{
@@ -57,6 +57,11 @@ function Read-Ui {
                 Hovered=[bool][int]$matches[6];Active=[bool][int]$matches[7];Clicks=[uint64]$matches[8]
             }
         } elseif ($line -match '^TOOLTIP "(.*)"$') { $state.Tooltip=$matches[1] }
+        elseif ($line -match '^SCROLL ([^ ]+) ([^ ]+) ([^ ]+)$') {
+            $state.ScrollY=[double]::Parse($matches[2],[Globalization.CultureInfo]::InvariantCulture)
+            $state.ScrollMaxY=[double]::Parse($matches[3],[Globalization.CultureInfo]::InvariantCulture)
+        }
+        elseif ($line -match '^ORDER ([0-9]+)$') { $state.SortOrder=[int]$matches[1] }
     }
     return $state
 }
@@ -232,6 +237,40 @@ try {
     Send-UiInput 'TEXT "alpha"'
     $null=Wait-Ui {param($s) $s.Visible -eq 2} 'history search filters three visits to two matches'
     Capture 'history-filtered'
+    # Add a long catalog only after the existing two-track navigation checks.
+    $template=[IO.File]::ReadAllBytes("$fixture/a/same.wav")
+    for ($index=0; $index -lt 120; $index++) {
+        $directory=Join-Path $stateDirectory ('media/group-{0:D2}' -f [int][Math]::Floor($index/20))
+        New-Item -ItemType Directory -Force $directory | Out-Null
+        $bytes=$template.Clone()
+        [BitConverter]::GetBytes([int]($index+1000)).CopyTo($bytes,16384)
+        [IO.File]::WriteAllBytes((Join-Path $directory ('track-{0:D3}.wav' -f $index)),$bytes)
+    }
+    Click 'Clear'
+    Click 'Library'
+    Click 'refresh'
+    $null=Wait-Ui {param($s) !$s.History -and $s.Visible -eq 122 -and $s.Controls.ContainsKey('refresh') -and $s.Controls['refresh'].Hovered} 'long catalog refresh complete'
+    foreach ($mode in @(0,1,2)) {
+        Click 'order'
+        Send-UiInput 'KEY HOME 1'; Send-UiInput 'KEY HOME 0'
+        for ($step=0; $step -lt $mode; $step++) { Send-UiInput 'KEY DOWN 1'; Send-UiInput 'KEY DOWN 0' }
+        Send-UiInput 'KEY ENTER 1'; Send-UiInput 'KEY ENTER 0'
+        $null=Wait-Ui {param($s) $s.SortOrder -eq $mode -and $s.ScrollMaxY -gt 100} "sort mode $mode selected"
+        Send-UiInput 'MOVE 240 300'
+        Send-UiInput 'WHEEL -5'
+        $beforeScroll=Wait-Ui {param($s) $s.ScrollY -gt 50} "mode $mode scrolled down"
+        $row=$beforeScroll.Controls.Keys | Where-Object {$_ -like 'library-*' -and $beforeScroll.Controls[$_].Y -gt 180 -and $beforeScroll.Controls[$_].Y -lt 400} | Sort-Object | Select-Object -First 1
+        Require ($null -ne $row) "mode $mode has a visible track below the top"
+        $visits=$beforeScroll.Count
+        Click $row
+        $afterScroll=Wait-Ui {param($s) !$s.Pending -and $s.Count -gt $visits} "mode $mode selected track loaded"
+        # ImGui applies a queued scroll target on the following frame.
+        Send-UiInput 'MOVE 240 300'
+        $afterScroll=Read-Ui
+        Require ([Math]::Abs($afterScroll.ScrollY-$beforeScroll.ScrollY) -lt 1) "Starting a track preserves scroll in sort mode $mode"
+        Click 'play'
+        $null=Wait-Ui {param($s) $s.Paused} "mode $mode playback paused"
+    }
     Write-Host "Feature screenshots: $stateDirectory"
 } finally {
     if (!$process.HasExited) {

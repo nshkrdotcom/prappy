@@ -1028,7 +1028,7 @@ static int runPlayer(HINSTANCE instance) {
         bool historyView = false;
         uint64_t historyGeneration = 0;
         char search[256]{};
-        bool filterDirty = true;
+        bool filterDirty = true, resetListScroll = true;
         std::vector<size_t> visible;
         int expandedHeight = 710;
         const auto togglePlayback = [&] { playback.toggle(); };
@@ -1047,7 +1047,10 @@ static int runPlayer(HINSTANCE instance) {
             }
             playback.tick();
             if (scan.update(library)) { history.setLimit(library.historyLimit); filterDirty = true; }
-            if (historyGeneration != playback.generation) { historyGeneration = playback.generation; filterDirty = true; }
+            if (historyGeneration != playback.generation) {
+                historyGeneration = playback.generation;
+                if (historyView) filterDirty = true;
+            }
             if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) { SDL_Delay(80); continue; }
             ImGui_ImplSDLRenderer3_NewFrame(); ImGui_ImplSDL3_NewFrame();
             uiProbe.input(stateDirectory);
@@ -1066,7 +1069,7 @@ static int runPlayer(HINSTANCE instance) {
                 ImGui::GetColorU32(ImVec4(.25f, .94f, .72f, 1)));
             ImGui::SetCursorPos({headerRight - headerWidth * 2 - gap, headerY});
             if (centeredButton("History", {headerWidth, headerHeight}, "history")) {
-                historyView = true; filterDirty = true;
+                historyView = true; filterDirty = resetListScroll = true;
                 if (!expanded && !(SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED)) SDL_SetWindowSize(window, width, expandedHeight);
                 expanded = true;
             }
@@ -1084,9 +1087,9 @@ static int runPlayer(HINSTANCE instance) {
             ImGui::SetCursorPos({std::round(uiStyle.WindowPadding.x), headerY + headerHeight + std::round(uiStyle.ItemSpacing.y)});
             const float transportY = static_cast<float>(height - TransportHeight);
             if (expanded && transportY > u(90)) {
-                if (viewButton("Library", !historyView)) { historyView = false; filterDirty = true; }
+                if (viewButton("Library", !historyView)) { historyView = false; filterDirty = resetListScroll = true; }
                 rememberControl(); ImGui::SameLine();
-                if (viewButton("History##tab", historyView)) { historyView = true; filterDirty = true; }
+                if (viewButton("History##tab", historyView)) { historyView = true; filterDirty = resetListScroll = true; }
                 rememberControl(); ImGui::SameLine();
                 if (centeredButton("Config")) {
                     auto result = ShellExecuteW(hwnd, L"open", config.c_str(), nullptr, config.parent_path().c_str(), SW_SHOWNORMAL);
@@ -1096,7 +1099,8 @@ static int runPlayer(HINSTANCE instance) {
                 ImGui::SetNextItemWidth(u(153));
                 const char* choices[] = {"Filename", "Directory groups", "File type groups"};
                 ImGui::BeginDisabled(historyView);
-                if (ImGui::Combo("##order", &library.order, choices, 3)) { library.sort(); filterDirty = true; }
+                if (ImGui::Combo("##order", &library.order, choices, 3)) { library.sort(); filterDirty = resetListScroll = true; }
+                uiProbe.observe("order", ImGui::IsItemClicked());
                 rememberControl(); ImGui::EndDisabled();
                 if (historyView) { ImGui::SameLine(); ImGui::TextDisabled("Newest first"); }
                 const auto listStart = ImGui::GetCursorPos();
@@ -1106,15 +1110,18 @@ static int runPlayer(HINSTANCE instance) {
                 const float countWidth = ImGui::CalcTextSize("00000 / 00000").x;
                 ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - clearWidth - countWidth - uiStyle.ItemSpacing.x * 2);
                 if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_F)) ImGui::SetKeyboardFocusHere();
-                if (ImGui::InputTextWithHint("##search", "Search names or paths...", search, sizeof(search), ImGuiInputTextFlags_EscapeClearsAll)) filterDirty = true;
+                if (ImGui::InputTextWithHint("##search", "Search names or paths...", search, sizeof(search), ImGuiInputTextFlags_EscapeClearsAll)) filterDirty = resetListScroll = true;
                 uiProbe.observe("search", ImGui::IsItemClicked());
                 rememberControl();
                 tooltip("Match all words, in any order, ignoring case. Ctrl+F focuses search; Escape clears it.");
                 ImGui::SameLine();
                 ImGui::BeginDisabled(!search[0]);
-                if (centeredButton("Clear")) { search[0] = '\0'; filterDirty = true; }
+                if (centeredButton("Clear")) { search[0] = '\0'; filterDirty = resetListScroll = true; }
                 rememberControl(); ImGui::EndDisabled();
-                const bool resetScroll = filterDirty;
+                // Playback/history updates may rebuild rows without moving the viewport.
+                // Only explicit changes to the user's view request a scroll reset.
+                const bool resetScroll = resetListScroll;
+                resetListScroll = false;
                 if (filterDirty) {
                     if (!historyView) visible = library.filter(search);
                     else {
@@ -1131,6 +1138,9 @@ static int runPlayer(HINSTANCE instance) {
                 ImGui::SameLine(); ImGui::TextDisabled("%zu / %zu", visible.size(), historyView ? history.entries.size() : library.tracks.size());
                 ImGui::SetCursorPos(listStart);
                 if (ImGui::BeginChild("Tracks", {0, std::max(1.0f, searchY - listStart.y - uiStyle.ItemSpacing.y)}, ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar)) {
+                    if (uiProbe.enabled) {
+                        uiProbe.scrollX = ImGui::GetScrollX(); uiProbe.scrollY = ImGui::GetScrollY(); uiProbe.scrollMaxY = ImGui::GetScrollMaxY();
+                    }
                     if (resetScroll) { ImGui::SetScrollY(0); ImGui::SetScrollX(0); }
                     const auto current = key(audio.current);
                     auto row = [&](size_t i) {
@@ -1279,6 +1289,7 @@ static int runPlayer(HINSTANCE instance) {
             SDL_SetRenderDrawColor(renderer, 46, 49, 51, 255); SDL_RenderClear(renderer);
             ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer); SDL_RenderPresent(renderer);
             if (windowTest) {
+                uiProbe.order = library.order;
                 std::ostringstream status;
                 status << "READY " << width << ' ' << height << ' ' << static_cast<int>(history.repeat) << ' '
                     << (history.current() ? history.current()->id : 0) << ' ' << history.entries.size() << ' '
