@@ -7,6 +7,39 @@ the list collapsed; playback controls always stay at the bottom.
 The UI uses SDL's software renderer with a native Windows framebuffer, avoiding
 a Direct3D/OpenGL game graphics device that can trigger GPU overlay notices.
 
+## Memory and robustness checks
+
+Player code builds with C++20, `/W4 /WX /permissive-`; warnings fail the build.
+Third-party libraries keep their own warning policies.
+
+```powershell
+# Build and verify Release, static analysis, Debug leaks and Debug ASan.
+pwsh scripts/verify-health.ps1
+# Repeat tests against existing diagnostic builds.
+pwsh scripts/verify-health.ps1 -SkipBuild
+# Individual diagnostic builds:
+pwsh scripts/build.ps1 -Analyze
+pwsh scripts/build.ps1 -Config Debug -Asan
+```
+
+The health check compiles the static-analysis variant and runs playback/dedup/search
+regression tests twice each against Release, Debug and Debug ASan,
+including 12 playback lifecycle, refresh and scan cancellation cycles per run,
+then verifies native window behavior and clean shutdown. Logs live in `build/`.
+Debug CRT leak reports are checked automatically; for a manual Debug session set
+`PRAPPY_LEAK_REPORT` to an absolute log path before launching and close normally.
+Without that variable, leak diagnostics go to the debugger. Release omits the
+leak reporter. ASan instruments the player, SDL and ImGui, and the build script
+copies its required runtime DLL beside the diagnostic executable.
+
+MSVC ASan detects memory misuse, not leaks. CRT reports cover allocations in the
+Debug CRT used by this executable; the prebuilt mpv DLL has separate allocation
+and instrumentation coverage. These checks cannot prove absence of all leaks,
+Win32 handle leaks or concurrency bugs. If memory or handles keep growing after
+warm-up during a longer playback/refresh session, investigate with heap snapshots
+or a profiler. The automated playback check needs a working Windows audio device;
+window checks need an interactive desktop.
+
 ## Screenshots
 
 Keep the list tucked away for playback in a small window.

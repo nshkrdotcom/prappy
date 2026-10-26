@@ -1,5 +1,5 @@
 #Requires -Version 7.0
-param([switch]$Interactive)
+param([switch]$Interactive, [string]$BuildVariant='Release')
 $ErrorActionPreference='Stop'
 $app = Split-Path $PSScriptRoot -Parent
 $out = Join-Path $app 'build'
@@ -33,13 +33,17 @@ public static class PlayerNative {
 }
 '@
 [PlayerNative]::SetThreadDpiAwarenessContext([IntPtr](-4)) | Out-Null
-$p = Start-Process -FilePath "$app\build\Release\PrappyPlayer.exe" -ArgumentList '--window-test' -WorkingDirectory $env:TEMP -WindowStyle Hidden -PassThru
+$p = Start-Process -FilePath "$app\build\$BuildVariant\PrappyPlayer.exe" -ArgumentList '--window-test' -WorkingDirectory $env:TEMP -WindowStyle Hidden -PassThru
 for ($i=0; $i -lt 450; $i++) {
     $p.Refresh()
     if ($p.MainWindowHandle -ne [IntPtr]::Zero) { break }
+    if ($p.HasExited) { throw "Test player exited before creating a window: $($p.ExitCode)" }
     Start-Sleep -Milliseconds 100
 }
-if ($p.MainWindowHandle -eq [IntPtr]::Zero) { throw 'Test player did not create a window.' }
+if ($p.MainWindowHandle -eq [IntPtr]::Zero) {
+    Stop-Process -Id $p.Id -Force
+    throw 'Test player did not create a window.'
+}
 $hwnd = $p.MainWindowHandle
 function Rect {
     $r = [PlayerNative+Rect]::new()
@@ -156,5 +160,6 @@ try {
     $top = if ($ex -band 8) { [IntPtr](-1) } else { [IntPtr](-2) }
     [PlayerNative]::PostMessage($hwnd,0x10,[IntPtr]::Zero,[IntPtr]::Zero) | Out-Null
     if (!$p.WaitForExit(5000)) { throw 'Test player did not cancel its scan and close promptly.' }
+    Require ($p.ExitCode -eq 0) 'Clean player shutdown'
     if ($Interactive) { [PlayerNative]::SetCursorPos($cursor.X,$cursor.Y) | Out-Null }
 }

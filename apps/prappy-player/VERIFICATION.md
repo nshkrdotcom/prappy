@@ -1,5 +1,44 @@
 # Windows verification
 
+## C++ robustness checks, 2026-10-26
+
+MSVC 19.44 built Release, Release-Analyze, Debug and Debug-Asan successfully.
+Player compilation uses C++20 and `/W4 /WX /permissive-`. The `/analyze` build
+passed without player diagnostics. Debug incremental linking is disabled to
+avoid its conflict with the embedded application manifest. ASan instruments
+the player, SDL and ImGui; the prebuilt mpv DLL remains uninstrumented.
+
+`pwsh scripts/verify-health.ps1 -SkipBuild` passed against the final builds:
+
+- Two playback/dedup/search regression runs each in Release, Debug and Debug-Asan.
+- Each run includes 12 create/load/destroy playback cycles, library refreshes
+  and cancellation/join of asynchronous scans.
+- Native window, resize, hit-test, DPI and clean shutdown checks in all three
+  runtime variants.
+- Debug CRT leak reports passed for both playback runs and window shutdown.
+- No ASan errors were reported; all tested processes exited successfully.
+
+Additional integration runs using the existing six-format fixtures passed in
+Release, Debug and Debug-Asan: FLAC, WAV, MP3, Opus, AAC/M4A and WavPack, with
+decode, duration, pause, seek, volume, sorting, refresh, EOF and muted Windows
+WASAPI output checks. The Debug six-format run also reported no CRT leaks.
+Local logs and fixtures are under `build/health` and `build/test-media`.
+
+The first Debug regression run exposed a 72-byte SDL allocation at process exit.
+The self-test path used SDL timers without shutting SDL down. Shared scoped
+shutdown removed that allocation; the same check then passed. COM cleanup and
+exception-path releases for command-line arguments and taskbar metadata now
+use scoped ownership, and the audio resource owner cannot be copied or reopened.
+
+Windows Application Control blocked launching the final Release-Analyze binary
+(Code Integrity event 3077). Compilation/static analysis passed; runtime checks
+use the ordinary Release build and the two diagnostic builds. No security policy
+was changed. This suite detects exercised memory errors and Debug CRT leaks;
+it does not prove absence of leaks inside mpv, Win32 handle leaks, races or
+unexercised defects.
+
+## Earlier functional verification
+
 Verified on this Windows workstation with MSVC 19.44, Windows SDK 10.0.26100.0,
 CMake 4.4.4 and Ninja 1.13.2. Final Release build succeeded without compiler
 warnings from the player. These checks were run against the executable, not only

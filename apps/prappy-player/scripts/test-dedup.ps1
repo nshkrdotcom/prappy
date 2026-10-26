@@ -1,4 +1,5 @@
 #Requires -Version 7.0
+param([string]$BuildVariant='Release')
 $ErrorActionPreference='Stop'
 $app=Split-Path $PSScriptRoot -Parent
 $test=Join-Path $app 'build\dedup-test\scraper\library'
@@ -26,11 +27,16 @@ directory=$test
 directory=$test\copies
 extensions=wav
 "@ | Set-Content "$test\player.ini" -Encoding utf8
-$p=Start-Process -FilePath "$app\build\Release\PrappyPlayer.exe" -WindowStyle Hidden -Wait -PassThru `
-    -ArgumentList '--self-test',"$test\player.ini","$test\results.log"
+$p=Start-Process -FilePath "$app\build\$BuildVariant\PrappyPlayer.exe" -WindowStyle Hidden -PassThru `
+    -RedirectStandardError "$test\stderr-$BuildVariant.log" `
+    -ArgumentList '--self-test',('"{0}"' -f "$test\player.ini"),('"{0}"' -f "$test\results.log")
+if (!$p.WaitForExit(90000)) {
+    Stop-Process -Id $p.Id -Force
+    throw "Player self-test timed out: $BuildVariant"
+}
 $results=Get-Content "$test\results.log" -Raw
 Write-Host $results
-if($p.ExitCode -ne 0 -or $results -notmatch 'Scan: 2 tracks \| 2 identical copies hidden') {
+if($p.ExitCode -ne 0 -or $results -notmatch 'ALL PASS' -or $results -notmatch 'Scan: 2 tracks \| 2 identical copies hidden') {
     throw 'Dedup regression failed: renamed copies must collapse; same-name middle differences must remain.'
 }
 if ($results -notmatch 'Testing library\\a\\same\.wav') { throw 'Track label did not strip scraper and its parent directories.' }

@@ -33,6 +33,30 @@
 #include <stop_token>
 #include <tuple>
 #include <vector>
+#ifdef _DEBUG
+#include <crtdbg.h>
+
+// Construct before application globals so the report runs after their destruction.
+struct DebugLeakReport {
+    ~DebugLeakReport() {
+        wchar_t path[32768]{};
+        const auto length = GetEnvironmentVariableW(L"PRAPPY_LEAK_REPORT", path, static_cast<DWORD>(std::size(path)));
+        if (!length || length >= std::size(path)) { _CrtDumpMemoryLeaks(); return; }
+        const auto file = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) { OutputDebugStringW(L"Cannot write PRAPPY_LEAK_REPORT.\n"); return; }
+        const auto mode = _CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_FILE);
+        const auto previous = _CrtSetReportFile(_CRT_WARN, file);
+        const bool leaked = _CrtDumpMemoryLeaks() != FALSE;
+        const char* result = leaked ? "FAIL CRT leaks\r\n" : "PASS no CRT leaks\r\n";
+        DWORD written = 0;
+        WriteFile(file, result, static_cast<DWORD>(std::strlen(result)), &written, nullptr);
+        _CrtSetReportFile(_CRT_WARN, previous);
+        _CrtSetReportMode(_CRT_WARN, mode);
+        CloseHandle(file);
+    }
+};
+static DebugLeakReport debugLeakReport;
+#endif
 
 namespace fs = std::filesystem;
 constexpr int Width = 500;
@@ -384,6 +408,9 @@ struct Scan {
 
 // libmpv exposes a C ABI. Resolve it directly: no MinGW C++/import-library dependency.
 struct Audio {
+    Audio() = default;
+    Audio(const Audio&) = delete;
+    Audio& operator=(const Audio&) = delete;
     HMODULE dll = nullptr;
     mpv_handle* handle = nullptr;
 #define MPV_API(name) decltype(&mpv_##name) name = nullptr
@@ -396,6 +423,7 @@ struct Audio {
     double position = 0, duration = 0, volume = 70;
     ~Audio() { if (handle) terminate_destroy(handle); if (dll) FreeLibrary(dll); }
     void open(bool silent = false) {
+        if (dll) throw std::logic_error("Audio is already open.");
         auto path = executableDir() / "libmpv-2.dll";
         dll = LoadLibraryExW(path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
         if (!dll) throw std::runtime_error("Cannot load libmpv-2.dll (Windows error " + std::to_string(GetLastError()) + ").");
@@ -476,6 +504,8 @@ static void setTaskbarIdentity(HWND hwnd) {
     IPropertyStore* properties = nullptr;
     if (FAILED(SHGetPropertyStoreForWindow(hwnd, IID_PPV_ARGS(&properties))))
         throw std::runtime_error("Cannot set player taskbar identity.");
+    const auto release = [](IPropertyStore* value) { value->Release(); };
+    const std::unique_ptr<IPropertyStore, decltype(release)> owner(properties, release);
     HRESULT result = S_OK;
     auto set = [&](REFPROPERTYKEY property, const std::wstring& text) {
         PROPVARIANT value{}; value.vt = VT_LPWSTR;
@@ -491,7 +521,6 @@ static void setTaskbarIdentity(HWND hwnd) {
     set(PKEY_AppUserModel_RelaunchIconResource, (directory / L"PrappyPlayer.ico").wstring() + L",0");
     set(PKEY_AppUserModel_ID, AppId);
     if (SUCCEEDED(result)) result = properties->Commit();
-    properties->Release();
     if (FAILED(result)) throw std::runtime_error("Cannot set player taskbar properties.");
 }
 static LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
@@ -645,19 +674,42 @@ static int selfTest(const fs::path& config, const fs::path& logFile) {
         const auto count = library.tracks.size();
         if (library.refresh(logFile.parent_path() / "nonexistent-player-config.ini") || library.tracks.size() != count || key(audio.current) != id)
             throw std::runtime_error("Bad config did not preserve playback/library.");
-        log << "PASS missing config preserves library and playback\nALL PASS\n";
+        log << "PASS missing config preserves library and playback\n";
+        for (int cycle = 0; cycle < 12; ++cycle) {
+            Audio repeated; repeated.open(true);
+            if (!repeated.play(testTracks[static_cast<size_t>(cycle) % testTracks.size()].path))
+                throw std::runtime_error(repeated.error);
+            for (int i = 0; i < 300 && !repeated.loaded; ++i) {
+                repeated.poll();
+                if (!repeated.error.empty()) throw std::runtime_error(repeated.error);
+                SDL_Delay(10);
+            }
+            if (!repeated.loaded) throw std::runtime_error("Repeated playback load timeout.");
+            if (!library.refresh(config)) throw std::runtime_error("Repeated refresh failed.");
+            Scan cancelled; cancelled.begin(config, cycle % 3);
+            // Destruction requests cancellation and joins even while a scan is active.
+        }
+        log << "PASS 12 playback create/load/destroy, refresh and scan cancellation cycles\nALL PASS\n";
         return 0;
     } catch (const std::exception& e) { log << "FAIL " << e.what() << '\n'; return 1; }
 }
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+static int runPlayer(HINSTANCE instance) {
+    struct ComLifetime {
+        HRESULT result = E_FAIL;
+        ~ComLifetime() { if (SUCCEEDED(result)) CoUninitialize(); }
+    } com;
+    // SDL timers/TLS can be used by self-tests before video is initialized.
+    // Keep shutdown outside both paths and after their local objects unwind.
+    struct SdlLifetime { ~SdlLifetime() { SDL_Quit(); } } sdlLifetime;
     int argc = 0; auto argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    std::vector<std::wstring> args; for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]); LocalFree(argv);
+    if (!argv) throw std::runtime_error("Cannot read player command line.");
+    const std::unique_ptr<void, decltype(&LocalFree)> arguments(argv, LocalFree);
+    std::vector<std::wstring> args; for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
     if (args.size() == 3 && args[0] == L"--self-test") return selfTest(args[1], args[2]);
     SDL_Window* window = nullptr; SDL_Renderer* renderer = nullptr;
     bool imgui = false, platform = false, graphics = false;
     int exitCode = 0;
-    HRESULT comResult = E_FAIL;
     std::unique_ptr<void, decltype(&CloseHandle)> singleton(nullptr, CloseHandle);
     try {
         const bool windowTest = args.size() == 1 && args[0] == L"--window-test";
@@ -673,7 +725,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                 return 0;
             }
         }
-        comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        com.result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        if (FAILED(com.result)) throw std::runtime_error("Cannot initialize Windows COM services.");
         SetCurrentProcessExplicitAppUserModelID(AppId);
         SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON, "1");
         SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON_SMALL, "1");
@@ -900,7 +953,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     if (imgui) ImGui::DestroyContext();
     if (renderer) SDL_DestroyRenderer(renderer);
     if (window) SDL_DestroyWindow(window);
-    SDL_Quit();
-    if (SUCCEEDED(comResult)) CoUninitialize();
     return exitCode;
+}
+
+int WINAPI wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE, _In_ PWSTR, _In_ int) {
+    try { return runPlayer(instance); }
+    catch (const std::exception& e) {
+        MessageBoxA(nullptr, e.what(), "Prappy Player", MB_OK | MB_ICONERROR);
+        return 1;
+    }
 }
