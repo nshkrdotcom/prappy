@@ -42,12 +42,14 @@ struct Audio {
     std::string error;
     fs::path current;
     bool loaded = false, paused = false, active = false, waitingStart = false;
+    bool pauseRequested = false; // User intent survives mpv's file-option reset at EOF.
     int64_t desiredEntry = -1, eventEntry = -1;
     uint64_t serial = 0, loadedSerial = 0;
     double position = 0, duration = 0, volume = 70;
     AudioInfo info;
     double gain = 0, meterPeak = 0;
     bool metering = false;
+    bool sequentialRetry = false;
     using Clock = std::chrono::steady_clock;
     Clock::time_point positionTime = Clock::now();
     std::optional<double> queuedSeek, seekPreview;
@@ -111,17 +113,34 @@ struct Audio {
             error = "Cannot identify requested playback."; return false;
         }
         ++serial;
+        sequentialRetry = false;
         queuedSeek.reset(); seekPreview.reset(); pendingSeek = 0;
         current = path; loaded = false; active = true; waitingStart = true;
         info = {};
-        position = startPosition; positionTime = Clock::now(); duration = 0; paused = startPaused; error.clear(); return true;
+        position = startPosition; positionTime = Clock::now(); duration = 0; paused = pauseRequested = startPaused; error.clear(); return true;
+    }
+    bool retryEmptyFlac(const mpv_event_end_file& end) {
+        if (end.playlist_entry_id != desiredEntry || end.reason != MPV_END_FILE_REASON_ERROR ||
+            end.error != MPV_ERROR_NOTHING_TO_PLAY || sequentialRetry || key(current.extension()) != L".flac") return false;
+        // A single-frame FLAC can fail libavformat's initial seek before any
+        // samples reach the decoder. Retry once as a sequential stream, keeping
+        // a bounded packet cache and the same application playback intent.
+        sequentialRetry = true;
+        const auto stream = "ffmpeg://"+utf8(current);
+        const auto options = std::string(pauseRequested ? "pause=yes" : "pause=no")+
+            ",stream-lavf-o=seekable=0,demuxer-seekable-cache=yes,demuxer-max-bytes=1048576";
+        if (!run({"loadfile",stream.c_str(),"replace","-1",options.c_str()})) return false;
+        if (get_property(handle,"playlist/0/id",MPV_FORMAT_INT64,&desiredEntry) < 0) return false;
+        loaded = false; loadedSerial = 0; active = true; waitingStart = true;
+        queuedSeek.reset(); seekPreview.reset(); info = {}; position = duration = 0;
+        positionTime = Clock::now(); error.clear(); return true;
     }
     void setPaused(bool value) {
-        if (!active) return;
+        if (!active) { paused = pauseRequested = value; return; }
         int flag = value ? 1 : 0;
         int result = set_property(handle, "pause", MPV_FORMAT_FLAG, &flag);
         if (result < 0) error = error_string(result); else {
-            position = displayPosition(); positionTime = Clock::now(); paused = value;
+            position = displayPosition(); positionTime = Clock::now(); paused = pauseRequested = value;
             if (!value) seekPreview.reset();
         }
     }
@@ -204,6 +223,7 @@ struct Audio {
             if (event->event_id == MPV_EVENT_END_FILE) {
                 auto end = static_cast<mpv_event_end_file*>(event->data);
                 if (end->playlist_entry_id != desiredEntry) continue;
+                if (retryEmptyFlac(*end)) continue;
                 if (end->reason == MPV_END_FILE_REASON_ERROR) error = "Playback: " + std::string(error_string(end->error));
                 if (end->reason == MPV_END_FILE_REASON_EOF) { eof = true; active = false; loaded = false; }
                 if (end->reason == MPV_END_FILE_REASON_ERROR) { active = false; loaded = false; }

@@ -115,7 +115,8 @@ struct Playback {
             else history.visit(static_cast<size_t>(destination - history.trail.begin()));
             if (completed.kind == Kind::Restore) {
                 const double position = audio.duration > .25 && completed.position < audio.duration - .1 ? completed.position : 0;
-                audio.seek(position); audio.position = position; history.position(position);
+                if (position > 0) audio.seek(position);
+                audio.position = position; history.position(position);
             }
             if (prepare) prepare(audio.current);
             audio.setPaused(completed.paused);
@@ -133,7 +134,7 @@ struct Playback {
             }
         }
         checkpoint(eof);
-        if (eof && !pending) navigate(1, true);
+        if (eof && !pending && !audio.pauseRequested) navigate(1, true);
         file.save(history);
     }
     void finish() {

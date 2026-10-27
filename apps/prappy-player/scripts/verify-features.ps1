@@ -78,6 +78,7 @@ function Read-Ui {
         }
         elseif ($line -match '^ORDER ([0-9]+)$') { $state.SortOrder=[int]$matches[1] }
         elseif ($line -match '^RENDERER (.+)$') { $state | Add-Member Renderer $matches[1] -Force }
+        elseif ($line -match '^PLAYBACK_ERROR(.*)$') { $state | Add-Member PlaybackError $matches[1].Trim() -Force }
         elseif ($line -match '^FRAME (\S+) (\S+) (\S+) (\S+) (\S+)$') {
             $state | Add-Member FrameBuild ([double]::Parse($matches[1],[Globalization.CultureInfo]::InvariantCulture)) -Force
             $state | Add-Member FrameDraw ([double]::Parse($matches[2],[Globalization.CultureInfo]::InvariantCulture)) -Force

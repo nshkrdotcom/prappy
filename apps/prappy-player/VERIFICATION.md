@@ -660,3 +660,47 @@ passed. Logs: build/relaunch-release.log, build/relaunch-debug.log,
 build/relaunch-debug-leaks.log, build/relaunch-analyze.log,
 build/relaunch-window.log. Independent focused review found no additional issues.
 The normal Release executable was rebuilt with the fix.
+
+## Saved short-FLAC startup error - 2026-10-27
+
+The reported bottom-bar error occurred during automatic session restore. The
+saved current track was a valid 64ms stereo/24-bit/48kHz FLAC with one 3072-frame
+audio block. Independent SoX decoding confirmed its samples. The bundled mpv
+failed an initial libavformat seek and returned MPV_ERROR_NOTHING_TO_PLAY before
+outputting samples; the problem reproduced from both WSL and a local copy, with
+metering disabled, and with other tested mpv builds. Ordinary music files decoded.
+No dependency versions or user audio files were changed.
+
+For this exact error on FLAC, Audio now retries once through FFmpeg's sequential
+file stream, with a per-file 1 MiB packet-cache limit. It retains the application's
+playback serial and real source path, acquires the new mpv playlist-entry identity,
+and preserves pause intent. The same recovery is used by the background analysis
+decoder. A failed retry still reports the real error. Normal successful decoding
+and other formats are unaffected. Restore no longer sends a redundant seek to zero.
+
+A paused tiny clip can reach EOF while the null output primes. Playback must not
+automatically navigate in that case. Explicit pause/play intent is now separate
+from mpv's reported pause property, which can reset as file-local options unwind
+at EOF. This preserves normal Repeat/Next behavior as well as paused restore.
+An inactive, already-finished clip also records a newly committed play intent.
+
+A public-domain SoX-generated 60-byte FLAC fixture reproduces the error without
+shipping user audio. The old code failed the startup test; the fix passes paused
+restore, retained visit count, clean playback EOF and all 3072 analysis frames.
+Additional red/green checks cover paused EOF with another available track and
+committing play intent after EOF. Release and Debug full state/repeat suites,
+Debug playback stress, six-format playback, static analysis and Debug CRT leaks
+passed. Logs: build/short-restore-red.log, build/short-paused-eof-red.log,
+build/short-intent-red.log, build/short-restore-state.log,
+build/short-restore-debug-state.log, build/short-restore-debug-leaks.log,
+build/short-restore-playback.log, build/short-restore-formats.log,
+build/short-restore-analyze.log.
+
+An isolated copy of the actual saved history, using the original WSL clip,
+restored the same cursor paused, generated its 3072-frame waveform and reported
+an empty playback error. Its screenshot was visually checked: no startup error
+at the bottom. Logs: build/saved-startup.log and build/actual-startup-clip-decode.log.
+Independent review caught the inactive-intent edge; a focused follow-up passed.
+Native text input is now explicitly stopped during window shutdown, after releasing
+the instance lock, so active IME teardown is not left to implicit window destruction.
+The final GPU UI and close/relaunch suites passed (build/short-restore-ui.log, build/short-restore-relaunch.log). The final Release executable was installed without interrupting the running session.

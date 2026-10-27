@@ -78,6 +78,8 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
                 "Playback marker did not interpolate between decoder updates.");
             simulated.paused = true;
             require(simulated.displayPosition(simulated.positionTime+std::chrono::seconds(2)) == 20, "Paused marker continued advancing.");
+            simulated.active = false; simulated.pauseRequested = true; simulated.setPaused(false);
+            require(!simulated.pauseRequested,"Committing a tiny clip after EOF lost the explicit play intent.");
             log << "PASS asynchronous seek coalescing, immediate preview, smooth clock and paused marker\n";
         }
         require(statusText("", "Checking duplicates: 4 / 10") == "Checking duplicates: 4 / 10", "Empty status adds a leading separator.");
@@ -85,6 +87,35 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
             "10 tracks \xc2\xb7 2 identical copies hidden \xc2\xb7 Checking duplicates: 4 / 10", "Status sections are not joined with middle dots.");
         const auto root = logPath.parent_path() / ("state-test-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
         fs::create_directories(root);
+        {
+            // Public-domain test signal: 3072 stereo silent frames, 48 kHz/24-bit
+            // FLAC generated with SoX, retaining STREAMINFO and its one audio frame.
+            const unsigned char bytes[] = {0x66,0x4c,0x61,0x43,0x80,0,0,0x22,0x10,0,0x10,0,0,0,0x12,0,0,0x12,0x0b,0xb8,0x03,0x70,0,0,0x0c,0,0xf9,0xde,0xbe,0x3f,0x07,0xbe,0x68,0x53,0x3b,0xf0,0x29,0x5e,0x3d,0x2b,0xa6,0x8a,0xff,0xf8,0x7a,0x1c,0,0x0b,0xff,0x9c,0,0,0,0,0,0,0,0,0x3f,0xff};
+            const auto clip = root / "short.flac";
+            { std::ofstream output(clip,std::ios::binary); output.write(reinterpret_cast<const char*>(bytes),sizeof(bytes)); }
+            Library clips; Track track; track.path = clip; track.id = key(clip); clips.tracks.push_back(track);
+            const auto nextClip = root / "next-short.flac"; fs::copy_file(clip,nextClip);
+            track.path = nextClip; track.id = key(nextClip); clips.tracks.push_back(track);
+            History visits; visits.add(clip); HistoryFile storage(root / "short-history.txt");
+            Audio source; source.open(true); Playback session(source,clips,visits,storage); session.restore();
+            int64_t outputRate = 0;
+            for (int i = 0; i < 400; ++i) {
+                session.tick();
+                if (source.loaded && source.get_property(source.handle,"audio-out-params/samplerate",MPV_FORMAT_INT64,&outputRate) >= 0 && outputRate > 0) break;
+                // The null output can consume an entire 64ms clip during priming,
+                // even paused. Its clean EOF is valid; actual samples are checked below.
+                if (source.sequentialRetry && !source.active && source.error.empty()) break;
+                SDL_Delay(5);
+            }
+            require(source.paused && !session.pending && (source.loaded || (source.sequentialRetry && !source.active)) &&
+                source.error.empty() && session.notice.empty() && visits.playedCount == 1,"Short FLAC startup restore produced a playback error.");
+            session.toggle();
+            for (int i = 0; i < 400 && source.active; ++i) { session.tick(); SDL_Delay(5); }
+            require(!source.active && source.error.empty() && session.notice.empty(),"Short restored FLAC did not play to clean EOF.");
+            const auto measured = analysis::measure(clip);
+            require(measured.frames == 3072,"Short FLAC analysis lost decoded frames.");
+            log << "PASS 64ms single-frame FLAC: paused startup restore, playback EOF and full-frame analysis\n";
+        }
         const auto a = fs::absolute(root / L"space Beyonc\u00e9" / L"a.wav"), b = fs::absolute(root / "b.wav"), c = fs::absolute(root / "c.wav");
         History history;
         require(history.limit == 10000, "History default must be 10000.");

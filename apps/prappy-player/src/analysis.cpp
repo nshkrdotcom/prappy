@@ -94,6 +94,7 @@ void pollDecoder(Audio& decoder, bool& eof) {
         if (event->event_id == MPV_EVENT_NONE) return;
         if (event->event_id == MPV_EVENT_END_FILE) {
             const auto end = static_cast<mpv_event_end_file*>(event->data);
+            if (decoder.retryEmptyFlac(*end)) continue;
             if (end->reason == MPV_END_FILE_REASON_ERROR) throw std::runtime_error(std::string("Analysis decode: ") + decoder.error_string(end->error));
             if (end->reason == MPV_END_FILE_REASON_EOF) eof = true;
         }

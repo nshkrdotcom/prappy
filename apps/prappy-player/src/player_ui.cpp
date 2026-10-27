@@ -1003,6 +1003,7 @@ int runPlayer(HINSTANCE instance) {
                 uiProbe.telemetry += "\nRENDERER " + std::string(presentation.name());
                 uiProbe.telemetry += "\nFRAME " + std::to_string(timing.build) + " " + std::to_string(timing.draw) + " " + std::to_string(timing.present) + " " + std::to_string(timing.total) + " " + std::to_string(timing.input);
                 uiProbe.telemetry += "\nTEXT " + std::to_string(textStats.shaped) + " " + std::to_string(textStats.rasterized) + " " + std::to_string(textStats.bytes);
+                uiProbe.telemetry += "\nPLAYBACK_ERROR " + (audio.error.empty() ? playback.notice : audio.error);
                 std::ostringstream status;
                 status << "READY " << width << ' ' << height << ' ' << static_cast<int>(history.repeat) << ' '
                     << (history.current() ? history.current()->id : 0) << ' ' << history.playedCount << ' '
@@ -1022,13 +1023,14 @@ int runPlayer(HINSTANCE instance) {
         }
         MessageBoxA(nullptr, e.what(), "Prappy Player", MB_OK | MB_ICONERROR); exitCode = 1;
     }
+    // Playback and state writers have shut down. Native text-input/window
+    // cleanup must not hold the single-instance lock if Windows stalls.
+    singleton.reset();
+    if (window) SDL_StopTextInput(window);
     if (graphics) ImGui_ImplSDLRenderer3_Shutdown();
     if (platform) ImGui_ImplSDL3_Shutdown();
     if (imgui) ImGui::DestroyContext();
     presentation.close();
-    // State and playback have already shut down. Windows IME destruction can
-    // wait inside DestroyWindow; it must not keep later launches locked out.
-    singleton.reset();
     if (uiProbe.enabled) {
         if (const auto gate = SDL_GetEnvironmentVariable(SDL_GetEnvironment(),"PRAPPY_TEST_EXIT_GATE")) {
             const fs::path directory(gate);
