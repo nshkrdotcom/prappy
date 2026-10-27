@@ -12,6 +12,7 @@ struct Inspection {
     std::vector<uint32_t> clusters;
     size_t highlightedClusters = 0;
     bool missingGlyph = false;
+    bool trimmed = false;
 };
 // DirectWrite shapes whole strings. Only visible CPU-rasterized tiles are cached.
 class Painter {
@@ -25,8 +26,8 @@ public:
     void beginFrame();
     float fontSizeForCapHeight(float pixels) const;
     float width(const std::string& label, float size);
-    void draw(const std::string& label, const std::vector<std::wstring>& terms, ImVec2 origin, float size, ImU32 color);
-    Inspection inspect(const std::string& label, const std::vector<std::wstring>& terms, float size);
+    void draw(const std::string& label, const std::vector<std::wstring>& terms, ImVec2 origin, float size, ImU32 color, float maximumWidth = 0);
+    Inspection inspect(const std::string& label, const std::vector<std::wstring>& terms, float size, float maximumWidth = 0);
 };
 // UI thread only, installed for the lifetime of its Painter.
 inline Painter* active = nullptr;

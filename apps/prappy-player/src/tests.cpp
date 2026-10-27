@@ -20,6 +20,8 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
     try {
         {
             text::Painter painter(nullptr);
+            const auto trimmed = painter.inspect("Long folder 中文 👩🏽‍🔬 with combining café and more", {},18,85);
+            require(trimmed.trimmed && trimmed.width <= 85 && !trimmed.missingGlyph, "Native ellipsis failed to bound a shaped Unicode label.");
             for (const auto* label : {"中文 日本語 한국어", "😀 👩🏽‍🔬 🇯🇵 👨‍👩‍👧‍👦", "café café العربية"}) {
                 const auto shaped = painter.inspect(label, {}, 18);
                 require(shaped.width > 0 && !shaped.missingGlyph, "Unicode shaping produced missing glyphs.");

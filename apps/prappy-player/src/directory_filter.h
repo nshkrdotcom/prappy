@@ -13,7 +13,7 @@ inline bool inDirectory(const std::wstring& path, const std::wstring& directory)
         (directory.back() == L'\\' || (path.size() > directory.size() && path[directory.size()] == L'\\')));
 }
 struct DirectoryFilter {
-    struct Rule { fs::path path; std::wstring id; };
+    struct Rule { fs::path path; std::wstring id; bool operator==(const Rule&) const = default; };
     std::vector<Rule> included, excluded;
     static bool contains(const std::vector<Rule>& rules, const fs::path& path) {
         const auto id = directoryKey(path);
@@ -44,9 +44,23 @@ struct DirectoryFilter {
 };
 
 struct DirectoryIndex {
+    struct Choice { fs::path path; std::wstring id; std::string label; size_t count = 0; bool hasChildren = false; };
     struct Node { fs::path path; std::wstring id; std::string label; size_t count = 0; std::vector<std::wstring> children; };
     std::map<std::wstring, Node> nodes;
     std::vector<std::wstring> roots, featured;
+    std::vector<Choice> priorityChoices(const DirectoryFilter& filter) const {
+        std::vector<Choice> result; std::set<std::wstring> seen;
+        const auto add = [&](const fs::path& path) {
+            const auto id = directoryKey(path); if (!seen.insert(id).second) return;
+            const auto found = nodes.find(id);
+            if (found == nodes.end()) result.push_back({path,id,utf8(path.filename().empty() ? path : path.filename()),0,false});
+            else { const auto& node = found->second; result.push_back({node.path,id,node.label,node.count,!node.children.empty()}); }
+        };
+        for (const auto& rule : filter.included) add(rule.path);
+        for (const auto& rule : filter.excluded) add(rule.path);
+        for (const auto& id : featured) add(nodes.at(id).path);
+        return result;
+    }
     uint64_t revision = 0;
     void rebuild(const Library& library) {
         nodes.clear(); roots.clear();
@@ -82,6 +96,7 @@ struct DirectoryIndex {
         for (auto& [id, node] : nodes) { (void)id; std::sort(node.children.begin(), node.children.end(), less); }
     }
     void prioritize(const std::vector<fs::path>& pins) {
+        ++revision;
         featured.clear();
         std::set<std::wstring> seen;
         for (const auto& pin : pins) { const auto id = directoryKey(pin); if (nodes.contains(id) && seen.insert(id).second) featured.push_back(id); }

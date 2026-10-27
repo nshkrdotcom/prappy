@@ -107,6 +107,7 @@ struct Painter::Impl {
     struct Tile { int index = 0; SDL_Texture* texture = nullptr; size_t bytes = 0; ~Tile() { if (texture) SDL_DestroyTexture(texture); } };
     struct Entry {
         std::string label; std::vector<std::wstring> terms; float size; ImU32 color;
+        float maximumWidth = 0;
         ComPtr<IDWriteTextLayout> layout;
         float width = 0;
         std::vector<DWRITE_CLUSTER_METRICS> clusters;
@@ -142,17 +143,23 @@ struct Painter::Impl {
         check(fallbacks->AddMapping(ranges, static_cast<UINT32>(std::size(ranges)), names, 2, fonts.Get()));
         check(fallbacks->AddMappings(native.Get())); check(fallbacks->CreateFontFallback(&fallback));
     }
-    Entry& entry(const std::string& label, const std::vector<std::wstring>& terms, float size, ImU32 color) {
-        const auto found = std::find_if(cache.begin(), cache.end(), [&](const auto& item) { return item.label == label && item.terms == terms && item.size == size && item.color == color; });
+    Entry& entry(const std::string& label, const std::vector<std::wstring>& terms, float size, ImU32 color, float maximumWidth = 0) {
+        const auto found = std::find_if(cache.begin(), cache.end(), [&](const auto& item) { return item.label == label && item.terms == terms && item.size == size && item.color == color && item.maximumWidth == maximumWidth; });
         if (found != cache.end()) { cache.splice(cache.begin(), cache, found); return cache.front(); }
-        cache.emplace_front(); auto& item = cache.front(); item.label = label; item.terms = terms; item.size = size; item.color = color;
+        cache.emplace_front(); auto& item = cache.front(); item.label = label; item.terms = terms; item.size = size; item.color = color; item.maximumWidth = maximumWidth;
         const auto value = wide(label);
         ComPtr<IDWriteTextFormat> format;
         check(factory->CreateTextFormat(L"Segoe UI", fonts.Get(), DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, locale.c_str(), &format));
         check(format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)); check(format->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, size, size * .8f));
-        check(factory->CreateTextLayout(value.data(), static_cast<UINT32>(value.size()), format.Get(), 1000000, size * 2, &item.layout));
+        check(factory->CreateTextLayout(value.data(), static_cast<UINT32>(value.size()), format.Get(), maximumWidth > 0 ? maximumWidth : 1000000, size * 2, &item.layout));
+        if (maximumWidth > 0) {
+            ComPtr<IDWriteInlineObject> ellipsis; check(factory->CreateEllipsisTrimmingSign(format.Get(),&ellipsis));
+            const DWRITE_TRIMMING trimming{DWRITE_TRIMMING_GRANULARITY_CHARACTER,0,0};
+            check(item.layout->SetTrimming(&trimming,ellipsis.Get()));
+        }
         ComPtr<IDWriteTextLayout2> layout2; check(item.layout.As(&layout2)); check(layout2->SetFontFallback(fallback.Get()));
         DWRITE_TEXT_METRICS metrics{}; check(item.layout->GetMetrics(&metrics)); item.width = metrics.widthIncludingTrailingWhitespace;
+        if (maximumWidth > 0) item.width = std::min(item.width,maximumWidth);
         UINT32 count = 0; item.layout->GetClusterMetrics(nullptr, 0, &count); item.clusters.resize(count);
         if (count) check(item.layout->GetClusterMetrics(item.clusters.data(), count, &count));
         const auto normalized = searchText(label); std::vector<bool> marked(normalized.size(), false);
@@ -223,8 +230,9 @@ Painter::~Painter() { if (active == this) active = nullptr; }
 void Painter::beginFrame() { impl->retired.clear(); }
 float Painter::fontSizeForCapHeight(float pixels) const { return pixels / impl->capitalRatio; }
 float Painter::width(const std::string& label, float size) { return impl->entry(label, {}, size, IM_COL32_WHITE).width; }
-void Painter::draw(const std::string& label, const std::vector<std::wstring>& terms, ImVec2 origin, float size, ImU32 color) {
-    auto& entry = impl->entry(label, terms, size, color); auto draw = ImGui::GetWindowDrawList();
+void Painter::draw(const std::string& label, const std::vector<std::wstring>& terms, ImVec2 origin, float size, ImU32 color, float maximumWidth) {
+    auto& entry = impl->entry(label, terms, size, color, maximumWidth); auto draw = ImGui::GetWindowDrawList();
+    if (maximumWidth > 0) draw->PushClipRect({origin.x,draw->GetClipRectMin().y},{origin.x+maximumWidth,draw->GetClipRectMax().y},true);
     const auto first = std::max(0, static_cast<int>(std::floor((draw->GetClipRectMin().x - origin.x + Padding) / TileWidth)));
     const auto last = std::min(static_cast<int>(std::ceil((entry.width + Padding * 2) / TileWidth)), static_cast<int>(std::ceil((draw->GetClipRectMax().x - origin.x + Padding) / TileWidth)));
     const auto height = static_cast<float>(static_cast<int>(std::ceil(size * 1.5f)) + Padding * 2);
@@ -232,9 +240,13 @@ void Painter::draw(const std::string& label, const std::vector<std::wstring>& te
         auto texture = impl->tile(entry, index); const ImVec2 min{origin.x + static_cast<float>(index * TileWidth - Padding), origin.y - Padding};
         draw->AddImage(static_cast<ImTextureID>(reinterpret_cast<intptr_t>(texture)), min, {min.x + TileWidth, min.y + height});
     }
+    if (maximumWidth > 0) draw->PopClipRect();
 }
-Inspection Painter::inspect(const std::string& label, const std::vector<std::wstring>& terms, float size) {
-    const auto& entry = impl->entry(label, terms, size, IM_COL32_WHITE); Inspection result; result.width = entry.width;
+Inspection Painter::inspect(const std::string& label, const std::vector<std::wstring>& terms, float size, float maximumWidth) {
+    const auto& entry = impl->entry(label, terms, size, IM_COL32_WHITE,maximumWidth); Inspection result; result.width = entry.width;
+    UINT32 count = 0; entry.layout->GetLineMetrics(nullptr,0,&count);
+    std::vector<DWRITE_LINE_METRICS> lines(count);
+    if (count) { check(entry.layout->GetLineMetrics(lines.data(),count,&count)); for (const auto& line : lines) result.trimmed = result.trimmed || line.isTrimmed; }
     for (const auto& cluster : entry.clusters) result.clusters.push_back(cluster.length);
     result.highlightedClusters = entry.highlights.size();
     ComPtr<Renderer> audit; audit.Attach(new Renderer(nullptr, impl->parameters.Get(), RGB(255, 255, 255)));

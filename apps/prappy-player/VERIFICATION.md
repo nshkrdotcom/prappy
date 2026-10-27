@@ -476,3 +476,24 @@ from its executable and state. Catalog format and analysis-cache schema remain
 unchanged. The waveform reads selected-track peaks through the existing single
 analysis worker, and metering uses the playback decoder rather than another
 source read.
+
+## Responsive folder row - 2026-10-27
+
+`./scripts/verify-health.ps1 -VariantSuffix Unicode -Repetitions 1` passed
+strict Release, static-analysis, Debug and ASan builds, playback/state suites,
+feature UI and native-window checks. Debug CRT leak reports passed; ASan reported
+no memory errors. Full log: `build/row-health.log`.
+
+The pure compact-row tests cover every width from 0 through 2,000 pixels with
+10,000 candidates, checking bounded widths, reserved overflow and measurement
+of only the visible prefix plus one candidate. Directory tests cover active-first
+ordering, deduplication and missing active folders. DirectWrite tests verify
+native ellipsis with CJK, emoji and combining marks without missing glyphs.
+
+UI checks cover the 500px minimum and a wide window, long Unicode labels,
+multiple includes, active exclusions, overflow removal/reordering, returning to
+tree browsing and saved filter/panel state. Existing grouped scrolling, search,
+history, transport alignment, IME and idle-rendering checks also passed.
+Narrow/active rows and the overflow picker were visually inspected. Verification
+used isolated suffix builds and preserved the running Release player and state.
+Both README screenshots were refreshed from the isolated real-library run and visually inspected (`build/row-shots.log`).

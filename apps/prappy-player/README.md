@@ -54,9 +54,11 @@ pending queue entries. Counts are not lifetime statistics: a track can become
 Unplayed again after its visits age out of the configured retention limit.
 
 **Folders** provides directory filtering without opening every directory group.
-The single row shows up to four priority folders that fit: pinned folders first,
-then top-level folders ranked by recording count. Click several chips to include
-their subtrees together. Open **Folders** to browse one level at a time, search
+The single row adapts to the available width: active includes and exclusions first,
+then pinned folders and top-level folders ranked by recording count. Long names
+use an ellipsis; full paths appear on hover. **+N more** opens a scrollable overview
+of the priority folders. Click several chips to include their subtrees together;
+click an excluded folder to unhide it. Open **Folders** to browse one level at a time, search
 that level, include folders, hide whole subtrees, or pin useful subdirectories.
 Counts combine identical copies without counting the same recording twice in a
 parent folder. Overlapping configured roots share one tree.

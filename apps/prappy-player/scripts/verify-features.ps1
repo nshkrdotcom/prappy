@@ -148,7 +148,12 @@ function Click([string]$name) {
     finally { Send-UiInput 'UP' }
     $null=Wait-Ui {param($s) $s.Activations.ContainsKey($name) -and $s.Activations[$name] -gt $before} "control $name activated"
 }
-function Dismiss-Popup { Send-UiInput 'KEY ESC 1'; Send-UiInput 'KEY ESC 0' }
+function Dismiss-Popup {
+    for($attempt=0;$attempt -lt 3;$attempt++) {
+        Send-UiInput 'KEY ESC 1'; Send-UiInput 'KEY ESC 0'
+        if (!(Read-Ui).Controls.ContainsKey('directory-all')) { break } # Escape first leaves an active text field.
+    }
+}
 function Context([string]$name) {
     $null=Move-Control $name
     Send-UiInput 'RIGHT_DOWN'; Send-UiInput 'RIGHT_UP'
@@ -163,6 +168,16 @@ function Search([string]$query) {
     Click 'search'
     Send-UiInput 'KEY CTRL 1'; Send-UiInput 'KEY A 1'; Send-UiInput 'KEY A 0'; Send-UiInput 'KEY CTRL 0'
     Send-UiInput ('TEXT "{0}"' -f $query)
+}
+function Check-DirectoryRow([string]$name) {
+    $state=Wait-Ui {param($s) $s.Controls.ContainsKey('directories') -and $s.Controls.ContainsKey('directory-overflow')} "$name directory row rendered"
+    $controls=@($state.Controls.GetEnumerator() | Where-Object { $_.Key -eq 'directories' -or $_.Key -eq 'directory-reset' -or $_.Key -eq 'directory-overflow' -or $_.Key -like 'directory-chip-*' } | ForEach-Object Value | Sort-Object Left)
+    $right=-1
+    foreach($control in $controls) {
+        Require ($control.Left -ge $right -and $control.Right -le $state.Width-8 -and [Math]::Abs($control.Y-$state.Controls['directories'].Y) -lt 1) "$name directory control stays readable within its row"
+        $right=$control.Right
+    }
+    Require ($state.Controls['directories'].Left -lt $state.Controls['directory-overflow'].Left) "$name retains Folders before overflow"
 }
 function Capture([string]$name) {
     $rect = [FeatureNative+Rect]::new()
@@ -321,6 +336,7 @@ try {
     $pcmOffset=$dataOffset+8; $pcmLength=[BitConverter]::ToInt32($template,$dataOffset+4)
     for ($index=0; $index -lt 120; $index++) {
         $directory=Join-Path $stateDirectory ('media/group-{0:D3}' -f $index)
+        if ($index -eq 1) { $directory += '-Long folder 中文 日本語 한국어 👩🏽‍🔬 with a name that needs an ellipsis' }
         if ($index -eq 0) { $directory=Join-Path $directory 'nested' }
         New-Item -ItemType Directory -Force $directory | Out-Null
         $bytes=$template.Clone()
@@ -501,10 +517,20 @@ try {
     $null=Wait-Ui {param($s) !$s.Pending -and $s.Scoped -and $s.Repeat -eq 2} 'context action starts repeating its directory'
     if (!(Read-Ui).Paused) { Click 'play' }
     Click 'more'; Click 'clear-folder'; $null=Wait-Ui {param($s) !$s.Scoped} 'folder scope cleared'
+    Check-DirectoryRow 'minimum width'
+    Capture 'directory-row-narrow'
     Click 'directory-chip-0'
     $null=Wait-Ui {param($s) $s.Included -eq 1 -and $s.Visible -eq 1} 'priority directory chip includes its subtree'
     Click 'directory-chip-1'
     $null=Wait-Ui {param($s) $s.Included -eq 2 -and $s.Visible -eq 2} 'multiple directory chips combine as a whitelist'
+    Check-DirectoryRow 'active filters at minimum width'
+    Capture 'directory-row-active'
+    $rowBounds=[FeatureNative+Rect]::new(); [FeatureNative]::GetWindowRect($hwnd,[ref]$rowBounds) | Out-Null
+    [FeatureNative]::SetWindowPos($hwnd,[IntPtr]::Zero,0,0,1000,$rowBounds.Bottom-$rowBounds.Top,0x16) | Out-Null
+    $null=Wait-Ui {param($s) $s.Width -gt 900} 'directory row widened'
+    Check-DirectoryRow 'wide window'
+    [FeatureNative]::SetWindowPos($hwnd,[IntPtr]::Zero,0,0,$rowBounds.Right-$rowBounds.Left,$rowBounds.Bottom-$rowBounds.Top,0x16) | Out-Null
+    $null=Wait-Ui {param($s) $s.Width -eq 500} 'minimum width restored'
     $beforeResize=Read-Ui; $bounds=[FeatureNative+Rect]::new()
     [FeatureNative]::GetWindowRect($hwnd,[ref]$bounds) | Out-Null
     $frameHeight=$bounds.Bottom-$bounds.Top-$beforeResize.Height
@@ -527,8 +553,21 @@ try {
     $null=Wait-Ui {param($s) $s.Included -eq 0 -and $s.Hidden -eq 1 -and $s.Visible -eq 121} 'clearing temporary includes retains persistent exclusions'
     Capture 'directories'
     Dismiss-Popup
+    Click 'directory-overflow'
+    $null=Wait-Ui {param($s) $s.Controls.ContainsKey('directory-browse-tree')} 'overflow opens a multi-row priority picker'
+    Capture 'directory-overflow'
+    Click 'directory-hide-0'
+    $null=Wait-Ui {param($s) $s.Hidden -eq 0 -and $s.Visible -eq 122} 'overflow can remove an active exclusion'
+    Click 'directory-browse-tree'; Click 'directory-open-0'; Click 'directory-hide-0'
+    $null=Wait-Ui {param($s) $s.Hidden -eq 1 -and $s.Visible -eq 121} 'overflow picker can return to tree browsing'
+    Dismiss-Popup
     Click 'directory-chip-0'
-    $null=Wait-Ui {param($s) $s.Included -eq 1 -and $s.Visible -eq 1} 'pinned directory is the first compact priority chip'
+    $null=Wait-Ui {param($s) $s.Hidden -eq 0 -and $s.Visible -eq 122} 'active hidden chip restores its subtree without adding an include'
+    Click 'directory-overflow'; Click 'directory-hide-1'
+    $null=Wait-Ui {param($s) $s.Hidden -eq 1 -and $s.Included -eq 0 -and $s.Visible -eq 121} 'overflow restores the exclusion after pinned suggestions reorder'
+    Dismiss-Popup
+    Click 'directory-chip-1'
+    $null=Wait-Ui {param($s) $s.Included -eq 1 -and $s.Visible -eq 1} 'active exclusion precedes the pinned suggestion'
     $divider=Move-Control 'transport-resize'; $position=(Read-Ui).Position
     Send-UiInput ('MOVE {0} {1}' -f $divider.X.ToString([Globalization.CultureInfo]::InvariantCulture),$divider.Y.ToString([Globalization.CultureInfo]::InvariantCulture))
     Send-UiInput 'DOWN'

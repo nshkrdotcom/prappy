@@ -77,10 +77,10 @@ inline float filenameFontSize() {
     const auto glyph = ImGui::GetFontBaked()->FindGlyph('H');
     return text::active->fontSizeForCapHeight(glyph->Y1 - glyph->Y0);
 }
-inline void highlightedLabel(const std::string& label, const std::vector<std::wstring>& terms, ImVec2 origin) {
+inline void highlightedLabel(const std::string& label, const std::vector<std::wstring>& terms, ImVec2 origin, float maximumWidth = 0) {
     const auto glyph = ImGui::GetFontBaked()->FindGlyph('H'); const auto size = filenameFontSize();
     origin.y += std::round(glyph->Y0 - (size * .8f - (glyph->Y1 - glyph->Y0)));
-    text::active->draw(label, terms, origin, size, ImGui::GetColorU32(ImGuiCol_Text));
+    text::active->draw(label, terms, origin, size, ImGui::GetColorU32(ImGuiCol_Text),maximumWidth);
 }
 inline void filenameText(const std::string& label, float maximum = 0) {
     const auto origin = ImGui::GetCursorScreenPos();

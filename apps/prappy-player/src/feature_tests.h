@@ -3,10 +3,25 @@
 #include "playback.h"
 #include "preferences.h"
 #include "grouped_list.h"
+#include "compact_row.h"
 #include <SDL3/SDL.h>
 
 inline void featureTests(const fs::path& root, const Library& fixture, std::ostream& log) {
     const auto require = [](bool value, const char* message) { if (!value) throw std::runtime_error(message); };
+    {
+        const auto overflow = [](size_t) { return 65.0f; };
+        auto fitted = compactrow::plan(3, 360, 7, 70, 150, [](size_t) { return 100.0f; }, overflow);
+        require(fitted.widths.size() == 3 && fitted.hidden == 0 && fitted.used == 314, "Compact row did not fit natural widths.");
+        for (int pixels = 0; pixels <= 2000; ++pixels) {
+            size_t measured = 0;
+            auto row = compactrow::plan(10000, static_cast<float>(pixels), 7, 70, 180,
+                [&](size_t i) { ++measured; return (i % 2) ? 500.0f : 95.0f; }, overflow);
+            require(row.widths.size()+row.hidden == 10000 && row.used <= pixels+.01f && row.used >= 0 && measured <= row.widths.size()+1,
+                "Compact row overran its budget or measured offscreen items.");
+            require(std::all_of(row.widths.begin(),row.widths.end(),[](float width) { return width >= 70 && width <= 180; }), "Compact row produced an unreadable chip.");
+        }
+        log << "PASS compact row: natural widths, narrow/wide budgets, reserved overflow and lazy 10000-item measurement\n";
+    }
     {
         const auto base = fs::path(L"C:\\Music");
         DirectoryFilter scope;
@@ -33,6 +48,12 @@ inline void featureTests(const fs::path& root, const Library& fixture, std::ostr
         require(index.roots.size() == 2 && index.featured.front() == directoryKey(base / "a") &&
             std::find(index.featured.begin(),index.featured.end(),directoryKey(second / "priority")) != index.featured.end(),
             "Multiple roots did not prioritize their first-level directories.");
+        DirectoryFilter active; active.only(second / "priority"); DirectoryFilter::set(active.excluded,base / "removed-long-folder",true);
+        const auto choices = index.priorityChoices(active);
+        require(choices.size() >= 3 && choices[0].id == directoryKey(second / "priority") && choices[1].id == directoryKey(base / "removed-long-folder"),
+            "Active directory rules did not precede suggestions or retain missing folders.");
+        require(std::count_if(choices.begin(),choices.end(),[&](const auto& choice) { return choice.id == directoryKey(second / "priority"); }) == 1,
+            "Directory priority choices duplicated an active suggestion.");
         require(inDirectory(directoryKey(L"\\\\?\\UNC\\server\\share\\Audio\\sub\\x.wav"), directoryKey(L"\\\\SERVER\\share\\audio\\")), "UNC/case directory matching failed.");
         require(TransportLayout::height(400,250,false) == 202 && TransportLayout::height(400,710,true) == 400 &&
             TransportLayout::resized(202,100,710,true) == 302 && TransportLayout::resized(202,-100,710,true) == 202,
