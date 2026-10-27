@@ -540,3 +540,28 @@ UI reports both say `PASS no CRT leaks`. Logs: `build/seek-debug-ui.log`,
 `build/seek-debug-ui-leaks.log`, `build/seek-debug-leaks.log` and
 `build/seek-window.log`.
 Both README screenshots were refreshed from an isolated real-library snapshot using the final Release executable and visually inspected (`build/seek-shots.log`).
+
+## Stable maximized waveform - 2026-10-27
+
+The previous textured-triangle rendering reproduced a diagonal cutoff in the
+SDL software renderer at 1920px width. Its moving partial UVs also changed the
+sampling region as playback advanced. Waveform drawing now uses native SDL
+rectangular texture copies with a fixed destination and source. Played/unplayed
+colors use disjoint clips, avoiding resampling and translucent overdraw at the
+split. Renderer clip state and texture color modulation are restored afterwards.
+The cached raster and asynchronous seek path remain intact.
+
+A new offscreen test renders through the production ImGui/SDL software backend
+at 500x26, 1920x720, 3840x1600 and 1920x720 with 2x renderer/display scaling. It
+compares tint-normalized pixels at three marker positions, checks both lanes
+reach the right-hand side, and checks no raster rebuild or extra geometry is
+introduced. The old committed renderer fails this test at 1920x720
+(`build/wavefix-baseline.log`); Release and Debug pass with the fix. The Debug CRT
+leak report passes. Logs: `build/wavefix-release-state.log`,
+`build/wavefix-debug-state.log`, `build/wavefix-debug-leaks.log` and
+`build/wavefix-analyze.log` (strict static-analysis build).
+
+The final native UI run also passed maximize/restore, cached-height resizing,
+seeking, saved state and paused idle checks (`build/wavefix-ui-maximized.log`).
+Its maximized screenshot was visually inspected: both stereo lanes span the
+full width without diagonal truncation. The normal Release executable was rebuilt.

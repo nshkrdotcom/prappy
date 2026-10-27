@@ -588,6 +588,11 @@ try {
     $raised=Wait-Ui {param($s) $s.PanelPreferred -ge 310 -and $s.Controls['seek'].Bottom-$s.Controls['seek'].Top -gt 130} 'dragging transport upward enlarges the waveform'
     Capture 'transport-expanded'
     Require ($raised.WaveBuilds -eq $beforeExpansion.WaveBuilds -and $raised.WaveVertices -le 12) 'tall waveform reuses its raster and constant-size drawing'
+    [FeatureNative]::ShowWindow($hwnd,3) | Out-Null
+    $null=Wait-Ui {param($s) $s.Width -gt 1000 -and $s.WaveVertices -le 12} 'maximized waveform retains bounded drawing'
+    Send-UiInput 'MOVE 0 0'; Capture 'waveform-maximized'
+    [FeatureNative]::ShowWindow($hwnd,9) | Out-Null
+    $null=Wait-Ui {param($s) $s.Width -eq 500} 'waveform restores from maximized size'
     Require ($raised.Paused -and [Math]::Abs($raised.Position-$position) -lt .01) 'resizing transport does not seek or resume playback'
     $null=Move-Control 'transport-resize'; Send-UiInput 'DOUBLE_CLICK'
     $reset=Wait-Ui {param($s) $s.PanelPreferred -eq 202 -and $s.Controls['seek'].Bottom-$s.Controls['seek'].Top -eq 26 -and

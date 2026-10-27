@@ -7,12 +7,39 @@
 #include <stdexcept>
 
 // UI-owned raster cache: resample only when the track or horizontal resolution
-// changes. Height and playback position only change two image quads and a marker.
+// changes. Height and playback position only change rectangular copies and a marker.
 class WaveformImage {
     SDL_Renderer* renderer;
     SDL_Texture* texture = nullptr;
     std::shared_ptr<const analysis::Result> source;
     int columns = 0;
+    struct Copy { SDL_Renderer* renderer; SDL_Texture* texture; ImVec2 min,max; float split; };
+    static void copy(const ImDrawList*,const ImDrawCmd* command) {
+        const auto& data = *static_cast<const Copy*>(command->UserCallbackData);
+        auto renderer = data.renderer;
+        const auto frame = ImGui::GetDrawData();
+        float sx = 1, sy = 1; SDL_GetRenderScale(renderer,&sx,&sy);
+        sx = sx == 1 ? frame->FramebufferScale.x : 1; sy = sy == 1 ? frame->FramebufferScale.y : 1;
+        const SDL_FRect target{(data.min.x-frame->DisplayPos.x)*sx,(data.min.y-frame->DisplayPos.y)*sy,
+            (data.max.x-data.min.x)*sx,(data.max.y-data.min.y)*sy};
+        const int left = static_cast<int>(std::max(0.0f,(command->ClipRect.x-frame->DisplayPos.x)*sx));
+        const int top = static_cast<int>(std::max(0.0f,(command->ClipRect.y-frame->DisplayPos.y)*sy));
+        const int right = static_cast<int>(std::min(frame->DisplaySize.x*sx,(command->ClipRect.z-frame->DisplayPos.x)*sx));
+        const int bottom = static_cast<int>(std::min(frame->DisplaySize.y*sy,(command->ClipRect.w-frame->DisplayPos.y)*sy));
+        const int split = static_cast<int>(std::floor(target.x+target.w*data.split));
+        const bool clipped = SDL_RenderClipEnabled(renderer); SDL_Rect previous{}; SDL_GetRenderClipRect(renderer,&previous);
+        Uint8 red = 255,green = 255,blue = 255; SDL_GetTextureColorMod(data.texture,&red,&green,&blue);
+        const auto part = [&](int begin,int end,Uint8 r,Uint8 g,Uint8 b) {
+            const SDL_Rect clip{begin,top,end-begin,bottom-top};
+            if (clip.w <= 0 || clip.h <= 0) return;
+            SDL_SetRenderClipRect(renderer,&clip); SDL_SetTextureColorMod(data.texture,r,g,b);
+            SDL_RenderTexture(renderer,data.texture,nullptr,&target);
+        };
+        part(std::max(left,split),right,103,126,127);
+        part(left,std::min(right,split),64,224,177);
+        SDL_SetTextureColorMod(data.texture,red,green,blue);
+        SDL_SetRenderClipRect(renderer,clipped ? &previous : nullptr);
+    }
 public:
     size_t rebuilds = 0;
     int vertices = 0;
@@ -57,7 +84,8 @@ public:
             lane(peak.leftMin,peak.leftMax,.25f); lane(peak.rightMin,peak.rightMax,.75f);
         }
         texture = SDL_CreateTexture(renderer,SDL_PIXELFORMAT_RGBA32,SDL_TEXTUREACCESS_STATIC,pixelsWide,Height);
-        if (!texture || !SDL_UpdateTexture(texture,nullptr,pixels.data(),pixelsWide*4) || !SDL_SetTextureBlendMode(texture,SDL_BLENDMODE_BLEND))
+        if (!texture || !SDL_UpdateTexture(texture,nullptr,pixels.data(),pixelsWide*4) || !SDL_SetTextureBlendMode(texture,SDL_BLENDMODE_BLEND) ||
+            !SDL_SetTextureScaleMode(texture,SDL_SCALEMODE_NEAREST))
             throw std::runtime_error(SDL_GetError());
         ++rebuilds;
     }
@@ -69,9 +97,10 @@ public:
         markerRatio = split;
         const float x = min.x+(max.x-min.x)*split;
         if (texture) {
-            const auto id = static_cast<ImTextureID>(reinterpret_cast<intptr_t>(texture));
-            if (split > 0) draw->AddImage(id,min,{x,max.y},{0,0},{split,1},IM_COL32(64,224,177,255));
-            if (split < 1) draw->AddImage(id,{x,min.y},max,{split,0},{1,1},IM_COL32(103,126,127,255));
+            // SDL's software textured triangles clip incorrectly at large sizes.
+            // Native rectangular copies keep sampling fixed as the color split moves.
+            Copy data{renderer,texture,min,max,split};
+            draw->AddCallback(copy,&data,sizeof(data));
         } else draw->AddRectFilled({min.x,min.y+(max.y-min.y)*.5f},{max.x,min.y+(max.y-min.y)*.5f+1},IM_COL32(83,99,103,255));
         const auto marker = std::clamp(std::floor(x),min.x,std::max(min.x,max.x-2));
         // A pixel-aligned rectangle needs no anti-alias fringe or stroke tessellation.

@@ -6,6 +6,7 @@
 #include "feature_tests.h"
 #include "text.h"
 #include "ui_schedule.h"
+#include "waveform_tests.h"
 #include <SDL3/SDL.h>
 #include <cmath>
 #include <fstream>
@@ -18,6 +19,7 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
         require(rejected, message);
     };
     try {
+        waveformRenderTests(log);
         {
             text::Painter painter(nullptr);
             const auto trimmed = painter.inspect("Long folder 中文 👩🏽‍🔬 with combining café and more", {},18,85);
