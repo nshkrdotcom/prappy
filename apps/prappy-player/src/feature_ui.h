@@ -1,5 +1,6 @@
 #pragma once
 #include "analysis.h"
+#include "waveform_image.h"
 #include "browse.h"
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -16,48 +17,16 @@ inline bool revealFile(HWND window, const fs::path& path) {
     return SUCCEEDED(opened);
 }
 
-inline bool waveformSeek(const analysis::Result* waveform, double& position, double duration, ImVec2 size) {
+inline bool waveformSeek(WaveformImage& image, const std::shared_ptr<const analysis::Result>& waveform, double& position, double duration, ImVec2 size) {
     ImGui::InvisibleButton("##waveform", size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_EnableNav);
     const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
     auto draw = ImGui::GetWindowDrawList();
     draw->AddRectFilled(min, max, IM_COL32(24, 29, 31, 255), 3);
-    const auto ratio = duration > 0 ? std::clamp(position / duration, 0.0, 1.0) : 0;
-    const auto playX = min.x + static_cast<float>(ratio) * size.x;
-    if (waveform && !waveform->levels.empty()) {
-        const auto& maximum = waveform->levels.back().front();
-        const auto amplitude = std::max({std::abs(maximum.leftMin), std::abs(maximum.leftMax), std::abs(maximum.rightMin), std::abs(maximum.rightMax)});
-        const float displayScale = amplitude > 1e-12f ? .9f / amplitude : 1;
-        size_t level = 0;
-        while (level + 1 < waveform->levels.size() && waveform->levels[level].size() > static_cast<size_t>(size.x * 2)) ++level;
-        const auto& peaks = waveform->levels[level];
-        const int columns = std::clamp(static_cast<int>(size.x), 1, 4096);
-        const double framesPerBin = static_cast<double>(analysis::FramesPerPeak * (1ULL << level));
-        for (int column = 0; column < columns; ++column) {
-            const auto begin = static_cast<size_t>(static_cast<double>(column) / columns * static_cast<double>(waveform->frames) / framesPerBin);
-            const auto end = std::min(peaks.size(), static_cast<size_t>(std::ceil(static_cast<double>(column + 1) / columns * static_cast<double>(waveform->frames) / framesPerBin)));
-            if (begin >= peaks.size()) continue;
-            auto peak = peaks[begin];
-            for (size_t i = begin + 1; i < end; ++i) {
-                peak.leftMin = std::min(peak.leftMin, peaks[i].leftMin); peak.leftMax = std::max(peak.leftMax, peaks[i].leftMax);
-                peak.rightMin = std::min(peak.rightMin, peaks[i].rightMin); peak.rightMax = std::max(peak.rightMax, peaks[i].rightMax);
-            }
-            const float x = min.x + static_cast<float>(column) / static_cast<float>(columns) * size.x;
-            const auto color = x <= playX ? IM_COL32(64, 224, 177, 255) : IM_COL32(103, 126, 127, 255);
-            const auto lane = [&](float low, float high, float middle) {
-                const float top = min.y + size.y * middle - std::clamp(high * displayScale, -1.0f, 1.0f) * size.y * .22f;
-                const float bottom = min.y + size.y * middle - std::clamp(low * displayScale, -1.0f, 1.0f) * size.y * .22f;
-                draw->AddLine({x, top}, {x, std::max(top + 1, bottom)}, color);
-            };
-            lane(peak.leftMin, peak.leftMax, .25f); lane(peak.rightMin, peak.rightMax, .75f);
-        }
-    } else {
-        draw->AddLine({min.x, min.y + size.y * .5f}, {max.x, min.y + size.y * .5f}, IM_COL32(83, 99, 103, 255));
-    }
-    draw->AddLine({playX, min.y}, {playX, max.y}, IM_COL32(245, 189, 99, 255), 2);
-    if (ImGui::IsItemFocused()) draw->AddRect(min, max, ImGui::GetColorU32(ImGuiCol_NavCursor), 3);
     bool changed = false;
     if (duration > 0 && ImGui::IsItemActive() && ImGui::IsMouseDown(0)) {
-        position = duration * std::clamp(static_cast<double>((ImGui::GetIO().MousePos.x - min.x) / size.x), 0.0, 1.0); changed = true;
+        const auto target = duration * std::clamp(static_cast<double>((ImGui::GetIO().MousePos.x - min.x) / size.x), 0.0, 1.0);
+        changed = ImGui::IsItemActivated() || (ImGui::GetIO().MouseDelta.x != 0 && std::abs(target-position) > .0001);
+        position = target;
     }
     if (duration > 0 && ImGui::IsItemFocused()) {
         for (const auto key : {ImGuiKey_LeftArrow, ImGuiKey_RightArrow, ImGuiKey_Home, ImGuiKey_End})
@@ -70,6 +39,8 @@ inline bool waveformSeek(const analysis::Result* waveform, double& position, dou
         if (pressed(ImGuiKey_End)) position = duration;
         position = std::clamp(position, 0.0, duration); changed = changed || before != position;
     }
+    image.draw(waveform,min,max,duration > 0 ? position/duration : 0);
+    if (ImGui::IsItemFocused()) draw->AddRect(min,max,ImGui::GetColorU32(ImGuiCol_NavCursor),3);
     return changed;
 }
 

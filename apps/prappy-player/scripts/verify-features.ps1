@@ -79,6 +79,11 @@ function Read-Ui {
         elseif ($line -match '^ORDER ([0-9]+)$') { $state.SortOrder=[int]$matches[1] }
         elseif ($line -match '^DRAWN ([0-9]+)$') { $state | Add-Member DrawnTracks ([int]$matches[1]) -Force }
         elseif ($line -match '^PANEL ([0-9]+) ([0-9]+)$') { $state | Add-Member PanelPreferred ([int]$matches[1]) -Force; $state | Add-Member PanelHeight ([int]$matches[2]) -Force }
+        elseif ($line -match '^WAVE ([0-9]+) ([0-9]+) ([^ ]+) ([0-9]+)$') {
+            $state | Add-Member WaveBuilds ([int]$matches[1]) -Force; $state | Add-Member WaveVertices ([int]$matches[2]) -Force
+            $state | Add-Member MarkerRatio ([double]::Parse($matches[3],[Globalization.CultureInfo]::InvariantCulture)) -Force
+            $state | Add-Member SeekSequence ([uint64]$matches[4]) -Force
+        }
         elseif ($line -match '^DIRS ([0-9]+) ([0-9]+) ([0-9]+)$') {
             $state | Add-Member Included ([int]$matches[1]) -Force; $state | Add-Member Hidden ([int]$matches[2]) -Force; $state | Add-Member Pins ([int]$matches[3]) -Force
         }
@@ -364,13 +369,16 @@ try {
         for ($step=0; $step -lt $mode; $step++) { Send-UiInput 'KEY DOWN 1'; Send-UiInput 'KEY DOWN 0' }
         Send-UiInput 'KEY ENTER 1'; Send-UiInput 'KEY ENTER 0'
         $null=Wait-Ui {param($s) $s.SortOrder -eq $mode -and $s.ScrollMaxY -gt 100} "sort mode $mode selected"
+        # Child scrollbar ranges reflect the previous layout frame. A faster
+        # input redraw must not make the baseline capture that stale range.
+        Send-UiInput 'MOVE 240 300'; Send-UiInput 'MOVE 240 300'
         if ($mode -eq 1) {
             $expandedGroups=Read-Ui
             Require ($null -ne $expandedGroups.DrawnTracks -and $expandedGroups.DrawnTracks -le [Math]::Ceiling($expandedGroups.Height/18)+4) 'Directory groups draw only viewport tracks across 120 folders'
             Click 'group-0'
             $collapsed=Wait-Ui {param($s) $s.ScrollMaxY -lt $expandedGroups.ScrollMaxY-10} 'directory header collapses its track'
             Click 'group-0'
-            $null=Wait-Ui {param($s) [Math]::Abs($s.ScrollMaxY-$expandedGroups.ScrollMaxY) -lt 1} 'directory header restores its track'
+            $null=Wait-Ui {param($s) [Math]::Abs($s.ScrollMaxY-$expandedGroups.ScrollMaxY) -lt 1} "directory header restores its track (range $($expandedGroups.ScrollMaxY))"
         }
         Send-UiInput 'MOVE 240 300'
         Send-UiInput 'WHEEL -5'
@@ -462,6 +470,10 @@ try {
     Send-UiInput ('MOVE {0} {1}' -f $x.ToString([Globalization.CultureInfo]::InvariantCulture),$seek.Y.ToString([Globalization.CultureInfo]::InvariantCulture))
     Send-UiInput 'DOWN'; Send-UiInput 'UP'
     $null=Wait-Ui {param($s) $s.Paused -and $s.Position -gt 1.5 -and $s.Position -lt 2.8} 'waveform mouse seeking preserves pause'
+    $held=Read-Ui
+    Require ($held.WaveVertices -le 12 -and [Math]::Abs($held.MarkerRatio-.7) -lt .01) 'cached waveform and immediate marker use at most twelve vertices'
+    Send-UiInput 'DOWN'; $held=Read-Ui; Start-Sleep -Milliseconds 150; $stationary=Read-Ui; Send-UiInput 'UP'
+    Require ($stationary.SeekSequence -eq $held.SeekSequence -and $stationary.WaveBuilds -eq $held.WaveBuilds) 'holding a stationary seek sends no repeated commands or waveform rebuilds'
     Send-UiInput 'KEY HOME 1'; Send-UiInput 'KEY HOME 0'
     $null=Wait-Ui {param($s) $s.Position -lt 0.2 -and $s.Paused} 'waveform keyboard Home seeks to start'
     Capture 'waveform'
@@ -568,13 +580,14 @@ try {
     Dismiss-Popup
     Click 'directory-chip-1'
     $null=Wait-Ui {param($s) $s.Included -eq 1 -and $s.Visible -eq 1} 'active exclusion precedes the pinned suggestion'
-    $divider=Move-Control 'transport-resize'; $position=(Read-Ui).Position
+    $divider=Move-Control 'transport-resize'; $beforeExpansion=Read-Ui; $position=$beforeExpansion.Position
     Send-UiInput ('MOVE {0} {1}' -f $divider.X.ToString([Globalization.CultureInfo]::InvariantCulture),$divider.Y.ToString([Globalization.CultureInfo]::InvariantCulture))
     Send-UiInput 'DOWN'
     Send-UiInput ('MOVE {0} {1}' -f $divider.X.ToString([Globalization.CultureInfo]::InvariantCulture),($divider.Y-110).ToString([Globalization.CultureInfo]::InvariantCulture))
     Send-UiInput 'UP'
     $raised=Wait-Ui {param($s) $s.PanelPreferred -ge 310 -and $s.Controls['seek'].Bottom-$s.Controls['seek'].Top -gt 130} 'dragging transport upward enlarges the waveform'
     Capture 'transport-expanded'
+    Require ($raised.WaveBuilds -eq $beforeExpansion.WaveBuilds -and $raised.WaveVertices -le 12) 'tall waveform reuses its raster and constant-size drawing'
     Require ($raised.Paused -and [Math]::Abs($raised.Position-$position) -lt .01) 'resizing transport does not seek or resume playback'
     $null=Move-Control 'transport-resize'; Send-UiInput 'DOUBLE_CLICK'
     $reset=Wait-Ui {param($s) $s.PanelPreferred -eq 202 -and $s.Controls['seek'].Bottom-$s.Controls['seek'].Top -eq 26 -and

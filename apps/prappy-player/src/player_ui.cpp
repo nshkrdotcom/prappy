@@ -332,6 +332,7 @@ int runPlayer(HINSTANCE instance) {
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         style();
         text::loadFonts();
+        WaveformImage waveformImage(renderer);
         text::Painter textPainter(renderer); text::active = &textPainter;
         platform = ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
         graphics = ImGui_ImplSDLRenderer3_Init(renderer);
@@ -504,7 +505,9 @@ int runPlayer(HINSTANCE instance) {
             const auto previousGeneration = playback.generation;
             const auto previousPause = audio.paused; const auto previousActive = audio.active;
             const auto previousPosition = audio.position, previousDuration = audio.duration;
+            const auto previousSeekPreview = audio.seekPreview;
             playback.tick();
+            if (previousSeekPreview != audio.seekPreview) schedule.request();
             if (previousGeneration != playback.generation || previousPause != audio.paused || previousActive != audio.active) schedule.request(2);
             if (audio.paused && (previousPosition != audio.position || previousDuration != audio.duration)) schedule.request();
             if (scan.update(library)) {
@@ -601,9 +604,9 @@ int runPlayer(HINSTANCE instance) {
                 if (ImGui::BeginPopupContextItem("strip-track")) { if (!contextPath.empty()) pathMenu(contextPath); ImGui::EndPopup(); }
                 moreMenu();
                 ImGui::SetCursorPos({10, 37});
-                double seek = audio.position;
+                double seek = audio.displayPosition();
                 ImGui::BeginDisabled(!audio.loaded || audio.duration <= 0);
-                if (waveformSeek(waveformId == currentAnalysisId ? waveform.get() : nullptr, seek, audio.duration, {static_cast<float>(width) - 20, 26})) audio.seek(seek);
+                if (waveformSeek(waveformImage, waveformId == currentAnalysisId ? waveform : nullptr, seek, audio.duration, {static_cast<float>(width) - 20, 26})) audio.seek(seek);
                 uiProbe.observe("seek", ImGui::IsItemActivated()); rememberControl(); ImGui::EndDisabled();
                 ImGui::SetCursorPos({10, 69}); peakMeter(displayedPeak, {static_cast<float>(width) - 20, 4});
                 tooltip("Decoded sample peak before volume/gain; not a true-peak meter");
@@ -885,15 +888,15 @@ int runPlayer(HINSTANCE instance) {
                 } else details += "\nStereo analysis pending";
             }
             tooltip(details);
-            double seek = audio.position;
+            double seek = audio.displayPosition();
             ImGui::BeginDisabled(!audio.loaded || audio.duration <= 0);
-            if (waveformSeek(waveformId == currentAnalysisId ? waveform.get() : nullptr, seek, audio.duration,
+            if (waveformSeek(waveformImage, waveformId == currentAnalysisId ? waveform : nullptr, seek, audio.duration,
                 {static_cast<float>(width) - u(16), 26 + static_cast<float>(panelHeight-TransportHeight)})) audio.seek(seek);
             uiProbe.observe("seek", ImGui::IsItemActivated());
             rememberControl();
             ImGui::EndDisabled();
             tooltip(waveform ? "Stereo waveform scaled to the track peak. Drag to seek; focus and use Left/Right (5s), Home or End." : "Waveform analysis pending. Drag to seek.");
-            ImGui::TextDisabled("%s / %s", timeText(audio.position).c_str(), timeText(audio.duration).c_str());
+            ImGui::TextDisabled("%s / %s", timeText(audio.displayPosition()).c_str(), timeText(audio.duration).c_str());
             ImGui::SameLine(u(248)); ImGui::TextDisabled("%s", audio.active ? (audio.paused ? "PAUSED" : "PLAYING") : "READY");
             uiProbe.observe("transport-status", false);
             ImGui::SameLine(); peakMeter(displayedPeak, {std::max(30.0f, static_cast<float>(width) - ImGui::GetCursorPosX() - 12), 6}, ImGui::GetTextLineHeight());
@@ -982,6 +985,7 @@ int runPlayer(HINSTANCE instance) {
                 uiProbe.telemetry = "LOOP " + std::to_string(schedule.presents) + " " + std::to_string(schedule.wakeups) + " " + std::to_string(SDL_TextInputActive(window)) + " " + std::to_string(composing);
                 uiProbe.telemetry += "\nPANEL " + std::to_string(preferences.transportHeight) + " " + std::to_string(preferences.strip ? 0 : TransportLayout::height(preferences.transportHeight,height,expanded));
                 uiProbe.telemetry += "\nDIRS " + std::to_string(browser.directories.included.size()) + " " + std::to_string(browser.directories.excluded.size()) + " " + std::to_string(preferences.pinnedDirectories.size());
+                uiProbe.telemetry += "\nWAVE " + std::to_string(waveformImage.rebuilds) + " " + std::to_string(waveformImage.vertices) + " " + std::to_string(waveformImage.markerRatio) + " " + std::to_string(audio.seekSequence);
                 std::ostringstream status;
                 status << "READY " << width << ' ' << height << ' ' << static_cast<int>(history.repeat) << ' '
                     << (history.current() ? history.current()->id : 0) << ' ' << history.playedCount << ' '

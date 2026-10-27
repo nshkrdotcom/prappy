@@ -12,7 +12,7 @@ struct UiSchedule {
     Time paint = Clock::now(), hover = Time::max(), caret = Time::max();
     uint64_t presents = 0, wakeups = 0;
     void request(unsigned frames = 1) { dirty = true; settle = std::max(settle, frames); }
-    void input(Time now) { request(3); hover = now + std::chrono::milliseconds(200); }
+    void input(Time now) { request(3); paint = std::min(paint,now); hover = now + std::chrono::milliseconds(200); }
     int wait(Time now, bool visible, bool animated, bool testing, bool scanning, Time persistence) const {
         auto deadline = now + std::chrono::seconds(1); // Lost-notification watchdog; never forces painting.
         if (visible && (dirty || settle || animated)) deadline = std::min(deadline, paint);
@@ -30,7 +30,7 @@ struct UiSchedule {
     }
     void presented(Time now) {
         dirty = false; if (settle) --settle;
-        paint = now + std::chrono::milliseconds(33); ++presents;
+        paint = now + std::chrono::milliseconds(16); ++presents;
     }
 };
 inline double approachGain(double current, double target, double seconds) {

@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <charconv>
 #include <functional>
+#include <optional>
+#include <chrono>
 struct AudioInfo {
     std::string codec, sampleFormat, channelLayout;
     int64_t sampleRate = 0, channels = 0;
@@ -35,7 +37,7 @@ struct Audio {
 #define MPV_API(name) decltype(&mpv_##name) name = nullptr
     MPV_API(create); MPV_API(initialize); MPV_API(terminate_destroy); MPV_API(set_option_string);
     MPV_API(command); MPV_API(set_property); MPV_API(get_property); MPV_API(wait_event); MPV_API(error_string); MPV_API(free);
-    MPV_API(set_wakeup_callback);
+    MPV_API(set_wakeup_callback); MPV_API(command_async); MPV_API(observe_property);
 #undef MPV_API
     std::string error;
     fs::path current;
@@ -46,6 +48,15 @@ struct Audio {
     AudioInfo info;
     double gain = 0, meterPeak = 0;
     bool metering = false;
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point positionTime = Clock::now();
+    std::optional<double> queuedSeek, seekPreview;
+    uint64_t seekSequence = 0, pendingSeek = 0;
+    double displayPosition(Clock::time_point now = Clock::now()) const {
+        if (seekPreview) return *seekPreview;
+        const auto elapsed = loaded && active && !paused ? std::chrono::duration<double>(now-positionTime).count() : 0;
+        return std::clamp(position+std::max(0.0,elapsed),0.0,std::max(0.0,duration));
+    }
     std::function<void()> notify;
     ~Audio() { if (handle) { set_wakeup_callback(handle, nullptr, nullptr); terminate_destroy(handle); } if (dll) FreeLibrary(dll); }
     void setNotify(std::function<void()> callback) {
@@ -60,7 +71,7 @@ struct Audio {
 #define MPV_LOAD(name) name = reinterpret_cast<decltype(name)>(GetProcAddress(dll, "mpv_" #name)); if (!name) throw std::runtime_error("Incompatible libmpv: " #name)
         MPV_LOAD(create); MPV_LOAD(initialize); MPV_LOAD(terminate_destroy); MPV_LOAD(set_option_string);
         MPV_LOAD(command); MPV_LOAD(set_property); MPV_LOAD(get_property); MPV_LOAD(wait_event); MPV_LOAD(error_string); MPV_LOAD(free);
-        MPV_LOAD(set_wakeup_callback);
+        MPV_LOAD(set_wakeup_callback); MPV_LOAD(command_async); MPV_LOAD(observe_property);
 #undef MPV_LOAD
         handle = create(); if (!handle) throw std::runtime_error("libmpv could not create the player.");
         for (auto [name, value] : std::array<std::pair<const char*, const char*>, 8>{{
@@ -76,6 +87,10 @@ struct Audio {
         }
         for (const auto& [name, value] : options) check(set_option_string(handle, name, value));
         check(initialize(handle)); check(set_property(handle, "volume", MPV_FORMAT_DOUBLE, &volume));
+        check(observe_property(handle, 1, "time-pos", MPV_FORMAT_DOUBLE));
+        check(observe_property(handle, 2, "duration", MPV_FORMAT_DOUBLE));
+        check(observe_property(handle, 3, "pause", MPV_FORMAT_FLAG));
+        if (metering) check(observe_property(handle, 4, "af-metadata/prappy-meter/lavfi.astats.Overall.Peak_level", MPV_FORMAT_STRING));
     }
     void check(int result) { if (result < 0) throw std::runtime_error(error_string(result)); }
     bool run(std::initializer_list<const char*> args) {
@@ -96,20 +111,34 @@ struct Audio {
             error = "Cannot identify requested playback."; return false;
         }
         ++serial;
+        queuedSeek.reset(); seekPreview.reset(); pendingSeek = 0;
         current = path; loaded = false; active = true; waitingStart = true;
         info = {};
-        position = startPosition; duration = 0; paused = startPaused; error.clear(); return true;
+        position = startPosition; positionTime = Clock::now(); duration = 0; paused = startPaused; error.clear(); return true;
     }
     void setPaused(bool value) {
         if (!active) return;
         int flag = value ? 1 : 0;
         int result = set_property(handle, "pause", MPV_FORMAT_FLAG, &flag);
-        if (result < 0) error = error_string(result); else paused = value;
+        if (result < 0) error = error_string(result); else {
+            position = displayPosition(); positionTime = Clock::now(); paused = value;
+            if (!value) seekPreview.reset();
+        }
     }
     void pause() { setPaused(!paused); }
     void seek(double seconds) {
-        if (!loaded) return;
-        const auto value = std::to_string(seconds); run({"seek", value.c_str(), "absolute+exact"});
+        if (!loaded || !std::isfinite(seconds)) return;
+        const auto target = std::max(0.0,seconds);
+        queuedSeek = seekPreview = duration > 0 ? std::min(target,duration) : target;
+        submitSeek();
+    }
+    void submitSeek() {
+        if (pendingSeek || !queuedSeek) return;
+        const auto value = std::to_string(*queuedSeek);
+        const char* args[] = {"seek",value.c_str(),"absolute+exact",nullptr};
+        pendingSeek = ++seekSequence; queuedSeek.reset();
+        const auto result = command_async(handle,pendingSeek,args);
+        if (result < 0) { error = error_string(result); pendingSeek = 0; seekPreview.reset(); }
     }
     void setVolume(double value) {
         int result = set_property(handle, "volume", MPV_FORMAT_DOUBLE, &value);
@@ -139,6 +168,30 @@ struct Audio {
         for (;;) {
             auto event = wait_event(handle, 0);
             if (event->event_id == MPV_EVENT_NONE) break;
+            if (event->event_id == MPV_EVENT_COMMAND_REPLY && pendingSeek && event->reply_userdata == pendingSeek) {
+                pendingSeek = 0;
+                if (event->error < 0) { error = error_string(event->error); if (!queuedSeek) seekPreview.reset(); }
+            }
+            if (event->event_id == MPV_EVENT_PROPERTY_CHANGE) {
+                const auto property = static_cast<mpv_event_property*>(event->data);
+                if (event->reply_userdata == 1 && property->format == MPV_FORMAT_DOUBLE) {
+                    position = *static_cast<double*>(property->data); positionTime = Clock::now();
+                    // Paused audio timestamps can precede the exact requested sample.
+                    // Keep the clicked marker stable until playback resumes.
+                    if (seekPreview && !queuedSeek && !paused && std::abs(position-*seekPreview) < .25) seekPreview.reset();
+                }
+                if (event->reply_userdata == 2 && property->format == MPV_FORMAT_DOUBLE) duration = *static_cast<double*>(property->data);
+                if (event->reply_userdata == 3 && property->format == MPV_FORMAT_FLAG) paused = *static_cast<int*>(property->data) != 0;
+                if (event->reply_userdata == 4) {
+                    meterPeak = 0;
+                    if (property->format == MPV_FORMAT_STRING) {
+                        const auto value = *static_cast<char**>(property->data);
+                        const std::string_view text = value ? value : "";
+                        double db = 0; const auto [end,ec] = std::from_chars(text.data(),text.data()+text.size(),db);
+                        if (ec == std::errc{} && end == text.data()+text.size() && std::isfinite(db) && db < 36) meterPeak = std::pow(10.0,db/20);
+                    }
+                }
+            }
             if (event->event_id == MPV_EVENT_START_FILE) {
                 eventEntry = static_cast<mpv_event_start_file*>(event->data)->playlist_entry_id;
                 if (eventEntry == desiredEntry) { waitingStart = false; error.clear(); }
@@ -154,22 +207,13 @@ struct Audio {
                 if (end->reason == MPV_END_FILE_REASON_ERROR) error = "Playback: " + std::string(error_string(end->error));
                 if (end->reason == MPV_END_FILE_REASON_EOF) { eof = true; active = false; loaded = false; }
                 if (end->reason == MPV_END_FILE_REASON_ERROR) { active = false; loaded = false; }
+                queuedSeek.reset(); seekPreview.reset(); pendingSeek = 0;
             }
         }
         if (loaded) {
             // Decoder parameters can arrive after FILE_LOADED, especially on a paused restore.
             if (info.codec.empty() || info.sampleFormat.empty() || info.sampleRate <= 0 || info.channels <= 0) readInfo();
-            get_property(handle, "time-pos", MPV_FORMAT_DOUBLE, &position);
-            get_property(handle, "duration", MPV_FORMAT_DOUBLE, &duration);
-            int flag = paused ? 1 : 0;
-            if (get_property(handle, "pause", MPV_FORMAT_FLAG, &flag) >= 0) paused = flag != 0;
-            meterPeak = 0;
-            if (metering && !paused) {
-                const auto text = textProperty("af-metadata/prappy-meter/lavfi.astats.Overall.Peak_level");
-                double db = 0; const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), db);
-                if (ec == std::errc{} && end == text.data() + text.size() && std::isfinite(db) && db < 36)
-                    meterPeak = std::pow(10.0, db / 20);
-            }
+            submitSeek();
         }
         if (!active || paused) meterPeak = 0;
         return eof;

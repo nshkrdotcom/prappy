@@ -37,10 +37,33 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
             schedule.caret = now + std::chrono::milliseconds(400);
             require(schedule.wait(now, true, false, false, false, {}) == 400 && schedule.due(schedule.caret, false), "Caret deadline lost.");
             require(schedule.wait(now, false, false, false, false, {}) == 1000, "Hidden UI paints caret.");
+            schedule.presented(now); schedule.input(now+std::chrono::milliseconds(1));
+            require(schedule.due(now+std::chrono::milliseconds(1),false), "Input waits behind animation frame cap.");
             require(std::abs(approachGain(0, 12, .5) - 4.5) < .001 &&
                 std::abs(releasePeak(releasePeak(1, 0, .1), 0, .2) - releasePeak(1, 0, .3)) < .00001,
                 "Gain or meter depends on frame rate.");
             log << "PASS Unicode shaping, emoji clusters, scaled text, idle/caret deadlines and elapsed-time audio controls\n";
+        }
+        {
+            static std::vector<double> submitted;
+            submitted.clear();
+            Audio simulated; simulated.loaded = simulated.active = true; simulated.duration = 100;
+            simulated.command_async = [](mpv_handle*,uint64_t,const char** args) { submitted.push_back(std::stod(args[1])); return 0; };
+            simulated.seek(10);
+            for (int i = 0; i < 10000; ++i) simulated.seek(static_cast<double>(i%99));
+            require(submitted.size() == 1 && simulated.queuedSeek == 0 && simulated.displayPosition() == 0,
+                "Rapid seeks were not coalesced or the marker waited for decoding.");
+            simulated.pendingSeek = 0; simulated.submitSeek();
+            require(submitted.size() == 2 && submitted.back() == 0 && !simulated.queuedSeek, "Latest seek target was lost.");
+            simulated.duration = 0; simulated.seek(12);
+            require(simulated.displayPosition() == 12 && simulated.queuedSeek == 12, "Restore seek was lost before duration became available.");
+            simulated.duration = 100;
+            simulated.seekPreview.reset(); simulated.position = 20; simulated.positionTime = Audio::Clock::now();
+            require(std::abs(simulated.displayPosition(simulated.positionTime+std::chrono::milliseconds(50))-20.05) < .00001,
+                "Playback marker did not interpolate between decoder updates.");
+            simulated.paused = true;
+            require(simulated.displayPosition(simulated.positionTime+std::chrono::seconds(2)) == 20, "Paused marker continued advancing.");
+            log << "PASS asynchronous seek coalescing, immediate preview, smooth clock and paused marker\n";
         }
         require(statusText("", "Checking duplicates: 4 / 10") == "Checking duplicates: 4 / 10", "Empty status adds a leading separator.");
         require(statusText("10 tracks | 2 identical copies hidden", "Checking duplicates: 4 / 10") ==
@@ -200,9 +223,18 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
         const auto invalidAudio = root / "invalid.wav"; { std::ofstream bad(invalidAudio); bad << "not an audio file"; }
         require(player.request(invalidAudio), "Invalid media request failed early."); wait(player, audio);
         require(visits.entries.size() == beforeMissing && visits.current()->id == currentId, "Decoder error recorded a visit.");
-        audio.pause(); audio.seek(.8);
+        audio.pause();
+        const auto seekStart = Audio::Clock::now(); const auto requestsBefore = audio.seekSequence;
+        for (int i = 0; i < 10000; ++i) audio.seek(static_cast<double>(i%19)/10);
+        audio.seek(.8);
+        require(audio.seekSequence == requestsBefore+1 && audio.queuedSeek == .8 && audio.displayPosition() == .8,
+            "Live rapid seeking blocked coalescing or optimistic feedback.");
+        log << "Seek submission: 10001 targets coalesced in " << std::chrono::duration<double,std::milli>(Audio::Clock::now()-seekStart).count() << " ms\n";
         for (int i = 0; i < 200 && std::abs(audio.position - .8) > .25; ++i) { player.tick(); SDL_Delay(5); }
         require(audio.paused && audio.position > .5, "Cannot checkpoint paused position.");
+        double decoded = 0;
+        require(audio.get_property(audio.handle,"time-pos",MPV_FORMAT_DOUBLE,&decoded) >= 0 && std::abs(decoded-.8) < .25,
+            "Seek preview hid an incorrect decoder position.");
         player.checkpoint(); visits.repeat = RepeatMode::One; ++visits.revision; player.finish();
         HistoryFile restoredFile(root / "session.txt"); auto restoredHistory = restoredFile.load(10000);
         Audio restoredAudio; restoredAudio.open(true); Playback restored(restoredAudio, fixture, restoredHistory, restoredFile);

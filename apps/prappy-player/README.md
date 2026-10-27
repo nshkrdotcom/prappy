@@ -24,6 +24,13 @@ audio events wake the UI, including while minimized. Meter decay and normalizati
 ramps use elapsed time. Shaped text textures have a bounded cache, retired after
 the frame using them is presented.
 
+Seeking queues work asynchronously on mpv's thread and coalesces waiting targets.
+The marker follows clicks immediately and interpolates between playback updates;
+input redraws immediately while playback animation targets 60fps. The thin stereo
+waveform uses a bounded raster cache, rebuilt only for a new track or horizontal
+resolution. Expanding its height reuses that image. Decoder position, duration,
+pause and meter updates arrive through mpv events without per-frame property reads.
+
 ## Catalog, history and repeat
 
 The catalog is saved as `player-catalog.bin` beside `player.ini`. A compatible

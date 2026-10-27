@@ -497,3 +497,46 @@ history, transport alignment, IME and idle-rendering checks also passed.
 Narrow/active rows and the overflow picker were visually inspected. Verification
 used isolated suffix builds and preserved the running Release player and state.
 Both README screenshots were refreshed from the isolated real-library run and visually inspected (`build/row-shots.log`).
+
+## Responsive waveform and seeking - 2026-10-27
+
+The waveform now rasterizes a peak envelope once per source/horizontal resolution
+into a bounded 128px-high texture (at most 4096px wide, 2 MiB). It draws two image
+quads and a pixel-aligned marker, at most 12 vertices, rather than regenerating
+per-column anti-aliased stereo lines. Changing height reuses the raster. Peak
+normalization scans the selected level rather than only its first coarse bin.
+
+Input is processed before drawing the marker. Seek commands use mpv's async API,
+with one command awaiting a reply and one replaceable latest target. A stationary
+held mouse sends no repeated commands. Position, duration, pause and meter use
+observed mpv properties, removing steady-state synchronous reads. The UI owns its
+texture, consumes worker-produced immutable peaks and never decodes source files;
+mpv retains decoder ownership. The marker interpolates playback updates, retains
+an exact paused-click preview, and input bypasses the animation frame deadline.
+Playback animation targets 60fps; paused idle rendering remains event driven.
+
+Release and Debug state suites passed, including 10,001 coalesced seek targets,
+an independent decoder-position check, unknown-duration restore and smooth/paused
+clock behavior. The Release submission sample took 0.078 ms; this measures command
+submission, not time until sound resumes. Static analysis passed. The normal
+Release executable was rebuilt. Six-format playback/seek checks passed for WAV,
+FLAC, MP3, Opus, M4A and WavPack. Logs: `build/seek-release-state.log`,
+`build/seek-debug-state.log`, `build/seek-analyze.log`, `build/seek-formats.log`.
+
+Release UI checks passed immediate-marker geometry, stationary-click coalescing,
+height-independent cache reuse, transport resize/reset/persistence, keyboard seek,
+grouped scrolling, filters/search/history, IME and paused idle rendering. The
+expanded waveform was visually inspected. Faster input exposed a test that sampled
+the previous child-layout scroll range; the test now advances layout before taking
+its baseline. Log: `build/seek-ui.log`.
+
+The ASan build compiled. An earlier iteration passed ASan state and playback
+checks, but Windows Application Control blocked the final ASan executable at
+launch with an Enterprise signing-level policy error (Code Integrity event 3077).
+The policy was left unchanged; final ASan runtime verification is unavailable.
+
+Final regular Debug UI and native Release window checks passed. Debug state and
+UI reports both say `PASS no CRT leaks`. Logs: `build/seek-debug-ui.log`,
+`build/seek-debug-ui-leaks.log`, `build/seek-debug-leaks.log` and
+`build/seek-window.log`.
+Both README screenshots were refreshed from an isolated real-library snapshot using the final Release executable and visually inspected (`build/seek-shots.log`).
