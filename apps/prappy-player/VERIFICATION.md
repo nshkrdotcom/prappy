@@ -635,3 +635,28 @@ executable was replaced with the verified suffix-build binary (SHA-256 matched)
 while preserving the running player and its state. Restart uses the GPU build.
 
 Both README screenshots were refreshed using the final GPU Release executable and visually inspected (build/gpu-shots.log).
+
+## Relaunch after blocked window cleanup - 2026-10-27
+
+A closed production instance remained alive with no player window. A live stack
+walk placed its main thread in NtUserDestroyWindow, through IMM32/MSCTF and
+textinputframework, waiting in CoreMessaging. Audio/render resources had already
+shut down, but the process still held the single-instance mutex. New launches
+saw that mutex and exited without finding a window to restore. The stale closed
+process was terminated and the player reopened successfully.
+
+Shutdown now releases the single-instance handle after playback/state/UI/render
+cleanup, before SDL_DestroyWindow. A Windows IME cleanup stall can no longer hold
+that lock and prevent another player from opening. This addresses relaunch
+lockout; it does not claim to repair Windows' internal text-input deadlock.
+
+The new verify-relaunch.ps1 uses an isolated state directory, a unique test mutex
+and test-window-only cleanup gate. With the old release order, the new process
+exited instead of opening (build/relaunch-red.log). With the fix, both Release and
+Debug open a new instance while the old process is still held in window cleanup,
+then both exit cleanly. Both Debug lifetimes have no CRT leaks. The health matrix
+now includes this regression. Static analysis and native window/input checks
+passed. Logs: build/relaunch-release.log, build/relaunch-debug.log,
+build/relaunch-debug-leaks.log, build/relaunch-analyze.log,
+build/relaunch-window.log. Independent focused review found no additional issues.
+The normal Release executable was rebuilt with the fix.

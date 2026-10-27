@@ -41,6 +41,11 @@ try {
         $env:PRAPPY_LEAK_REPORT = $report
         & "$PSScriptRoot/verify-window.ps1" -BuildVariant $buildVariant
         if ($variant -eq 'Debug') { Require-LeakReport $report }
+        $report = Join-Path $out "$variant-relaunch-$([Guid]::NewGuid().ToString('N')).log"
+        # Only Debug builds emit CRT reports; the relaunch check validates both exits.
+        $env:PRAPPY_LEAK_REPORT = if ($variant -eq 'Debug') { $report } else { $null }
+        & "$PSScriptRoot/verify-relaunch.ps1" -BuildVariant $buildVariant
+        if ($variant -eq 'Debug') { Require-LeakReport $report }
     }
 } finally { $env:PRAPPY_LEAK_REPORT = $previousReport }
 Write-Host 'PASS strict builds, static analysis, playback stress, catalog/history/repeat state and UI checks, Debug CRT leaks and ASan.'

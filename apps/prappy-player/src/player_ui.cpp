@@ -234,13 +234,15 @@ int runPlayer(HINSTANCE instance) {
     try {
         const bool windowTest = !args.empty() && args[0] == L"--window-test";
         uiProbe.enabled = windowTest;
-        if (!windowTest) {
-            HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\PrappyPlayer.Instance");
+        const auto testInstance = windowTest ? SDL_GetEnvironmentVariable(SDL_GetEnvironment(),"PRAPPY_TEST_INSTANCE") : nullptr;
+        if (!windowTest || testInstance) {
+            const auto mutexName = testInstance ? fs::path(testInstance).wstring() : L"Local\\PrappyPlayer.Instance";
+            HANDLE mutex = CreateMutexW(nullptr, FALSE, mutexName.c_str());
             const bool alreadyRunning = GetLastError() == ERROR_ALREADY_EXISTS;
             if (!mutex) throw std::runtime_error("Cannot create player instance lock.");
             singleton.reset(mutex);
             if (alreadyRunning) {
-                if (auto existing = FindWindowW(nullptr, L"Prappy Player")) {
+                if (auto existing = !windowTest ? FindWindowW(nullptr, L"Prappy Player") : nullptr) {
                     ShowWindow(existing, SW_RESTORE); SetForegroundWindow(existing);
                 }
                 return 0;
@@ -1024,6 +1026,17 @@ int runPlayer(HINSTANCE instance) {
     if (platform) ImGui_ImplSDL3_Shutdown();
     if (imgui) ImGui::DestroyContext();
     presentation.close();
+    // State and playback have already shut down. Windows IME destruction can
+    // wait inside DestroyWindow; it must not keep later launches locked out.
+    singleton.reset();
+    if (uiProbe.enabled) {
+        if (const auto gate = SDL_GetEnvironmentVariable(SDL_GetEnvironment(),"PRAPPY_TEST_EXIT_GATE")) {
+            const fs::path directory(gate);
+            std::ofstream(directory / ("cleanup-"+std::to_string(GetCurrentProcessId())+".ready")) << "ready\n";
+            const auto until = SDL_GetTicks()+10000;
+            while (fs::exists(directory / "hold") && SDL_GetTicks() < until) SDL_Delay(10);
+        }
+    }
     if (window) SDL_DestroyWindow(window);
     return exitCode;
 }
