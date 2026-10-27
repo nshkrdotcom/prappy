@@ -1,5 +1,24 @@
 # Windows verification
 
+## Search/group/filter interactions, 2026-10-26
+
+The UI regression now uses real WAV and big-endian Sun AU files across 120
+folders. Combined checks cover directory and filename tokens, case-insensitive
+matches, empty results, changing sort modes during search, selecting a result,
+history/library switches, Unplayed/Most played/Last played, extension,
+availability, duration bounds and measured-duration filters. A matching AU file
+is renamed and restored during an active query and extension filter; Refresh
+changes the result count from ten to nine and back without losing either input.
+
+Search intentionally presents a flat ranked list across all folders and file
+types, including collapsed groups. Clearing it restores the selected grouping
+and its collapsed state. Collapse/expand is checked after searches, filters and
+refreshes using the actual header positions, independent of transient scrollbar
+changes. Resetting filters preserves the query. The playback self-test also
+checks WAV and AU decoding, seeking, duration, volume, sorting, refresh and EOF
+progression on this mixed-format fixture. These checks require no player behavior
+changes; the additional coverage is retained in `scripts/verify-features.ps1`.
+
 ## Directory-group scrolling, 2026-10-26
 
 The old grouped view created a separate auto-measuring clipper for every group.

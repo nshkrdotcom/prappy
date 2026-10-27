@@ -9,7 +9,7 @@ Copy-Item -LiteralPath "$fixture/a/same.wav" -Destination "$stateDirectory/media
 Copy-Item -LiteralPath "$fixture/b/same.wav" -Destination "$stateDirectory/media/beta.wav"
 # Force the restored beta path to be a hidden duplicate, exercising canonical analysis identity.
 Copy-Item -LiteralPath "$fixture/b/same.wav" -Destination "$stateDirectory/media/a-beta-copy.wav"
-@("directory=$stateDirectory/media",'extensions=wav','history_limit=10000') | Set-Content "$stateDirectory/player.ini" -Encoding utf8
+@("directory=$stateDirectory/media",'extensions=wav,au','history_limit=10000') | Set-Content "$stateDirectory/player.ini" -Encoding utf8
 $alpha = ('"{0}"' -f ("$stateDirectory/media/alpha.wav".Replace('\','\\')))
 $beta = ('"{0}"' -f ("$stateDirectory/media/beta.wav".Replace('\','\\')))
 @('PRAPPY_HISTORY 1','NEXT_ID 3','REPEAT 0',"ENTRY 1 1700000000 0 $alpha", "ENTRY 2 1700000010 1 $beta",'TRAIL 1 2','CURSOR 2') | Set-Content "$stateDirectory/player-history.txt" -Encoding utf8NoBOM
@@ -146,6 +146,11 @@ function Select-Combo([string]$name,[int]$index) {
     Click $name; Send-UiInput 'KEY HOME 1'; Send-UiInput 'KEY HOME 0'
     for ($i=0; $i -lt $index; $i++) { Send-UiInput 'KEY DOWN 1'; Send-UiInput 'KEY DOWN 0' }
     Send-UiInput 'KEY ENTER 1'; Send-UiInput 'KEY ENTER 0'
+}
+function Search([string]$query) {
+    Click 'search'
+    Send-UiInput 'KEY CTRL 1'; Send-UiInput 'KEY A 1'; Send-UiInput 'KEY A 0'; Send-UiInput 'KEY CTRL 0'
+    Send-UiInput ('TEXT "{0}"' -f $query)
 }
 function Capture([string]$name) {
     $rect = [FeatureNative+Rect]::new()
@@ -296,12 +301,28 @@ try {
     Capture 'history-filtered'
     # Add a long catalog only after the existing two-track navigation checks.
     $template=[IO.File]::ReadAllBytes("$fixture/a/same.wav")
+    # Real big-endian Sun AU PCM gives file-type grouping/filtering a second format.
+    $dataOffset=12
+    while ([Text.Encoding]::ASCII.GetString($template,$dataOffset,4) -ne 'data') {
+        $length=[BitConverter]::ToInt32($template,$dataOffset+4); $dataOffset+=8+$length+($length%2)
+    }
+    $pcmOffset=$dataOffset+8; $pcmLength=[BitConverter]::ToInt32($template,$dataOffset+4)
     for ($index=0; $index -lt 120; $index++) {
         $directory=Join-Path $stateDirectory ('media/group-{0:D3}' -f $index)
         New-Item -ItemType Directory -Force $directory | Out-Null
         $bytes=$template.Clone()
         [BitConverter]::GetBytes([int]($index+1000)).CopyTo($bytes,16384)
         $filename = if ($index -eq 119) { '中文😀 日本語 한국어 👩🏽‍🔬 🇯🇵.wav' } else { 'track-{0:D3}.wav' -f $index }
+        if ($index -ge 100 -and $index -lt 119) {
+            $filename='track-{0:D3}.au' -f $index
+            $au=[byte[]]::new(24+$pcmLength)
+            $fields=@(0x2e736e64,24,$pcmLength,3,44100,1)
+            for($field=0;$field -lt $fields.Count;$field++) {
+                $number=[BitConverter]::GetBytes([int]$fields[$field]);[Array]::Reverse($number);$number.CopyTo($au,$field*4)
+            }
+            for($sample=0;$sample -lt $pcmLength;$sample+=2){$au[24+$sample]=$bytes[$pcmOffset+$sample+1];$au[25+$sample]=$bytes[$pcmOffset+$sample]}
+            $bytes=$au
+        }
         [IO.File]::WriteAllBytes((Join-Path $directory $filename),$bytes)
     }
     Click 'Clear'
@@ -338,6 +359,75 @@ try {
         Click 'play'
         $null=Wait-Ui {param($s) $s.Paused} "mode $mode playback paused"
     }
+    Select-Combo 'order' 1
+    $null=Wait-Ui {param($s) $s.Controls.ContainsKey('group-0')} 'directory groups restored before combined checks'
+    Click 'group-0'
+    Search 'alpha'
+    $found=Wait-Ui {param($s) $s.Visible -eq 1} 'search includes tracks inside a collapsed folder'
+    Require (@($found.Controls.Keys | Where-Object {$_ -like 'group-*'}).Count -eq 0) 'search shows ranked results without group headers'
+    $alphaRow=$found.Controls.Keys | Where-Object {$_ -like 'library-*'} | Select-Object -First 1
+    $previousCount=$found.Count; Click $alphaRow
+    $null=Wait-Ui {param($s) !$s.Pending -and $s.Count -gt $previousCount -and $s.Visible -eq 1} 'playing a search result preserves the query'
+    Click 'play'; $null=Wait-Ui {param($s) $s.Paused} 'search result paused'
+    foreach($view in @(1,2,3,0)) {
+        Select-Combo 'view' $view
+        $expected=if($view -eq 1){0}else{1}
+        $null=Wait-Ui {param($s) $s.Visible -eq $expected -and $s.View -eq $view} "search combines with history-derived view $view"
+    }
+    Click 'history'
+    $null=Wait-Ui {param($s) $s.History -and $s.Visible -ge 1} 'query carries into history'
+    Click 'Library'
+    $null=Wait-Ui {param($s) !$s.History -and $s.Visible -eq 1} 'query carries back to library'
+    Click 'Clear'
+    $restored=Wait-Ui {param($s) $s.Visible -eq 122 -and $s.Controls.ContainsKey('group-0')} 'clearing search restores directory groups'
+    Require (!$restored.Controls.ContainsKey($alphaRow)) 'collapsed directory survives search, playback and history switches'
+    Click 'group-0'
+    Search 'GROUP-042 TRACK-042'
+    $null=Wait-Ui {param($s) $s.Visible -eq 1} 'directory and filename tokens combine ignoring case'
+    Select-Combo 'order' 2
+    $null=Wait-Ui {param($s) $s.SortOrder -eq 2 -and $s.Visible -eq 1} 'changing grouping preserves active search'
+    Search 'no-such-recording-xyz'
+    $null=Wait-Ui {param($s) $s.Visible -eq 0 -and $s.DrawnTracks -eq 0} 'empty search results have no stale grouped rows'
+    Click 'Clear'
+    $null=Wait-Ui {param($s) $s.Controls.ContainsKey('group-0') -and $s.ScrollMaxY -gt 100} 'file-type groups return after empty search'
+    Click 'group-0' # AU sorts before WAV.
+    $null=Wait-Ui {param($s) $s.Controls.ContainsKey('group-1') -and
+        [Math]::Abs($s.Controls['group-1'].Top-$s.Controls['group-0'].Bottom-5) -lt 1} 'AU group collapses independently of WAV'
+    Search 'track-10'
+    $null=Wait-Ui {param($s) $s.Visible -eq 10} 'search includes tracks inside a collapsed file type'
+    Click 'filters'; Select-Combo 'extension' 2; Dismiss-Popup
+    $null=Wait-Ui {param($s) $s.Visible -eq 0} 'WAV filter excludes matching AU files'
+    Click 'filters'; Select-Combo 'extension' 1; Dismiss-Popup
+    $null=Wait-Ui {param($s) $s.Visible -eq 10} 'AU filter restores matching AU files'
+    $original="$stateDirectory/media/group-109/track-109.au"; $renamed="$stateDirectory/media/group-109/retitled.au"
+    Move-Item -LiteralPath $original -Destination $renamed
+    Click 'refresh'
+    $null=Wait-Ui {param($s) $s.Visible -eq 9} 'refresh updates matching file identities while searching and filtering'
+    Move-Item -LiteralPath $renamed -Destination $original
+    Click 'refresh'
+    $null=Wait-Ui {param($s) $s.Visible -eq 10} 'restoring a file updates results without clearing search or extension'
+    Click 'filters'
+    foreach($minimum in @(4,0)) {
+        $field=(Wait-Ui {param($s) $s.Controls.ContainsKey('duration-min')} 'combined duration filter rendered').Controls['duration-min']
+        Send-UiInput ('MOVE {0} {1}' -f ($field.Left+30).ToString([Globalization.CultureInfo]::InvariantCulture),$field.Y.ToString([Globalization.CultureInfo]::InvariantCulture))
+        Send-UiInput 'DOWN'; Send-UiInput 'UP'; Send-UiInput 'KEY CTRL 1'; Send-UiInput 'KEY A 1'; Send-UiInput 'KEY A 0'; Send-UiInput 'KEY CTRL 0'
+        Send-UiInput ('TEXT "{0}"' -f $minimum); Send-UiInput 'KEY ENTER 1'; Send-UiInput 'KEY ENTER 0'
+        $expected=if($minimum -eq 4){0}else{10}
+        $null=Wait-Ui {param($s) $s.Visible -eq $expected} "duration bound $minimum intersects search and extension"
+    }
+    Click 'measured-only'
+    $null=Wait-Ui {param($s) $s.Visible -eq 10} 'measured-duration filter retains analyzed search matches'
+    Dismiss-Popup
+    Click 'filters'; Select-Combo 'availability' 2; Dismiss-Popup
+    $null=Wait-Ui {param($s) $s.Visible -eq 0} 'availability filter intersects search and extension'
+    Click 'filters'; Click 'filter-reset'; Dismiss-Popup
+    $null=Wait-Ui {param($s) $s.Visible -eq 10} 'resetting filters preserves the active query'
+    Click 'Clear'
+    $null=Wait-Ui {param($s) $s.Visible -eq 122 -and $s.Controls.ContainsKey('group-0')} 'clearing query restores all file-type groups'
+    $null=Wait-Ui {param($s) $s.Controls.ContainsKey('group-1') -and
+        [Math]::Abs($s.Controls['group-1'].Top-$s.Controls['group-0'].Bottom-5) -lt 1} 'collapsed file type survives query, filters and refreshes'
+    Click 'group-0'
+    $null=Wait-Ui {param($s) !$s.Controls.ContainsKey('group-1') -and $s.DrawnTracks -gt 0} 'file type expands after query, filters and refreshes'
     $ready=Wait-Ui {param($s) $s.Waveform -gt 0 -and $s.Paused} 'current-track cached waveform loaded'
     $seek=$ready.Controls['seek']; $x=$seek.Left+($seek.Right-$seek.Left)*0.7
     Send-UiInput ('MOVE {0} {1}' -f $x.ToString([Globalization.CultureInfo]::InvariantCulture),$seek.Y.ToString([Globalization.CultureInfo]::InvariantCulture))
