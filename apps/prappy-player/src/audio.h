@@ -147,6 +147,7 @@ struct Audio {
                 loaded = true; active = true; loadedSerial = serial;
                 readInfo();
             }
+            if (event->event_id == MPV_EVENT_AUDIO_RECONFIG && loaded && eventEntry == desiredEntry) readInfo();
             if (event->event_id == MPV_EVENT_END_FILE) {
                 auto end = static_cast<mpv_event_end_file*>(event->data);
                 if (end->playlist_entry_id != desiredEntry) continue;
@@ -156,6 +157,8 @@ struct Audio {
             }
         }
         if (loaded) {
+            // Decoder parameters can arrive after FILE_LOADED, especially on a paused restore.
+            if (info.codec.empty() || info.sampleFormat.empty() || info.sampleRate <= 0 || info.channels <= 0) readInfo();
             get_property(handle, "time-pos", MPV_FORMAT_DOUBLE, &position);
             get_property(handle, "duration", MPV_FORMAT_DOUBLE, &duration);
             int flag = paused ? 1 : 0;

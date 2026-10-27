@@ -10,6 +10,7 @@
 #include "ui_wake.h"
 #include "ui_schedule.h"
 #include "grouped_list.h"
+#include "directory_ui.h"
 #include <windowsx.h>
 #include <shellapi.h>
 #include <dwmapi.h>
@@ -285,6 +286,9 @@ int runPlayer(HINSTANCE instance) {
         std::wstring waveformId;
         std::shared_ptr<const analysis::Result> waveform;
         Browse browser;
+        for (const auto& path : preferences.hiddenDirectories) DirectoryFilter::set(browser.directories.excluded, path, true);
+        DirectoryIndex directoryIndex; directoryIndex.rebuild(library); directoryIndex.prioritize(preferences.pinnedDirectories);
+        DirectoryUi directoryUi;
         GroupedList grouped;
         uint64_t browseVisits = UINT64_MAX;
         bool browseCatalogDirty = true;
@@ -346,6 +350,12 @@ int runPlayer(HINSTANCE instance) {
         bool normalMaximized = false;
         double displayedPeak = 0;
         fs::path contextPath;
+        float transportDragY = 0; int transportDragHeight = 0;
+        std::optional<SDL_FRect> transportGrip;
+        bool transportResetRequested = false, transportResetMouseUp = false;
+        const auto persistDirectories = [&] {
+            preferences.hiddenDirectories = browser.directories.exclusions(); ++preferenceRevision;
+        };
         const auto setStrip = [&](bool enabled) {
             int width = 0, height = 0; SDL_GetWindowSize(window, &width, &height);
             if (enabled) {
@@ -369,6 +379,12 @@ int runPlayer(HINSTANCE instance) {
                 if (!SDL_SetClipboardText(linux->c_str())) library.notice = SDL_GetError();
             }
             if (menuItem("Reveal in Explorer", "reveal")) if (!revealFile(hwnd, path)) library.notice = "Cannot reveal this file in Explorer.";
+            ImGui::Separator();
+            if (menuItem("Show only this folder", "directory-only-folder")) { browser.directories.only(path.parent_path()); filterDirty = resetListScroll = true; }
+            if (menuItem("Include this folder", "directory-add-folder")) { DirectoryFilter::set(browser.directories.included, path.parent_path(), true); filterDirty = resetListScroll = true; }
+            if (menuItem("Hide this folder and subfolders", "directory-hide-folder")) {
+                DirectoryFilter::set(browser.directories.excluded, path.parent_path(), true); persistDirectories(); filterDirty = resetListScroll = true;
+            }
             ImGui::Separator();
             if (menuItem("Play next", "queue-next")) playback.enqueue(path, true);
             if (menuItem("Add to queue", "queue-add")) playback.enqueue(path, false);
@@ -456,9 +472,17 @@ int runPlayer(HINSTANCE instance) {
                 else schedule.input(now);
                 if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) mouseHeld = true;
                 if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) mouseHeld = SDL_GetMouseState(nullptr, nullptr) != 0;
+                if (!preferences.strip && transportGrip && event.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
+                    event.button.windowID == SDL_GetWindowID(window) && event.button.button == SDL_BUTTON_LEFT && event.button.clicks == 2 &&
+                    event.button.x >= transportGrip->x && event.button.x < transportGrip->x+transportGrip->w &&
+                    event.button.y >= transportGrip->y && event.button.y < transportGrip->y+transportGrip->h &&
+                    !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
+                    transportResetRequested = transportResetMouseUp = true; schedule.request(2); continue;
+                }
+                if (transportResetMouseUp && event.type == SDL_EVENT_MOUSE_BUTTON_UP && event.button.button == SDL_BUTTON_LEFT) { transportResetMouseUp = false; continue; }
                 if (event.type == SDL_EVENT_KEY_DOWN) heldKeys.insert(event.key.key);
                 if (event.type == SDL_EVENT_KEY_UP) heldKeys.erase(event.key.key);
-                if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) { heldKeys.clear(); imeKeys.clear(); mouseHeld = false; composing = false; }
+                if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) { heldKeys.clear(); imeKeys.clear(); mouseHeld = false; composing = false; transportResetMouseUp = false; }
                 if (event.type == SDL_EVENT_TEXT_EDITING) { composing = event.edit.text && event.edit.text[0]; imeUntil = SDL_GetTicks() + 100; }
                 if (event.type == SDL_EVENT_TEXT_INPUT && composing) imeUntil = SDL_GetTicks() + 100;
                 const bool imeKey = (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) &&
@@ -485,6 +509,7 @@ int runPlayer(HINSTANCE instance) {
             if (audio.paused && (previousPosition != audio.position || previousDuration != audio.duration)) schedule.request();
             if (scan.update(library)) {
                 schedule.request(2);
+                directoryIndex.rebuild(library); directoryIndex.prioritize(preferences.pinnedDirectories);
                 history.setLimit(library.historyLimit); filterDirty = true;
                 analyses.clear(); analyzer.reconcile(library, forceAnalysis); forceAnalysis = false;
                 waveform.reset(); browseVisits = UINT64_MAX; browseCatalogDirty = true;
@@ -559,6 +584,8 @@ int runPlayer(HINSTANCE instance) {
             ImGui::SetNextWindowPos({0, 0}); ImGui::SetNextWindowSize({static_cast<float>(width), static_cast<float>(height)});
             ImGui::Begin("Player", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
             if (preferences.strip) {
+                transportGrip.reset();
+                transportResetRequested = false;
                 ImGui::SetCursorPos({10, 5});
                 if (centeredButton("<##strip", {30, 26}, "back")) playback.navigate(-1); rememberControl();
                 ImGui::SameLine();
@@ -585,6 +612,7 @@ int runPlayer(HINSTANCE instance) {
             const float headerY = std::round(uiStyle.WindowPadding.y);
             constexpr float headerHeight = 26, headerWidth = 74, gap = 7;
             const float headerRight = std::round(ImGui::GetWindowContentRegionMax().x);
+            const bool browserVisible = expanded && height-TransportLayout::height(preferences.transportHeight,height,true) > 190;
             const auto titleMin = ImGui::GetCursorScreenPos();
             centeredLabel("PRAPPY  /  PLAYER", titleMin, {titleMin.x + 116, titleMin.y + headerHeight},
                 ImGui::GetColorU32(ImVec4(.25f, .94f, .72f, 1)));
@@ -593,23 +621,50 @@ int runPlayer(HINSTANCE instance) {
             ImGui::SetCursorPos({headerRight - headerWidth * 2 - gap, headerY});
             if (centeredButton("History", {headerWidth, headerHeight}, "history")) {
                 historyView = true; filterDirty = resetListScroll = true;
-                if (!expanded && !(SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED)) SDL_SetWindowSize(window, width, expandedHeight);
+                if (!browserVisible && !(SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED)) SDL_SetWindowSize(window, width, std::max(452,expandedHeight));
                 expanded = true;
             }
             rememberControl(); tooltip("Browse listening history");
             ImGui::SetCursorPos({headerRight - headerWidth, headerY});
-            if (listButton(expanded, {headerWidth, headerHeight})) {
+            if (listButton(browserVisible, {headerWidth, headerHeight})) {
                 if (!(SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED)) {
-                    if (expanded) { expandedHeight = height; SDL_SetWindowSize(window, width, MinHeight); }
-                    else SDL_SetWindowSize(window, width, expandedHeight);
+                    if (browserVisible) { expandedHeight = height; SDL_SetWindowSize(window, width, MinHeight); }
+                    else SDL_SetWindowSize(window, width, std::max(452,expandedHeight));
                 }
-                expanded = !expanded;
+                expanded = !browserVisible;
             }
             rememberControl();
             tooltip(expanded ? "Collapse list" : "Expand list");
             ImGui::SetCursorPos({std::round(uiStyle.WindowPadding.x), headerY + headerHeight + std::round(uiStyle.ItemSpacing.y)});
-            const float transportY = static_cast<float>(height - TransportHeight);
-            if (expanded && transportY > u(90)) {
+            auto panelHeight = TransportLayout::height(preferences.transportHeight, height, expanded);
+            auto transportY = static_cast<float>(height - panelHeight);
+            const auto toolbarPosition = ImGui::GetCursorPos();
+            ImGui::SetCursorPos({8, transportY - 6});
+            ImGui::InvisibleButton("##transport-resize", {static_cast<float>(width)-16, 6}, ImGuiButtonFlags_EnableNav);
+            const auto gripMin = ImGui::GetItemRectMin(), gripMax = ImGui::GetItemRectMax();
+            transportGrip = SDL_FRect{gripMin.x,gripMin.y,gripMax.x-gripMin.x,gripMax.y-gripMin.y};
+            uiProbe.observe("transport-resize", ImGui::IsItemActivated()); rememberControl();
+            if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+            if (ImGui::IsItemActivated()) { transportDragY = io.MousePos.y; transportDragHeight = panelHeight; }
+            int preferred = preferences.transportHeight;
+            if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0)) preferred = TransportLayout::resized(transportDragHeight, transportDragY-io.MousePos.y, height, expanded);
+            // Let the old grip claim input before the list expands into its position.
+            if (transportResetRequested || (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))) preferred = TransportLayout::Compact;
+            transportResetRequested = false;
+            if (ImGui::IsItemFocused()) {
+                for (const auto key : {ImGuiKey_UpArrow, ImGuiKey_DownArrow, ImGuiKey_Home}) ImGui::SetKeyOwner(key, ImGui::GetItemID(), ImGuiInputFlags_LockThisFrame);
+                if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) preferred = TransportLayout::height(panelHeight+16,height,expanded);
+                if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) preferred = TransportLayout::height(panelHeight-16,height,expanded);
+                if (ImGui::IsKeyPressed(ImGuiKey_Home)) preferred = TransportLayout::Compact;
+            }
+            if (preferred != preferences.transportHeight) { preferences.transportHeight = preferred; ++preferenceRevision; nextPreferenceSave = now + std::chrono::milliseconds(300); schedule.request(2); }
+            panelHeight = TransportLayout::height(preferences.transportHeight,height,expanded); transportY = static_cast<float>(height-panelHeight);
+            transportGrip = SDL_FRect{8,transportY-6,static_cast<float>(width)-16,6};
+            nextControls.push_back(*transportGrip);
+            ImGui::GetWindowDrawList()->AddLine({static_cast<float>(width)/2-24,transportY-3},{static_cast<float>(width)/2+24,transportY-3},ImGui::GetColorU32(ImGuiCol_Separator),2);
+            tooltip("Drag to resize the waveform. Double-click or press Home to reset; Up/Down adjusts height.");
+            ImGui::SetCursorPos(toolbarPosition);
+            if (expanded && transportY > 190) {
                 if (viewButton("Library", !historyView)) { historyView = false; filterDirty = resetListScroll = true; }
                 rememberControl(); ImGui::SameLine();
                 if (viewButton("History##tab", historyView)) { historyView = true; filterDirty = resetListScroll = true; }
@@ -665,6 +720,10 @@ int runPlayer(HINSTANCE instance) {
                         ImGui::EndPopup();
                     }
                 }
+                const auto directoryChange = directoryUi.draw(directoryIndex, browser.directories, preferences,
+                    [&](const char* name, bool activated) { uiProbe.observe(name,activated); }, [&] { rememberControl(); });
+                if (directoryChange.filter) filterDirty = resetListScroll = true;
+                if (directoryChange.persistent) persistDirectories();
                 const auto listStart = ImGui::GetCursorPos();
                 const float searchY = transportY - ImGui::GetFrameHeight() - uiStyle.ItemSpacing.y - u(4);
                 ImGui::SetCursorPos({listStart.x, searchY});
@@ -692,14 +751,16 @@ int runPlayer(HINSTANCE instance) {
                         for (std::wstring term; input >> term;) terms.push_back(std::move(term));
                         for (size_t i = history.entries.size(); i > 0; --i) {
                             const auto& text = std::as_const(history.entries)[i - 1].search;
-                            if (!std::as_const(history.entries)[i - 1].queued && std::all_of(terms.begin(), terms.end(), [&](const auto& term) { return text.find(term) != std::wstring::npos; })) visible.push_back(i - 1);
+                            if (!std::as_const(history.entries)[i - 1].queued && browser.directories.accepts(std::as_const(history.entries)[i - 1].path) && std::all_of(terms.begin(), terms.end(), [&](const auto& term) { return text.find(term) != std::wstring::npos; })) visible.push_back(i - 1);
                         }
                         std::stable_sort(visible.begin(), visible.end(), [&](size_t a, size_t b) {
                             const auto& entries = std::as_const(history.entries);
                             return entries[a].time != entries[b].time ? entries[a].time > entries[b].time : entries[a].id > entries[b].id;
                         });
                     }
-                    if (!historyView && (library.order == 1 || library.order == 2)) grouped.rebuild(library, visible);
+                    if (!historyView && (library.order == 1 || library.order == 2)) grouped.rebuild(library, visible, [&](const Track& track) {
+                        return library.order == 2 ? track.type : browser.directories.active() ? library.pathLabel(browser.directories.playbackPath(track).parent_path()) : track.directory;
+                    });
                     filterDirty = false;
                 }
                 ImGui::SameLine(); ImGui::TextDisabled("%zu / %zu", visible.size(), historyView ? history.playedCount : library.tracks.size());
@@ -731,8 +792,9 @@ int runPlayer(HINSTANCE instance) {
                             ImGui::PopID(); return;
                         }
                         const auto& t = library.tracks[i];
+                        const auto playPath = browser.directories.active() ? browser.directories.playbackPath(t) : t.path;
                         ImGui::PushID(utf8(t.path).c_str());
-                        std::string label = (t.offline ? "[Offline] " : "") + t.label;
+                        std::string label = (t.offline ? "[Offline] " : "") + (playPath == t.path ? t.label : library.pathLabel(playPath));
                         const auto activity = browser.played(t);
                         if (browser.view == Browse::View::MostPlayed) label += " · " + std::to_string(activity.count) + " plays";
                         if (browser.view == Browse::View::LastPlayed) label += " · " + historyTime(activity.last);
@@ -742,9 +804,9 @@ int runPlayer(HINSTANCE instance) {
                             {std::max(ImGui::GetContentRegionAvail().x, textPainter.width(label, filenameFontSize()) + 4), 0});
                         highlightedLabel(label, highlightTerms, origin);
                         uiProbe.observe(("library-" + std::to_string(i)).c_str(), selected);
-                        if (selected) playback.request(t.path);
+                        if (selected) playback.request(playPath);
                         rememberControl();
-                        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) contextPath = t.path;
+                        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) contextPath = playPath;
                         if (ImGui::BeginPopupContextItem("track-actions")) { pathMenu(contextPath); ImGui::EndPopup(); }
                         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
                             std::string paths = t.label;
@@ -826,7 +888,7 @@ int runPlayer(HINSTANCE instance) {
             double seek = audio.position;
             ImGui::BeginDisabled(!audio.loaded || audio.duration <= 0);
             if (waveformSeek(waveformId == currentAnalysisId ? waveform.get() : nullptr, seek, audio.duration,
-                {static_cast<float>(width) - u(16), 26})) audio.seek(seek);
+                {static_cast<float>(width) - u(16), 26 + static_cast<float>(panelHeight-TransportHeight)})) audio.seek(seek);
             uiProbe.observe("seek", ImGui::IsItemActivated());
             rememberControl();
             ImGui::EndDisabled();
@@ -918,6 +980,8 @@ int runPlayer(HINSTANCE instance) {
                     << ImGui::GetCurrentContext()->ErrorCountCurrentFrame;
                 uiProbe.features = features.str();
                 uiProbe.telemetry = "LOOP " + std::to_string(schedule.presents) + " " + std::to_string(schedule.wakeups) + " " + std::to_string(SDL_TextInputActive(window)) + " " + std::to_string(composing);
+                uiProbe.telemetry += "\nPANEL " + std::to_string(preferences.transportHeight) + " " + std::to_string(preferences.strip ? 0 : TransportLayout::height(preferences.transportHeight,height,expanded));
+                uiProbe.telemetry += "\nDIRS " + std::to_string(browser.directories.included.size()) + " " + std::to_string(browser.directories.excluded.size()) + " " + std::to_string(preferences.pinnedDirectories.size());
                 std::ostringstream status;
                 status << "READY " << width << ' ' << height << ' ' << static_cast<int>(history.repeat) << ' '
                     << (history.current() ? history.current()->id : 0) << ' ' << history.playedCount << ' '

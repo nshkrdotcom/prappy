@@ -168,6 +168,9 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
         };
         const auto play = [&](const fs::path& path) { require(player.request(path), "Playback request failed."); wait(player, audio); };
         play(fixture.tracks[0].path); const auto visitA = visits.current()->id;
+        for (int i = 0; i < 400 && (audio.info.codec.empty() || audio.info.sampleFormat.empty() || audio.info.sampleRate <= 0 || audio.info.channels <= 0); ++i) {
+            SDL_Delay(5); player.tick();
+        }
         require(audio.info.codec == "pcm_s16le" && audio.info.sampleRate == 44100 && audio.info.channels == 1 &&
             !audio.info.sampleFormat.empty() && audio.info.describe().find("44100 Hz") != std::string::npos,
             "Source audio format details are missing or incorrect.");

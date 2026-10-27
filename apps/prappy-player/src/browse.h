@@ -2,6 +2,7 @@
 #include "library.h"
 #include "history.h"
 #include "analysis.h"
+#include "directory_filter.h"
 #include <cmath>
 
 struct ListeningStats { size_t count = 0; int64_t last = 0; };
@@ -12,6 +13,7 @@ struct Browse {
     std::string extension;
     double minimum = 0, maximum = 0;
     bool measuredOnly = false;
+    DirectoryFilter directories;
     std::map<std::wstring, ListeningStats> stats;
     std::map<std::wstring, std::wstring> canonical;
     void rebuild(const Library& library, const History& history, bool reindex = true) {
@@ -49,15 +51,26 @@ struct Browse {
     }
     std::vector<size_t> select(const Library& library, const std::string& query) const {
         const auto terms = tokens(query); std::vector<std::pair<size_t, int>> matches;
+        const bool scoped = directories.active(), sortFolders = scoped && terms.empty() && view == View::All && library.order == 1;
+        std::vector<std::wstring> folders; if (sortFolders) folders.resize(library.tracks.size());
         for (size_t i = 0; i < library.tracks.size(); ++i) {
             const auto& track = library.tracks[i]; const auto activity = view == View::All ? ListeningStats{} : played(track);
+            fs::path allowed;
+            if (scoped) { allowed = directories.playbackPath(track); if (allowed.empty()) continue; }
             if ((view == View::Unplayed && activity.count) ||
                 ((view == View::MostPlayed || view == View::LastPlayed) && !activity.count) ||
                 (availability == 1 && track.offline) || (availability == 2 && !track.offline) ||
                 (!extension.empty() && track.type != extension) ||
                 (!track.duration && (measuredOnly || minimum > 0 || maximum > 0)) ||
                 (track.duration && (*track.duration < minimum || (maximum > 0 && *track.duration > maximum)))) continue;
-            const auto rank = score(track, terms); if (rank >= 0) matches.emplace_back(i, rank);
+            int rank = 0;
+            if (scoped && !terms.empty()) {
+                Track searchable; searchable.searchName = searchText(utf8(allowed.filename())); searchable.search = searchText(library.pathLabel(allowed));
+                searchable.searchLabelLength = searchable.search.size();
+                for (const auto& copy : track.copies) if (directories.accepts(copy)) searchable.search += L'\n' + searchText(library.pathLabel(copy));
+                rank = score(searchable, terms);
+            } else rank = score(track, terms);
+            if (rank >= 0) { matches.emplace_back(i, rank); if (sortFolders) folders[i] = directoryKey(allowed.parent_path()); }
         }
         if (!terms.empty() || view == View::MostPlayed || view == View::LastPlayed) std::stable_sort(matches.begin(), matches.end(), [&](const auto& a, const auto& b) {
             if (!terms.empty() && a.second != b.second) return a.second > b.second;
@@ -66,6 +79,10 @@ struct Browse {
             if (view == View::LastPlayed && left.last != right.last) return left.last > right.last;
             return false;
         });
+        if (sortFolders)
+            std::stable_sort(matches.begin(), matches.end(), [&](const auto& a, const auto& b) {
+                return folders[a.first] < folders[b.first];
+            });
         std::vector<size_t> result; result.reserve(matches.size());
         for (const auto& match : matches) result.push_back(match.first); return result;
     }

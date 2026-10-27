@@ -27,6 +27,8 @@ public static class FeatureNative {
  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h,IntPtr dc,uint f);
  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l);
  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+ [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+ [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int command);
  [DllImport("user32.dll",EntryPoint="GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr h,int index);
 }
 '@
@@ -43,14 +45,18 @@ function Read-Shared([string]$path) {
 }
 function StateText { Read-Shared "$stateDirectory/player-history.txt" }
 function Read-Ui {
-    if (!(Test-Path -LiteralPath "$stateDirectory/ui-status.txt")) { return $null }
-    for ($readAttempt=0; $readAttempt -lt 5; ++$readAttempt) {
-        try { $text = Read-Shared "$stateDirectory/ui-status.txt"; break }
-        catch [IO.IOException] {
-            if ($readAttempt -eq 4) { return $null }
-            Start-Sleep -Milliseconds 1 # A snapshot replacement can overlap opening the reader.
+    if ($script:cachedUiProcess -ne $process.Id) { $script:cachedUi=$null; $script:cachedUiProcess=$process.Id }
+    $text=$null
+    for ($readAttempt=0; $readAttempt -lt 50; ++$readAttempt) {
+        try {
+            if (Test-Path -LiteralPath "$stateDirectory/ui-status.txt") { $text = Read-Shared "$stateDirectory/ui-status.txt"; break }
         }
+        catch [IO.IOException] {
+            # Replacement may temporarily remove the name or overlap opening a reader.
+        }
+        Start-Sleep -Milliseconds 5
     }
+    if (!$text) { return $script:cachedUi }
     $lines = $text -split '\r?\n'; $ready = $lines[0] -split ' '
     if ($ready[0] -ne 'READY') { return $null }
     $state = [pscustomobject]@{Width=[int]$ready[1];Height=[int]$ready[2];Repeat=[int]$ready[3];Cursor=[uint64]$ready[4];Count=[int]$ready[5];Pending=[bool][int]$ready[6];Paused=[bool][int]$ready[7];History=[bool][int]$ready[8];Visible=[int]$ready[9];Ack=[uint64]$ready[10];Controls=@{};Activations=@{};Tooltip='';ScrollY=0;ScrollMaxY=0;SortOrder=0;Topmost=$false;Strip=$false;Normalize=$false;Gain=0;Position=0;Duration=0;Waveform=0;Queued=0;View=0;Scoped=$false;Peak=0}
@@ -72,6 +78,10 @@ function Read-Ui {
         }
         elseif ($line -match '^ORDER ([0-9]+)$') { $state.SortOrder=[int]$matches[1] }
         elseif ($line -match '^DRAWN ([0-9]+)$') { $state | Add-Member DrawnTracks ([int]$matches[1]) -Force }
+        elseif ($line -match '^PANEL ([0-9]+) ([0-9]+)$') { $state | Add-Member PanelPreferred ([int]$matches[1]) -Force; $state | Add-Member PanelHeight ([int]$matches[2]) -Force }
+        elseif ($line -match '^DIRS ([0-9]+) ([0-9]+) ([0-9]+)$') {
+            $state | Add-Member Included ([int]$matches[1]) -Force; $state | Add-Member Hidden ([int]$matches[2]) -Force; $state | Add-Member Pins ([int]$matches[3]) -Force
+        }
         elseif ($line -match '^LOOP ([0-9]+) ([0-9]+) ([01]) ([01])$') {
             $state | Add-Member Presents ([uint64]$matches[1]) -Force
             $state | Add-Member TextInput ([bool][int]$matches[3]) -Force
@@ -89,11 +99,13 @@ function Read-Ui {
             if ([int]$feature[12] -gt 0) { throw 'Dear ImGui reported a layout/input error.' }
         }
     }
+    $script:cachedUi=$state
     return $state
 }
 function Wait-Ui([scriptblock]$condition,[string]$description) {
     $timer=[Diagnostics.Stopwatch]::StartNew(); $state=$null
     while ($timer.Elapsed.TotalSeconds -lt 10) {
+        if ($hwnd -ne [IntPtr]::Zero -and [FeatureNative]::IsIconic($hwnd)) { [FeatureNative]::ShowWindow($hwnd,9) | Out-Null }
         $state=Read-Ui
         if ($null -ne $state -and (& $condition $state)) { return $state }
         if ($process.HasExited) { throw 'Feature test player exited unexpectedly.' }
@@ -309,6 +321,7 @@ try {
     $pcmOffset=$dataOffset+8; $pcmLength=[BitConverter]::ToInt32($template,$dataOffset+4)
     for ($index=0; $index -lt 120; $index++) {
         $directory=Join-Path $stateDirectory ('media/group-{0:D3}' -f $index)
+        if ($index -eq 0) { $directory=Join-Path $directory 'nested' }
         New-Item -ItemType Directory -Force $directory | Out-Null
         $bytes=$template.Clone()
         [BitConverter]::GetBytes([int]($index+1000)).CopyTo($bytes,16384)
@@ -488,6 +501,52 @@ try {
     $null=Wait-Ui {param($s) !$s.Pending -and $s.Scoped -and $s.Repeat -eq 2} 'context action starts repeating its directory'
     if (!(Read-Ui).Paused) { Click 'play' }
     Click 'more'; Click 'clear-folder'; $null=Wait-Ui {param($s) !$s.Scoped} 'folder scope cleared'
+    Click 'directory-chip-0'
+    $null=Wait-Ui {param($s) $s.Included -eq 1 -and $s.Visible -eq 1} 'priority directory chip includes its subtree'
+    Click 'directory-chip-1'
+    $null=Wait-Ui {param($s) $s.Included -eq 2 -and $s.Visible -eq 2} 'multiple directory chips combine as a whitelist'
+    $beforeResize=Read-Ui; $bounds=[FeatureNative+Rect]::new()
+    [FeatureNative]::GetWindowRect($hwnd,[ref]$bounds) | Out-Null
+    $frameHeight=$bounds.Bottom-$bounds.Top-$beforeResize.Height
+    [FeatureNative]::SetWindowPos($hwnd,[IntPtr]::Zero,0,0,$bounds.Right-$bounds.Left,360+$frameHeight,0x16) | Out-Null
+    $null=Wait-Ui {param($s) $s.Height -eq 360 -and !$s.Controls.ContainsKey('directories') -and $s.Controls.ContainsKey('seek')} 'small window keeps browsing controls from overlapping transport'
+    Click 'list'
+    $null=Wait-Ui {param($s) $s.Height -ge 452 -and $s.Controls.ContainsKey('directories') -and $s.Included -eq 2 -and $s.Visible -eq 2} 'List restores a usable browser size without losing directory selections'
+    Search 'track-000'
+    $null=Wait-Ui {param($s) $s.Visible -eq 1} 'search intersects a multi-directory whitelist'
+    Click 'Clear'
+    Click 'directories'; Click 'directory-open-0'
+    $null=Wait-Ui {param($s) $s.Controls.ContainsKey('directory-hide-0')} 'directory browser drills into one level'
+    Click 'directory-hide-0'
+    $null=Wait-Ui {param($s) $s.Hidden -eq 1 -and $s.Visible -eq 1} 'hiding a parent excludes its nested recording'
+    Click 'directory-pin-1'
+    $null=Wait-Ui {param($s) $s.Pins -eq 1} 'subdirectory can be pinned to the priority row'
+    Click 'directory-open-0'; Click 'directory-include-0'
+    $null=Wait-Ui {param($s) $s.Included -eq 3 -and $s.Visible -eq 1} 'child inclusion cannot override a hidden ancestor'
+    Click 'directory-all'
+    $null=Wait-Ui {param($s) $s.Included -eq 0 -and $s.Hidden -eq 1 -and $s.Visible -eq 121} 'clearing temporary includes retains persistent exclusions'
+    Capture 'directories'
+    Dismiss-Popup
+    Click 'directory-chip-0'
+    $null=Wait-Ui {param($s) $s.Included -eq 1 -and $s.Visible -eq 1} 'pinned directory is the first compact priority chip'
+    $divider=Move-Control 'transport-resize'; $position=(Read-Ui).Position
+    Send-UiInput ('MOVE {0} {1}' -f $divider.X.ToString([Globalization.CultureInfo]::InvariantCulture),$divider.Y.ToString([Globalization.CultureInfo]::InvariantCulture))
+    Send-UiInput 'DOWN'
+    Send-UiInput ('MOVE {0} {1}' -f $divider.X.ToString([Globalization.CultureInfo]::InvariantCulture),($divider.Y-110).ToString([Globalization.CultureInfo]::InvariantCulture))
+    Send-UiInput 'UP'
+    $raised=Wait-Ui {param($s) $s.PanelPreferred -ge 310 -and $s.Controls['seek'].Bottom-$s.Controls['seek'].Top -gt 130} 'dragging transport upward enlarges the waveform'
+    Capture 'transport-expanded'
+    Require ($raised.Paused -and [Math]::Abs($raised.Position-$position) -lt .01) 'resizing transport does not seek or resume playback'
+    $null=Move-Control 'transport-resize'; Send-UiInput 'DOUBLE_CLICK'
+    $reset=Wait-Ui {param($s) $s.PanelPreferred -eq 202 -and $s.Controls['seek'].Bottom-$s.Controls['seek'].Top -eq 26 -and
+        [Math]::Abs($s.Controls['transport-resize'].Y-($s.Height-$s.PanelHeight-3)) -lt 1} 'double-click restores compact waveform height'
+    Require ($reset.Paused -and [Math]::Abs($reset.Position-$position) -lt .01 -and $reset.Count -eq $raised.Count) 'double-click reset does not seek, play or select an underlying row'
+    $divider=Move-Control 'transport-resize'
+    Send-UiInput ('MOVE {0} {1}' -f $divider.X.ToString([Globalization.CultureInfo]::InvariantCulture),$divider.Y.ToString([Globalization.CultureInfo]::InvariantCulture))
+    Send-UiInput 'DOWN'
+    Send-UiInput ('MOVE {0} {1}' -f $divider.X.ToString([Globalization.CultureInfo]::InvariantCulture),($divider.Y-110).ToString([Globalization.CultureInfo]::InvariantCulture))
+    Send-UiInput 'UP'
+    $null=Wait-Ui {param($s) $s.PanelPreferred -ge 310} 'custom waveform height prepared for restart'
     Click 'more'; Click 'topmost'
     $null=Wait-Ui {param($s) $s.Topmost} 'always-on-top preference enabled'
     Require (([FeatureNative]::GetWindowLongPtr($hwnd,-20).ToInt64() -band 8) -ne 0) 'native always-on-top style applied'
@@ -516,12 +575,18 @@ try {
     do { $process.Refresh(); $hwnd=$process.MainWindowHandle; if ($hwnd -ne [IntPtr]::Zero) { break }; Start-Sleep -Milliseconds 10 } while ($timer.Elapsed.TotalSeconds -lt 10)
     $null=Wait-Ui {param($s) $s.Strip -and $s.Topmost -and $s.Normalize -and $s.Paused -and $s.Queued -eq 1 -and $s.Waveform -gt 0} 'strip/topmost/normalization/queue restore together paused'
     Require (([FeatureNative]::GetWindowLongPtr($hwnd,-20).ToInt64() -band 8) -ne 0) 'native topmost restores after restart'
+    $restored=Read-Ui
+    Require ($restored.Included -eq 0 -and $restored.Hidden -eq 1 -and $restored.Pins -eq 1 -and $restored.PanelPreferred -ge 310) 'height, hidden directories and pins restore; includes remain temporary'
     Send-UiInput 'KEY CTRL 1'; Send-UiInput 'KEY SHIFT 1'; Send-UiInput 'KEY M 1'; Send-UiInput 'KEY M 0'; Send-UiInput 'KEY SHIFT 0'; Send-UiInput 'KEY CTRL 0'
-    $null=Wait-Ui {param($s) !$s.Strip -and $s.Height -ge 250} 'strip keyboard shortcut restores normal layout'
+    $compact=Wait-Ui {param($s) !$s.Strip -and $s.Height -ge 250} 'strip keyboard shortcut restores normal layout'
+    Require ($compact.PanelPreferred -ge 310 -and $compact.PanelHeight -eq 202) 'small window clamps the panel without losing the preferred height'
     Send-UiInput 'KEY CTRL 1'; Send-UiInput 'KEY SHIFT 1'; Send-UiInput 'KEY T 1'; Send-UiInput 'KEY T 0'; Send-UiInput 'KEY SHIFT 0'; Send-UiInput 'KEY CTRL 0'
     $null=Wait-Ui {param($s) !$s.Topmost} 'topmost keyboard shortcut toggles preference'
     Require (([FeatureNative]::GetWindowLongPtr($hwnd,-20).ToInt64() -band 8) -eq 0) 'topmost shortcut clears native style'
     Click 'list'
+    $null=Wait-Ui {param($s) $s.PanelHeight -ge 310 -and $s.Visible -eq 121} 'expanded window restores saved waveform height and excludes hidden subtree'
+    $null=Move-Control 'transport-resize'; Send-UiInput 'DOUBLE_CLICK'
+    $null=Wait-Ui {param($s) $s.PanelPreferred -eq 202} 'restored panel supports double-click reset'
     Click 'search'
     $null=Wait-Ui {param($s) $s.Controls['search'].Active} 'search is active before SDL text events'
     Send-UiInput 'NATIVE_EDIT "中"'

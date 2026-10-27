@@ -1,0 +1,105 @@
+#pragma once
+#include "directory_filter.h"
+#include "feature_ui.h"
+#include "preferences.h"
+
+struct DirectoryUi {
+    std::wstring location;
+    char search[128]{};
+    uint64_t revision = UINT64_MAX;
+    std::wstring shownLocation, shownSearch;
+    std::vector<std::wstring> visible;
+    struct Change { bool filter = false, persistent = false; };
+    template<class Observe, class Remember> Change draw(DirectoryIndex& index, DirectoryFilter& filter, Preferences& preferences, Observe observe, Remember remember) {
+        Change change;
+        const auto hint = [](const std::string& value) { if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) { ImGui::BeginTooltip(); filenameText(value, ImGui::GetIO().DisplaySize.x - 32); ImGui::EndTooltip(); } };
+        const auto onlyLabel = "Folders" + (filter.active() ? " (" + std::to_string(filter.included.size()) + "/" + std::to_string(filter.excluded.size()) + ")" : std::string{});
+        if (ImGui::Button((onlyLabel + "##directories").c_str())) ImGui::OpenPopup("Directory browser");
+        observe("directories", ImGui::IsItemClicked()); remember(); hint("Choose included folders, hide subtrees, or pin priority folders");
+        if (filter.active()) {
+            ImGui::SameLine(); if (ImGui::SmallButton("Reset##directories")) { filter.included.clear(); filter.excluded.clear(); change = {true, true}; }
+            observe("directory-reset", ImGui::IsItemClicked()); remember();
+        }
+        unsigned shown = 0;
+        for (const auto& id : index.featured) {
+            const auto available = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x - ImGui::GetItemRectMax().x - ImGui::GetStyle().ItemSpacing.x;
+            if (shown == 4 || available < 72) break;
+            const auto& node = index.nodes.at(id); const bool selected = DirectoryFilter::contains(filter.included, node.path);
+            const bool hidden = std::any_of(filter.excluded.begin(), filter.excluded.end(), [&](const auto& rule) { return inDirectory(node.id,rule.id); });
+            ImGui::SameLine(); ImGui::PushID(utf8(node.path).c_str());
+            if (selected || hidden) ImGui::PushStyleColor(ImGuiCol_Button, hidden ? ImVec4(.45f,.22f,.20f,1) : ImVec4(.16f,.43f,.34f,1));
+            const auto label = node.label + " (" + std::to_string(node.count) + ")";
+            const auto width = std::min(120.0f, available);
+            if (ImGui::Button("##folder-chip", {width, ImGui::GetFrameHeight()})) { DirectoryFilter::set(filter.included, node.path, !selected); change.filter = true; }
+            const auto min = ImGui::GetItemRectMin();
+            ImGui::GetWindowDrawList()->PushClipRect({min.x+5,min.y}, {min.x+width-5,min.y+ImGui::GetFrameHeight()}, true);
+            highlightedLabel(label, {}, {min.x+5,min.y+ImGui::GetStyle().FramePadding.y});
+            ImGui::GetWindowDrawList()->PopClipRect();
+            observe(("directory-chip-" + std::to_string(shown)).c_str(), ImGui::IsItemClicked()); remember(); hint(utf8(node.path) + (hidden ? "\nHidden by an exclusion. Open Folders to restore it." : "\nClick to include; multiple selections are combined."));
+            if (selected || hidden) ImGui::PopStyleColor();
+            ImGui::PopID(); ++shown;
+        }
+        ImGui::SetNextWindowSizeConstraints({std::min(460.0f, ImGui::GetIO().DisplaySize.x-16), 180}, {std::max(300.0f, ImGui::GetIO().DisplaySize.x-16), std::min(520.0f,ImGui::GetIO().DisplaySize.y-16)});
+        ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(.12f,.14f,.15f,1));
+        if (ImGui::BeginPopup("Directory browser")) {
+            if (!index.nodes.contains(location)) location.clear();
+            ImGui::TextDisabled("Include any selected subtree. Hidden subtrees always win.");
+            if (ImGui::SmallButton("All folders")) { filter.included.clear(); change.filter = true; }
+            observe("directory-all", ImGui::IsItemClicked());
+            ImGui::SameLine(); if (ImGui::SmallButton("Clear hidden")) { filter.excluded.clear(); change = {true,true}; }
+            observe("directory-unhide-all", ImGui::IsItemClicked());
+            if (!location.empty()) {
+                if (ImGui::SmallButton("< Up")) {
+                    const auto parent = directoryKey(index.nodes.at(location).path.parent_path());
+                    location = index.nodes.contains(parent) && std::find(index.roots.begin(), index.roots.end(), location) == index.roots.end() ? parent : L"";
+                    search[0] = '\0';
+                }
+                observe("directory-up", ImGui::IsItemClicked());
+                if (!location.empty()) { ImGui::SameLine(); filenameText(index.nodes.at(location).label, 330); hint(utf8(index.nodes.at(location).path)); }
+            }
+            ImGui::SetNextItemWidth(-1); ImGui::InputTextWithHint("##directory-search", "Find in this level...", search, sizeof(search)); observe("directory-search", ImGui::IsItemClicked());
+            const auto& candidates = location.empty() ? index.roots : index.nodes.at(location).children;
+            const auto term = searchText(search);
+            if (revision != index.revision || shownLocation != location || shownSearch != term) {
+                visible.clear(); for (const auto& id : candidates) if (searchText(index.nodes.at(id).label).find(term) != std::wstring::npos) visible.push_back(id);
+                revision = index.revision; shownLocation = location; shownSearch = term;
+            }
+            if (ImGui::BeginTable("Directory level", 5, ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit, {0,std::clamp(ImGui::GetIO().DisplaySize.y-190,80.0f,260.0f)})) {
+                ImGui::TableSetupColumn("Include", ImGuiTableColumnFlags_WidthFixed, 48);
+                ImGui::TableSetupColumn("Hide", ImGuiTableColumnFlags_WidthFixed, 34);
+                ImGui::TableSetupColumn("Pin", ImGuiTableColumnFlags_WidthFixed, 28);
+                ImGui::TableSetupColumn("Folder", ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 28); ImGui::TableHeadersRow();
+                ImGuiListClipper clipper; clipper.Begin(static_cast<int>(visible.size()));
+                while (clipper.Step()) for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+                    const auto& node = index.nodes.at(visible[static_cast<size_t>(i)]);
+                    ImGui::PushID(utf8(node.path).c_str()); ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0); bool included = DirectoryFilter::contains(filter.included, node.path);
+                    if (ImGui::Checkbox("##include", &included)) { DirectoryFilter::set(filter.included, node.path, included); change.filter = true; }
+                    observe(("directory-include-"+std::to_string(i)).c_str(), ImGui::IsItemClicked());
+                    ImGui::TableSetColumnIndex(1); bool hidden = DirectoryFilter::contains(filter.excluded, node.path);
+                    if (ImGui::Checkbox("##hide", &hidden)) { DirectoryFilter::set(filter.excluded, node.path, hidden); change = {true,true}; }
+                    observe(("directory-hide-"+std::to_string(i)).c_str(), ImGui::IsItemClicked());
+                    ImGui::TableSetColumnIndex(2); bool pinned = std::any_of(preferences.pinnedDirectories.begin(), preferences.pinnedDirectories.end(), [&](const auto& path) { return directoryKey(path) == node.id; });
+                    if (ImGui::Checkbox("##pin", &pinned)) {
+                        std::erase_if(preferences.pinnedDirectories, [&](const auto& path) { return directoryKey(path) == node.id; });
+                        if (pinned) preferences.pinnedDirectories.push_back(node.path);
+                        index.prioritize(preferences.pinnedDirectories); change.persistent = true;
+                    }
+                    observe(("directory-pin-"+std::to_string(i)).c_str(), ImGui::IsItemClicked());
+                    ImGui::TableSetColumnIndex(3); filenameText(node.label + " ("+std::to_string(node.count)+")", ImGui::GetContentRegionAvail().x); hint(utf8(node.path));
+                    ImGui::TableSetColumnIndex(4);
+                    if (!node.children.empty() && ImGui::SmallButton(">")) { location = node.id; search[0] = '\0'; }
+                    observe(("directory-open-"+std::to_string(i)).c_str(), ImGui::IsItemClicked());
+                    ImGui::PopID();
+                }
+                ImGui::EndTable();
+            }
+            if (visible.empty()) ImGui::TextDisabled("No subdirectories at this level.");
+            ImGui::TextDisabled("Includes are temporary; hidden folders and pins are remembered.");
+            ImGui::EndPopup();
+        }
+        ImGui::PopStyleColor();
+        return change;
+    }
+};

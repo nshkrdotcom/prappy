@@ -1,5 +1,43 @@
 # Windows verification
 
+## Directory scopes and resizable waveform, 2026-10-26
+
+Directory rules use case-insensitive, separator-aware subtree matching, including
+extended UNC paths. Multiple includes form a union; exclusions take precedence.
+Duplicate aliases are matched independently, and a permitted alias supplies the
+visible row and playback path when the canonical file is hidden. Search excludes
+hidden alias paths; directory grouping sorts by the permitted directory. The
+directory index merges overlapping roots, counts each recording once per parent,
+and ranks first-level folders by count after explicit pins. Only fitting priority
+chips are drawn. The one-level popup uses cached filtering and a single clipper.
+
+State tests cover subtree boundaries, sibling prefixes, ancestor exclusions,
+multiple includes, aliases, unique parent counts, overlapping roots, pin priority,
+UNC/case matching, panel resize clamps and persistence. The feature UI checks two
+included chips, nested-folder exclusion, pinning, drill-down, an included child
+under a hidden ancestor, and clearing temporary includes. Restart restores hidden
+folders, pins and preferred panel height while clearing includes.
+
+Mouse dragging increases the waveform height without moving the playback
+position or resuming paused audio. Double-click returns to the 202px transport
+height and 26px waveform. The custom height is restored after restart and is
+temporarily clamped in a compact window. Settings use checked asynchronous state
+writes, with a short debounce while dragging. `player-ui.txt` has format 2; no
+catalog/analysis cache invalidation or legacy preference parser is introduced.
+
+Native SDL double-click counts trigger the reset independently of rendering
+speed. The reset consumes that click and is applied at the old grip before the
+list reflows, preventing a click from selecting a track underneath it. Tests
+assert unchanged playback position, paused state and visit count. Small-window
+checks verify that browsing controls do not overlap the transport and that List
+restores a usable browser size without losing selected directory scopes.
+
+The UI reader retains only coherent snapshots from the same process across
+atomic file replacement, and restores its own test window if it is minimized.
+Audio information also refreshes on decoder reconfiguration and retries missing
+parameters after FILE_LOADED; the state check waits for asynchronous metadata
+instead of treating file load as proof that decoder parameters are ready.
+
 ## Search/group/filter interactions, 2026-10-26
 
 The UI regression now uses real WAV and big-endian Sun AU files across 120

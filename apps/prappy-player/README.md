@@ -53,6 +53,23 @@ These use retained successful visits, combine identical-copy paths, and exclude
 pending queue entries. Counts are not lifetime statistics: a track can become
 Unplayed again after its visits age out of the configured retention limit.
 
+**Folders** provides directory filtering without opening every directory group.
+The single row shows up to four priority folders that fit: pinned folders first,
+then top-level folders ranked by recording count. Click several chips to include
+their subtrees together. Open **Folders** to browse one level at a time, search
+that level, include folders, hide whole subtrees, or pin useful subdirectories.
+Counts combine identical copies without counting the same recording twice in a
+parent folder. Overlapping configured roots share one tree.
+
+Includes are temporary and reset at launch. Hidden directories and pins are
+saved in `player-ui.txt`; hidden ancestors take precedence over included children.
+**All folders** clears includes while keeping exclusions, **Clear hidden** removes
+exclusions, and the row's **Reset** clears both. Search, history views, file-type
+and duration filters combine with directory filters. If an identical recording
+has an allowed copy outside a hidden folder, the visible row plays that copy.
+These are browsing filters; the queue, trail and **Play/Repeat this folder**
+continue to determine automatic playback progression.
+
 **Back** returns to the preceding visit. **Next** follows forward history first,
 then library order. After A → B → C, Back returns to B and Next returns to C.
 Choosing D while at B makes the navigation trail A → B → D; C stays searchable
@@ -254,6 +271,10 @@ operate the scraper, change its recordings or interfere with collection jobs.
   region. Drag anywhere to seek; keyboard focus supports Left/Right (five seconds),
   Home and End. It stays seekable while waveform analysis is pending. Display
   amplitude is scaled to the track's peak so quiet files remain readable.
+  Drag the small divider above the current title upward to enlarge the waveform;
+  playback buttons stay in place. Double-click the divider to restore compact
+  height. A focused divider also supports Up/Down and Home. The preferred height
+  is saved, clamped to fit smaller windows, and restored when there is room.
 - A small meter shows live decoded sample peaks before volume/normalization,
   with a release decay. It is not a hardware-output or true-peak meter.
 - Right-click a track to **Copy full path**, **Copy WSL Linux path**, or
@@ -263,7 +284,8 @@ operate the scraper, change its recordings or interfere with collection jobs.
 - **More** contains **Always on top**, **Slim strip** and **Normalize to -18 LUFS**.
   Strip mode keeps transport, waveform and meter in 86 content pixels of height;
   use More to return. Ctrl+Shift+M toggles strip mode, and Ctrl+Shift+T toggles
-  topmost. These settings and folder scope are saved in `player-ui.txt`.
+  topmost. These settings, folder scope, waveform height, hidden directories and
+  pins use `player-ui.txt` format 2. Catalog and analysis-cache formats are unchanged.
 - Sorting changes fallback library progression without reordering history.
   Refresh reloads config and scans once, preserving playback by full path.
   If the playing file disappears from the list, it can finish; Next starts at
@@ -346,6 +368,10 @@ history saving own separate workers; their results are collected by the UI.
 - `analysis.h`, `analysis.cpp`: streaming analysis, DSP, cache and cancellation.
 - `browse.h`, `preferences.h`, `feature_ui.h`: retained-history views, ranked
   filtering, settings, shell actions, waveform and peak widgets.
+- `directory_filter.h`, `directory_ui.h`: subtree scopes, priority directory
+  indexing, pins and a clipped one-level directory browser.
+- `grouped_list.h`, `transport_layout.h`: cached grouped rows and bounded,
+  persistent waveform-panel sizing.
 - `tests.cpp`, `analysis_tests.h`, `feature_tests.h`: playback/state, analysis,
   queue, browsing, normalization and feature regression checks.
 

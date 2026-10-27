@@ -8,6 +8,38 @@
 inline void featureTests(const fs::path& root, const Library& fixture, std::ostream& log) {
     const auto require = [](bool value, const char* message) { if (!value) throw std::runtime_error(message); };
     {
+        const auto base = fs::path(L"C:\\Music");
+        DirectoryFilter scope;
+        DirectoryFilter::set(scope.excluded, base / "a", true);
+        require(!scope.accepts(base / "a/nested/song.wav") && scope.accepts(base / "ab/song.wav"), "Subtree exclusion crossed a directory boundary.");
+        DirectoryFilter::set(scope.included, base / "A", true);
+        require(!scope.accepts(base / "a/song.wav"), "Include overrode an excluded ancestor.");
+        DirectoryFilter::set(scope.included, base / "b", true);
+        Track duplicate; duplicate.path = base / "a/song.wav"; duplicate.copies = {base / "b/copy.wav"};
+        require(scope.playbackPath(duplicate) == duplicate.copies.front(), "Directory inclusion ignored an allowed duplicate alias.");
+        Library indexed; indexed.roots = {base, base / "a"}; indexed.tracks = {duplicate, duplicate};
+        indexed.tracks[1].path = base / "a/nested/other.flac"; indexed.tracks[1].copies.clear();
+        DirectoryIndex index; index.rebuild(indexed); index.prioritize({base / "a/nested"});
+        require(index.roots.size() == 1 && index.nodes.at(directoryKey(base)).count == 2 && index.nodes.at(directoryKey(base / "a")).count == 2 &&
+            index.nodes.at(directoryKey(base / "b")).count == 1 && index.featured.front() == directoryKey(base / "a/nested"),
+            "Directory priorities/counts lost aliases or double-counted tracks.");
+        scope.only(base / "b"); require(scope.playbackPath(duplicate) == duplicate.copies.front() && !scope.accepts(base / "ab/x.wav"), "Directory-only selection leaked siblings.");
+        Browse selected; selected.directories = scope;
+        require(selected.select(indexed,"copy") == std::vector<size_t>({0}) && selected.select(indexed,"song").empty(),
+            "Scoped search matched an excluded canonical filename or lost the allowed alias.");
+        const fs::path second = L"D:\\Other"; indexed.roots.push_back(second);
+        Track another; another.path = second / "priority/tone.wav"; indexed.tracks.push_back(another);
+        index.rebuild(indexed); index.prioritize({});
+        require(index.roots.size() == 2 && index.featured.front() == directoryKey(base / "a") &&
+            std::find(index.featured.begin(),index.featured.end(),directoryKey(second / "priority")) != index.featured.end(),
+            "Multiple roots did not prioritize their first-level directories.");
+        require(inDirectory(directoryKey(L"\\\\?\\UNC\\server\\share\\Audio\\sub\\x.wav"), directoryKey(L"\\\\SERVER\\share\\audio\\")), "UNC/case directory matching failed.");
+        require(TransportLayout::height(400,250,false) == 202 && TransportLayout::height(400,710,true) == 400 &&
+            TransportLayout::resized(202,100,710,true) == 302 && TransportLayout::resized(202,-100,710,true) == 202,
+            "Transport resize/clamp lost the saved expanded height.");
+        log << "PASS directory scopes: subtree boundaries, exclusion precedence, multiple includes, aliases, unique counts, pins, UNC; transport resize/clamp\n";
+    }
+    {
         Library many; many.order = 1;
         std::vector<size_t> visible;
         for (size_t i = 0; i < 10000; ++i) {
@@ -93,9 +125,12 @@ inline void featureTests(const fs::path& root, const Library& fixture, std::ostr
     measured.samplePeak = 1; require(std::abs(normalizationGain(&measured, true) + 1) < .001, "Normalization peak headroom failed.");
     measured.loudness.reset(); require(normalizationGain(&measured, true) == 0 && normalizationGain(nullptr, true) == 0, "Unknown loudness received gain.");
     Preferences preferences; preferences.topmost = preferences.strip = preferences.normalize = true; preferences.folder = a.parent_path();
+    preferences.transportHeight = 390; preferences.hiddenDirectories = {a.parent_path()}; preferences.pinnedDirectories = {b.parent_path()};
     const auto prefs = root / "preferences.txt"; stateio::write(prefs, preferences.serialize());
     const auto loaded = Preferences::load(prefs);
     require(loaded.topmost && loaded.strip && loaded.normalize && loaded.folder == preferences.folder, "Window/normalization preferences did not round trip.");
+    require(loaded.transportHeight == 390 && loaded.hiddenDirectories == preferences.hiddenDirectories && loaded.pinnedDirectories == preferences.pinnedDirectories,
+        "Directory/panel preferences did not round trip.");
     log << "PASS features model: WSL paths, queue/forward trail, retained-history views, ranked search, duration/type/offline filters, gain/headroom, preferences\n" << std::flush;
 
     Audio audio; audio.open(true); History history; HistoryFile file(root / "feature-playback.txt"); Playback player(audio, library, history, file);

@@ -47,6 +47,12 @@ struct UiProbe {
                     } else if (action == "IDLE") { pollCommands = false; native = true; }
                     else if (action == "DOWN") mouseDown = true;
                     else if (action == "UP") mouseDown = false;
+                    else if (action == "DOUBLE_CLICK") {
+                        SDL_Event event{}; event.type = SDL_EVENT_MOUSE_BUTTON_DOWN; event.button.windowID = windowID;
+                        event.button.button = SDL_BUTTON_LEFT; event.button.clicks = 2; event.button.down = true;
+                        event.button.x = mousePosition.x; event.button.y = mousePosition.y; SDL_PushEvent(&event);
+                        event.type = SDL_EVENT_MOUSE_BUTTON_UP; event.button.down = false; SDL_PushEvent(&event);
+                    }
                     else if (action == "RIGHT_DOWN") rightDown = true;
                     else if (action == "RIGHT_UP") rightDown = false;
                     else if (action == "WHEEL") valid = static_cast<bool>(command >> wheel) && std::isfinite(wheel) && std::abs(wheel) <= 100;

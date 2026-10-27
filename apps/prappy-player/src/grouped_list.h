@@ -12,17 +12,19 @@ struct GroupedList {
     std::set<std::pair<int, std::string>> closed;
     int order = 0;
     bool dirty = true;
-    void rebuild(const Library& library, const std::vector<size_t>& visible) {
+    template<class GroupName> void rebuild(const Library& library, const std::vector<size_t>& visible, GroupName name) {
         order = library.order; groups.clear();
         for (size_t begin = 0; begin < visible.size();) {
-            const auto& first = library.tracks[visible[begin]];
-            const auto& key = order == 1 ? first.directory : first.type;
+            const auto key = name(library.tracks[visible[begin]]);
             size_t end = begin + 1;
-            while (end < visible.size() && (order == 1 ? library.tracks[visible[end]].directory : library.tracks[visible[end]].type) == key) ++end;
+            while (end < visible.size() && name(library.tracks[visible[end]]) == key) ++end;
             groups.push_back({key, key + " (" + std::to_string(end - begin) + ")", begin, end, !closed.contains({order, key})});
             begin = end;
         }
         dirty = true;
+    }
+    void rebuild(const Library& library, const std::vector<size_t>& visible) {
+        rebuild(library, visible, [&](const Track& track) { return library.order == 1 ? track.directory : track.type; });
     }
     void flatten(const std::vector<size_t>& visible) {
         if (!dirty) return;
