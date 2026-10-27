@@ -34,6 +34,19 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
             require(painter.inspect("文件", {}, 36).width > painter.inspect("文件", {}, 18).width * 1.9f,
                 "Text size did not scale.");
             UiSchedule schedule; const auto now = UiSchedule::Clock::now();
+            for (int frame = 0; frame < 3; ++frame) {
+                painter.beginFrame();
+                const auto before = painter.cacheStats();
+                for (int i = 0; i < 160; ++i) {
+                    const auto label = "Visible Unicode row " + std::to_string(i);
+                    painter.width(label,18);
+                    painter.inspect(label,{L"row"},18);
+                    painter.inspect(label,{},18);
+                }
+                const auto after = painter.cacheStats();
+                require(after.layouts >= 160 && after.shaped >= 160,"Text layout cache diagnostics missing.");
+                if (frame) require(after.shaped == before.shaped,"Tall viewport reshapes visible text every frame.");
+            }
             schedule.dirty = false; schedule.settle = 0; schedule.paint = now;
             require(schedule.wait(now, true, false, false, false, {}) == 1000 && !schedule.due(now, false), "Idle UI paints on watchdog.");
             schedule.caret = now + std::chrono::milliseconds(400);

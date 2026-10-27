@@ -565,3 +565,73 @@ The final native UI run also passed maximize/restore, cached-height resizing,
 seeking, saved state and paused idle checks (`build/wavefix-ui-maximized.log`).
 Its maximized screenshot was visually inspected: both stereo lanes span the
 full width without diagonal truncation. The normal Release executable was rebuilt.
+
+## GPU rendering and 4K responsiveness - 2026-10-27
+
+SDL Direct3D 11 now owns drawing and presentation, with DXGI maximum frame
+latency set to one and the existing event scheduler pacing animation. Input
+redraws immediately, paused idle rendering remains event driven, and SDL/ImGui
+resources stay on the window thread. There is no production software fallback;
+`PRAPPY_TEST_SOFTWARE` is honored only by explicit isolated test windows.
+`Presentation` owns renderer lifetime and per-frame build/draw/Present diagnostics.
+Recoverable SDL device-reset events rebuild waveform, text and ImGui font textures
+and reapply latency settings. Unrecoverable device loss remains an explicit error.
+
+DirectWrite layouts are now independent of measurement/color/highlight raster
+entries. Measuring a label does not populate a second raster entry. Shared
+layout effects are applied and cleared during UI-thread rasterization. Layout
+and raster caches are bounded to 1,024 entries each, live tile storage to 64 MiB;
+evicted textures survive until the draw data using them has been submitted. The 160-row,
+three-frame regression failed before implementation and now verifies that warm
+visible text is not reshaped on every frame (`build/gpu-red-state.log`,
+`build/gpu-text-state.log`).
+
+A repeatable real-library benchmark compared the same Release executable and
+text-cache implementation using software versus Direct3D 11. It used a
+3840x2130 content area, about 7,186 recordings and 56-78 visible rows. Four-second
+sample windows included normal playback, sustained list scrolling and a 500px
+expanded waveform. Ten paused seeks per scene checked the marker was updated in
+the acknowledged click frame. Warm stationary expanded-waveform samples produced
+zero new layouts or raster tiles. Results (`build/ui-performance.json`):
+
+| Scene | Software fps | GPU fps | Software frame p50/p95 ms | GPU frame p50/p95 ms | Software input p50/p95 ms | GPU input p50/p95 ms |
+|---|---:|---:|---:|---:|---:|---:|
+| Compact | 62.0 | 62.5 | 4.68 / 5.73 | 0.40 / 0.52 | 5.21 / 6.32 | 0.63 / 0.80 |
+| 4K library | 3.0 | 60.2 | 302.95 / 410.61 | 1.38 / 2.79 | 293.76 / 330.65 | 1.41 / 1.52 |
+| 4K scrolling | 3.4 | 64.0 | 296.54 / 299.43 | 1.40 / 2.16 | 309.90 / 350.34 | 1.49 / 1.66 |
+| 4K expanded waveform | 3.0 | 60.7 | 325.55 / 340.67 | 1.28 / 1.81 | 348.36 / 407.07 | 1.45 / 1.74 |
+
+Input timings measure accepted command processing through Present returning;
+they do not include physical input delivery, GPU completion or display scanout.
+SDL queues software raster work, so the software Present phase includes much of
+the actual drawing cost. Results are samples on this machine, not platform-wide
+guarantees. The benchmark saves screenshots and cache counters and checks for
+known overlay module injection. The final GPU 4K screenshot was visually inspected.
+
+The user-authorized NVIDIA per-app workaround was applied through NVAPI after
+exporting profiles to `build/nvidia-profiles-before-20261027-184058.txt`.
+Readback in a fresh process confirms `PrappyPlayer.exe` has
+`0x809D5F60=0x10000000`. No global overlay/notification settings were changed.
+NVIDIA Overlay and nvsphelper64 processes were running during verification;
+no nvspcap/NvCamera capture hooks or other checked overlay modules were loaded
+in the GPU test processes. The opt-in script refuses shared/predefined profiles,
+backs up before writing and requires administrator privileges for the write.
+This undocumented driver flag may need reapplying after driver updates.
+
+Strict Release, static-analysis and Debug builds passed. Release and Debug state
+suites, six-format playback/seek checks (WAV, FLAC, MP3, Opus, M4A, WavPack),
+playback lifecycle checks, the GPU feature UI suite and native window checks passed.
+Debug state and both UI lifetimes reported no CRT leaks. Injected renderer-reset
+checks verified texture rebuilding and unchanged paused position; this tests the
+recovery path, not an actual forced GPU/driver removal. Logs: `build/gpu-analyze.log`,
+`build/gpu-release-state.log`, `build/gpu-debug-state.log`, `build/gpu-debug-ui.log`,
+`build/gpu-debug-state-leaks.log`, `build/gpu-debug-ui-leaks.log`,
+`build/gpu-playback.log`, `build/gpu-formats.log`, `build/gpu-window.log`.
+
+ASan compiled, but Windows Application Control blocked that executable at launch;
+the policy was left unchanged. Final independent review caught the renderer-reset
+gap, and a focused follow-up review passed after the fix. The normal Release
+executable was replaced with the verified suffix-build binary (SHA-256 matched)
+while preserving the running player and its state. Restart uses the GPU build.
+
+Both README screenshots were refreshed using the final GPU Release executable and visually inspected (build/gpu-shots.log).

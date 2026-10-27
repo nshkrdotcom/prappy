@@ -8,8 +8,9 @@ Compact Windows x64 music player: SDL3, Dear ImGui and audio-only libmpv.
 Defaults to **500 physical pixels** of content width (also the minimum), with
 18px text and adjustable width and height. Starts with
 the list collapsed; playback controls always stay at the bottom.
-The UI uses SDL's software renderer with a native Windows framebuffer, avoiding
-a Direct3D/OpenGL game graphics device that can trigger GPU overlay notices.
+The UI uses SDL's Direct3D 11 renderer for hardware-accelerated drawing at 4K.
+Input, ImGui and rendering stay on the window thread, with one queued GPU frame;
+audio seeking and library analysis run independently. Paused idle stays event driven.
 
 Filenames use DirectWrite shaping, Windows font fallback and a bundled Noto CJK
 font. CJK scripts, supplementary Unicode characters and color emoji work in
@@ -21,8 +22,11 @@ at the text cursor. Composition Enter, Escape and Space are reserved for input.
 The paused player waits for events and redraws only when needed, including caret
 blinks and delayed tooltips. Playback remains animated; worker completions and
 audio events wake the UI, including while minimized. Meter decay and normalization
-ramps use elapsed time. Shaped text textures have a bounded cache, retired after
-the frame using them is presented.
+ramps use elapsed time. Text layouts are shared across measurement, colors and
+highlights; separate raster caches retain up to 64 MiB of visible text tiles.
+Evicted textures are retired after the frame using them is presented. A recovered
+graphics-device reset rebuilds text, waveform and font textures without restarting
+audio playback.
 
 Seeking queues work asynchronously on mpv's thread and coalesces waiting targets.
 The marker follows clicks immediately and interpolates between playback updates;
@@ -30,6 +34,22 @@ input redraws immediately while playback animation targets 60fps. The thin stere
 waveform uses a bounded raster cache, rebuilt only for a new track or horizontal
 resolution. Expanding its height reuses that image. Decoder position, duration,
 pause and meter updates arrive through mpv events without per-frame property reads.
+
+NVIDIA's overlay can mistake a GPU-rendered desktop app for a game. The optional
+`scripts/set-nvidia-profile.ps1 -Apply` writes the undocumented per-executable
+exclusion `0x809D5F60=0x10000000` for `PrappyPlayer.exe`. Run it in an administrator
+PowerShell, then restart the player. It exports all profiles to `build/` before
+writing, refuses shared/predefined profiles and reads the value back. Omitting
+`-Apply` only checks the value. The player never changes driver settings itself;
+global overlay and notification settings remain untouched. This workaround is
+driver-dependent and may need reapplying after updates.
+
+`scripts/measure-ui.ps1` compares isolated software and Direct3D 11 test windows
+at compact and 4K sizes, including scrolling and an expanded waveform. It records
+frame phases, text cache activity and accepted-input-to-Present timing in
+`build/ui-performance.json`, and checks for known overlay modules. These CPU
+timings are not measured display/photon latency. Software rendering is available
+only through the explicit test-window comparison, with no production fallback.
 
 ## Catalog, history and repeat
 

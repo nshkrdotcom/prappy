@@ -11,6 +11,7 @@
 #include "ui_schedule.h"
 #include "grouped_list.h"
 #include "directory_ui.h"
+#include "presentation.h"
 #include <windowsx.h>
 #include <shellapi.h>
 #include <dwmapi.h>
@@ -226,6 +227,7 @@ int runPlayer(HINSTANCE instance) {
     if (args.size() == 3 && args[0] == L"--self-test") return selfTest(args[1], args[2]);
     if (args.size() == 3 && args[0] == L"--state-test") return stateTests(args[1], args[2]);
     SDL_Window* window = nullptr; SDL_Renderer* renderer = nullptr;
+    Presentation presentation;
     bool imgui = false, platform = false, graphics = false;
     int exitCode = 0;
     std::unique_ptr<void, decltype(&CloseHandle)> singleton(nullptr, CloseHandle);
@@ -323,10 +325,8 @@ int runPlayer(HINSTANCE instance) {
         SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
         SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
         SDL_SetWindowHitTest(window, hitTest, nullptr);
-        // A small desktop UI does not need a game graphics device/overlay hook.
-        SDL_SetHint(SDL_HINT_FRAMEBUFFER_ACCELERATION, "0");
-        renderer = SDL_CreateRenderer(window, SDL_SOFTWARE_RENDERER);
-        if (!renderer) throw std::runtime_error(SDL_GetError());
+        // Software comparison is available only in isolated test windows.
+        renderer = presentation.open(window,windowTest && SDL_GetEnvironmentVariable(SDL_GetEnvironment(),"PRAPPY_TEST_SOFTWARE") != nullptr);
         IMGUI_CHECKVERSION(); ImGui::CreateContext(); imgui = true;
         auto& io = ImGui::GetIO(); io.IniFilename = nullptr; io.LogFilename = nullptr;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
@@ -451,6 +451,7 @@ int runPlayer(HINSTANCE instance) {
         Uint64 imeUntil = 0;
         uint64_t probeSequence = 0;
         size_t scanFound = 0, scanChecked = 0;
+        Uint64 inputTimestamp = 0;
         while (!done) {
             auto now = UiSchedule::Clock::now();
             const auto flags = SDL_GetWindowFlags(window);
@@ -469,8 +470,14 @@ int runPlayer(HINSTANCE instance) {
             do {
                 if (!received) break;
                 now = UiSchedule::Clock::now();
+                if (event.type == SDL_EVENT_RENDER_DEVICE_LOST) throw std::runtime_error("The graphics device was lost and could not be recovered.");
+                if (event.type == SDL_EVENT_RENDER_DEVICE_RESET) {
+                    textPainter.resetTextures(); waveformImage.resetTexture();
+                    ImGui_ImplSDLRenderer3_DestroyDeviceObjects();
+                    presentation.configureLatency(); schedule.request(3);
+                }
                 if (event.type == wake->eventType()) { if (wake->acknowledge() & UiWake::Work) schedule.request(2); }
-                else schedule.input(now);
+                else { schedule.input(now); if (!inputTimestamp && (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_WHEEL || event.type == SDL_EVENT_KEY_DOWN)) inputTimestamp = event.common.timestamp; }
                 if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) mouseHeld = true;
                 if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) mouseHeld = SDL_GetMouseState(nullptr, nullptr) != 0;
                 if (!preferences.strip && transportGrip && event.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
@@ -567,11 +574,12 @@ int runPlayer(HINSTANCE instance) {
             }
             if (windowTest) {
                 uiProbe.input(stateDirectory, false);
-                if (probeSequence != uiProbe.acknowledged) { probeSequence = uiProbe.acknowledged; schedule.input(now); }
+                if (probeSequence != uiProbe.acknowledged) { probeSequence = uiProbe.acknowledged; schedule.input(now); if (!inputTimestamp) inputTimestamp = SDL_GetTicksNS(); }
             }
             if (!visibleWindow) { schedule.paint = now + std::chrono::milliseconds(33); continue; }
             const bool animateNow = (audio.active && !audio.paused) || mouseHeld || !heldKeys.empty() || probeHeld || displayedPeak > 0 || gainMoving;
             if (!schedule.due(now, animateNow)) continue;
+            const auto frameStart = Presentation::Clock::now();
             textPainter.beginFrame();
             ImGui_ImplSDLRenderer3_NewFrame(); ImGui_ImplSDL3_NewFrame();
             // Scripted input is reapplied after the platform backend queues mouse state.
@@ -962,8 +970,10 @@ int runPlayer(HINSTANCE instance) {
             draw->AddRect({0, 0}, {static_cast<float>(width - 1), static_cast<float>(height - 1)}, IM_COL32(90, 99, 99, 255));
             }
             ImGui::End(); controls.swap(nextControls); ImGui::Render();
-            SDL_SetRenderDrawColor(renderer, 46, 49, 51, 255); SDL_RenderClear(renderer);
-            ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer); SDL_RenderPresent(renderer);
+            presentation.paint(frameStart,Presentation::Clock::now(),inputTimestamp,[&] {
+                ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(),renderer);
+            });
+            inputTimestamp = 0;
             schedule.presented(now);
             schedule.caret = UiSchedule::Time::max();
             if (io.WantTextInput && io.ConfigInputTextCursorBlink) {
@@ -986,6 +996,11 @@ int runPlayer(HINSTANCE instance) {
                 uiProbe.telemetry += "\nPANEL " + std::to_string(preferences.transportHeight) + " " + std::to_string(preferences.strip ? 0 : TransportLayout::height(preferences.transportHeight,height,expanded));
                 uiProbe.telemetry += "\nDIRS " + std::to_string(browser.directories.included.size()) + " " + std::to_string(browser.directories.excluded.size()) + " " + std::to_string(preferences.pinnedDirectories.size());
                 uiProbe.telemetry += "\nWAVE " + std::to_string(waveformImage.rebuilds) + " " + std::to_string(waveformImage.vertices) + " " + std::to_string(waveformImage.markerRatio) + " " + std::to_string(audio.seekSequence);
+                const auto textStats = textPainter.cacheStats();
+                const auto& timing = presentation.timing;
+                uiProbe.telemetry += "\nRENDERER " + std::string(presentation.name());
+                uiProbe.telemetry += "\nFRAME " + std::to_string(timing.build) + " " + std::to_string(timing.draw) + " " + std::to_string(timing.present) + " " + std::to_string(timing.total) + " " + std::to_string(timing.input);
+                uiProbe.telemetry += "\nTEXT " + std::to_string(textStats.shaped) + " " + std::to_string(textStats.rasterized) + " " + std::to_string(textStats.bytes);
                 std::ostringstream status;
                 status << "READY " << width << ' ' << height << ' ' << static_cast<int>(history.repeat) << ' '
                     << (history.current() ? history.current()->id : 0) << ' ' << history.playedCount << ' '
@@ -1008,7 +1023,7 @@ int runPlayer(HINSTANCE instance) {
     if (graphics) ImGui_ImplSDLRenderer3_Shutdown();
     if (platform) ImGui_ImplSDL3_Shutdown();
     if (imgui) ImGui::DestroyContext();
-    if (renderer) SDL_DestroyRenderer(renderer);
+    presentation.close();
     if (window) SDL_DestroyWindow(window);
     return exitCode;
 }

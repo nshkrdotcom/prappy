@@ -45,6 +45,7 @@ struct UiProbe {
                         valid = static_cast<bool>(command >> x >> y) && std::isfinite(x) && std::isfinite(y) && std::abs(x) < 100000 && std::abs(y) < 100000;
                         if (valid) mousePosition = {x, y};
                     } else if (action == "IDLE") { pollCommands = false; native = true; }
+                    else if (action == "RENDER_RESET") { SDL_Event event{}; event.type = SDL_EVENT_RENDER_DEVICE_RESET; SDL_PushEvent(&event); }
                     else if (action == "DOWN") mouseDown = true;
                     else if (action == "UP") mouseDown = false;
                     else if (action == "DOUBLE_CLICK") {

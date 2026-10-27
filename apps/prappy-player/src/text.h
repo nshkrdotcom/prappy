@@ -14,6 +14,7 @@ struct Inspection {
     bool missingGlyph = false;
     bool trimmed = false;
 };
+struct CacheStats { size_t layouts = 0, rasters = 0, tiles = 0, bytes = 0; uint64_t shaped = 0, rasterized = 0; };
 // DirectWrite shapes whole strings. Only visible CPU-rasterized tiles are cached.
 class Painter {
     struct Impl;
@@ -24,6 +25,8 @@ public:
     Painter(const Painter&) = delete;
     Painter& operator=(const Painter&) = delete;
     void beginFrame();
+    void resetTextures();
+    CacheStats cacheStats() const;
     float fontSizeForCapHeight(float pixels) const;
     float width(const std::string& label, float size);
     void draw(const std::string& label, const std::vector<std::wstring>& terms, ImVec2 origin, float size, ImU32 color, float maximumWidth = 0);

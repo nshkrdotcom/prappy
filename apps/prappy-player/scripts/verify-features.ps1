@@ -77,6 +77,17 @@ function Read-Ui {
             $state.ScrollMaxY=[double]::Parse($matches[3],[Globalization.CultureInfo]::InvariantCulture)
         }
         elseif ($line -match '^ORDER ([0-9]+)$') { $state.SortOrder=[int]$matches[1] }
+        elseif ($line -match '^RENDERER (.+)$') { $state | Add-Member Renderer $matches[1] -Force }
+        elseif ($line -match '^FRAME (\S+) (\S+) (\S+) (\S+) (\S+)$') {
+            $state | Add-Member FrameBuild ([double]::Parse($matches[1],[Globalization.CultureInfo]::InvariantCulture)) -Force
+            $state | Add-Member FrameDraw ([double]::Parse($matches[2],[Globalization.CultureInfo]::InvariantCulture)) -Force
+            $state | Add-Member FramePresent ([double]::Parse($matches[3],[Globalization.CultureInfo]::InvariantCulture)) -Force
+            $state | Add-Member FrameTotal ([double]::Parse($matches[4],[Globalization.CultureInfo]::InvariantCulture)) -Force
+            $state | Add-Member InputPresent ([double]::Parse($matches[5],[Globalization.CultureInfo]::InvariantCulture)) -Force
+        }
+        elseif ($line -match '^TEXT ([0-9]+) ([0-9]+) ([0-9]+)$') {
+            $state | Add-Member TextShaped ([uint64]$matches[1]) -Force; $state | Add-Member TextRasterized ([uint64]$matches[2]) -Force; $state | Add-Member TextBytes ([uint64]$matches[3]) -Force
+        }
         elseif ($line -match '^DRAWN ([0-9]+)$') { $state | Add-Member DrawnTracks ([int]$matches[1]) -Force }
         elseif ($line -match '^PANEL ([0-9]+) ([0-9]+)$') { $state | Add-Member PanelPreferred ([int]$matches[1]) -Force; $state | Add-Member PanelHeight ([int]$matches[2]) -Force }
         elseif ($line -match '^WAVE ([0-9]+) ([0-9]+) ([^ ]+) ([0-9]+)$') {
@@ -244,6 +255,7 @@ try {
         Start-Sleep -Milliseconds 10
     }
     Require ($hwnd -ne [IntPtr]::Zero) 'Feature test window opened'
+    $null=Wait-Ui {param($s) $s.Renderer -eq 'direct3d11'} 'Direct3D 11 renderer active'
     [FeatureNative]::SetWindowPos($hwnd,[IntPtr]::Zero,120,120,0,0,0x45) | Out-Null
     $null=Wait-Ui {param($s) $s.Count -eq 2 -and !$s.Pending -and $s.Paused} 'session restored paused'
     # Establish ImGui window focus before testing a non-interactive text hover.
@@ -662,6 +674,9 @@ try {
     $first=(Read-Ui).Presents
     Start-Sleep -Seconds 2
     Require ((Read-Ui).Presents -eq $first) 'paused UI presents no idle frames after settling'
+    $beforeReset=Read-Ui; Send-UiInput 'RENDER_RESET'
+    $reset=Wait-Ui {param($s) $s.WaveBuilds -gt $beforeReset.WaveBuilds -and $s.TextRasterized -gt $beforeReset.TextRasterized} 'renderer reset rebuilds waveform and text textures'
+    Require ($reset.Renderer -eq 'direct3d11' -and $reset.Paused -and [Math]::Abs($reset.Position-$beforeReset.Position) -lt .02) 'renderer recovery preserves paused playback and position'
 } finally {
     if (!$process.HasExited) { $null=$process.CloseMainWindow(); if (!$process.WaitForExit(5000)) { Stop-Process -Id $process.Id -Force; throw 'Restored feature player did not close.' } }
 }

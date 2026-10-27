@@ -70,7 +70,7 @@ struct Renderer final : IDWriteTextRenderer {
     }
 };
 constexpr int TileWidth = 1024, Padding = 2;
-constexpr size_t MaxBytes = 16 * 1024 * 1024, MaxEntries = 128;
+constexpr size_t MaxBytes = 64 * 1024 * 1024, MaxEntries = 1024;
 COLORREF rgb(ImU32 color) { return RGB((color >> IM_COL32_R_SHIFT) & 255, (color >> IM_COL32_G_SHIFT) & 255, (color >> IM_COL32_B_SHIFT) & 255); }
 }
 
@@ -105,19 +105,25 @@ struct Painter::Impl {
     std::wstring locale;
     float capitalRatio = 1;
     struct Tile { int index = 0; SDL_Texture* texture = nullptr; size_t bytes = 0; ~Tile() { if (texture) SDL_DestroyTexture(texture); } };
-    struct Entry {
-        std::string label; std::vector<std::wstring> terms; float size; ImU32 color;
+    struct Layout {
+        std::string label; float size;
         float maximumWidth = 0;
         ComPtr<IDWriteTextLayout> layout;
         float width = 0;
         std::vector<DWRITE_CLUSTER_METRICS> clusters;
+    };
+    struct Entry {
+        std::shared_ptr<Layout> shape;
+        std::vector<std::wstring> terms; ImU32 color;
         std::vector<DWRITE_TEXT_RANGE> highlights;
         std::list<std::unique_ptr<Tile>> tiles;
     };
+    std::list<std::shared_ptr<Layout>> layouts;
     std::list<Entry> cache;
     // Draw lists retain texture pointers until the frame has been presented.
     std::list<std::unique_ptr<Tile>> retired;
     size_t bytes = 0;
+    uint64_t shaped = 0, rasterized = 0;
     explicit Impl(SDL_Renderer* output) : renderer(output) {
         check(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory5), reinterpret_cast<IUnknown**>(factory.GetAddressOf())));
         check(factory->CreateRenderingParams(&parameters)); check(factory->GetGdiInterop(&interop));
@@ -143,10 +149,11 @@ struct Painter::Impl {
         check(fallbacks->AddMapping(ranges, static_cast<UINT32>(std::size(ranges)), names, 2, fonts.Get()));
         check(fallbacks->AddMappings(native.Get())); check(fallbacks->CreateFontFallback(&fallback));
     }
-    Entry& entry(const std::string& label, const std::vector<std::wstring>& terms, float size, ImU32 color, float maximumWidth = 0) {
-        const auto found = std::find_if(cache.begin(), cache.end(), [&](const auto& item) { return item.label == label && item.terms == terms && item.size == size && item.color == color && item.maximumWidth == maximumWidth; });
-        if (found != cache.end()) { cache.splice(cache.begin(), cache, found); return cache.front(); }
-        cache.emplace_front(); auto& item = cache.front(); item.label = label; item.terms = terms; item.size = size; item.color = color; item.maximumWidth = maximumWidth;
+    std::shared_ptr<Layout> layout(const std::string& label,float size,float maximumWidth = 0) {
+        const auto found = std::find_if(layouts.begin(),layouts.end(),[&](const auto& item) { return item->label == label && item->size == size && item->maximumWidth == maximumWidth; });
+        if (found != layouts.end()) { layouts.splice(layouts.begin(),layouts,found); return layouts.front(); }
+        auto stored = std::make_shared<Layout>(); auto& item = *stored;
+        item.label = label; item.size = size; item.maximumWidth = maximumWidth; ++shaped;
         const auto value = wide(label);
         ComPtr<IDWriteTextFormat> format;
         check(factory->CreateTextFormat(L"Segoe UI", fonts.Get(), DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, locale.c_str(), &format));
@@ -162,16 +169,24 @@ struct Painter::Impl {
         if (maximumWidth > 0) item.width = std::min(item.width,maximumWidth);
         UINT32 count = 0; item.layout->GetClusterMetrics(nullptr, 0, &count); item.clusters.resize(count);
         if (count) check(item.layout->GetClusterMetrics(item.clusters.data(), count, &count));
+        layouts.push_front(stored);
+        while (layouts.size() > MaxEntries) layouts.pop_back();
+        return stored;
+    }
+    Entry& entry(const std::string& label, const std::vector<std::wstring>& terms, float size, ImU32 color, float maximumWidth = 0) {
+        auto shape = layout(label,size,maximumWidth);
+        const auto found = std::find_if(cache.begin(), cache.end(), [&](const auto& item) { return item.shape == shape && item.terms == terms && item.color == color; });
+        if (found != cache.end()) { cache.splice(cache.begin(), cache, found); return cache.front(); }
+        cache.emplace_front(); auto& item = cache.front(); item.shape = std::move(shape); item.terms = terms; item.color = color;
         const auto normalized = searchText(label); std::vector<bool> marked(normalized.size(), false);
         for (const auto& term : terms) if (!term.empty())
             for (size_t offset = 0; (offset = normalized.find(term, offset)) != std::wstring::npos; offset += term.size())
                 for (size_t i = offset; i < offset + term.size(); ++i) marked[i] = true;
         UINT32 start = 0;
-        ComPtr<Ink> highlight; highlight.Attach(new Ink(RGB(245, 189, 99)));
-        for (const auto& cluster : item.clusters) {
+        for (const auto& cluster : item.shape->clusters) {
             const auto end = std::min<size_t>(start + cluster.length, marked.size());
             bool hit = false; for (size_t i = start; i < end; ++i) hit = hit || marked[i];
-            if (hit) { DWRITE_TEXT_RANGE range{start, cluster.length}; item.highlights.push_back(range); check(item.layout->SetDrawingEffect(highlight.Get(), range)); }
+            if (hit) item.highlights.push_back({start,cluster.length});
             start += cluster.length;
         }
         trim(); return item;
@@ -185,7 +200,7 @@ struct Painter::Impl {
         }
     }
     std::vector<uint32_t> pixels(Entry& item, int index, bool white) {
-        const int height = static_cast<int>(std::ceil(item.size * 1.5f)) + Padding * 2;
+        const int height = static_cast<int>(std::ceil(item.shape->size * 1.5f)) + Padding * 2;
         ComPtr<IDWriteBitmapRenderTarget> base; check(interop->CreateBitmapRenderTarget(nullptr, TileWidth, height, &base));
         ComPtr<IDWriteBitmapRenderTarget1> surface; check(base.As(&surface));
         check(surface->SetPixelsPerDip(1)); check(surface->SetTextAntialiasMode(DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE));
@@ -194,7 +209,14 @@ struct Painter::Impl {
         RECT bounds{0, 0, TileWidth, height}; FillRect(dc, &bounds, brush); DeleteObject(brush);
         const float x = static_cast<float>(Padding - index * TileWidth);
         ComPtr<Renderer> painter; painter.Attach(new Renderer(surface.Get(), parameters.Get(), rgb(item.color), factory.Get()));
-        check(item.layout->Draw(nullptr, painter.Get(), x, Padding));
+        // Layout is shared across appearances. Effects are applied only while
+        // rasterizing on the UI thread and cleared before another appearance.
+        const auto layout = item.shape->layout.Get();
+        check(layout->SetDrawingEffect(nullptr,{0,UINT32_MAX}));
+        ComPtr<Ink> highlight; highlight.Attach(new Ink(RGB(245,189,99)));
+        for (const auto& range : item.highlights) check(layout->SetDrawingEffect(highlight.Get(),range));
+        check(layout->Draw(nullptr, painter.Get(), x, Padding));
+        check(layout->SetDrawingEffect(nullptr,{0,UINT32_MAX}));
         BITMAP bitmap{}; if (!GetObjectW(GetCurrentObject(dc, OBJ_BITMAP), sizeof(bitmap), &bitmap) || !bitmap.bmBits) throw std::runtime_error("Cannot read DirectWrite bitmap.");
         std::vector<uint32_t> result(static_cast<size_t>(TileWidth) * height);
         for (int row = 0; row < height; ++row) {
@@ -207,6 +229,7 @@ struct Painter::Impl {
         const auto found = std::find_if(item.tiles.begin(), item.tiles.end(), [&](const auto& tile) { return tile->index == index; });
         if (found != item.tiles.end()) { item.tiles.splice(item.tiles.begin(), item.tiles, found); return item.tiles.front()->texture; }
         auto black = pixels(item, index, false); const auto white = pixels(item, index, true);
+        ++rasterized;
         for (size_t i = 0; i < black.size(); ++i) {
             int alpha = 0;
             for (int shift : {0, 8, 16}) alpha = std::max(alpha, 255 - static_cast<int>((white[i] >> shift) & 255) + static_cast<int>((black[i] >> shift) & 255));
@@ -228,13 +251,22 @@ struct Painter::Impl {
 Painter::Painter(SDL_Renderer* renderer) : impl(std::make_unique<Impl>(renderer)) {}
 Painter::~Painter() { if (active == this) active = nullptr; }
 void Painter::beginFrame() { impl->retired.clear(); }
+void Painter::resetTextures() {
+    for (auto& entry : impl->cache) entry.tiles.clear();
+    impl->retired.clear(); impl->bytes = 0;
+}
+CacheStats Painter::cacheStats() const {
+    CacheStats stats{impl->layouts.size(),impl->cache.size(),0,impl->bytes,impl->shaped,impl->rasterized};
+    for (const auto& entry : impl->cache) stats.tiles += entry.tiles.size();
+    return stats;
+}
 float Painter::fontSizeForCapHeight(float pixels) const { return pixels / impl->capitalRatio; }
-float Painter::width(const std::string& label, float size) { return impl->entry(label, {}, size, IM_COL32_WHITE).width; }
+float Painter::width(const std::string& label, float size) { return impl->layout(label,size)->width; }
 void Painter::draw(const std::string& label, const std::vector<std::wstring>& terms, ImVec2 origin, float size, ImU32 color, float maximumWidth) {
     auto& entry = impl->entry(label, terms, size, color, maximumWidth); auto draw = ImGui::GetWindowDrawList();
     if (maximumWidth > 0) draw->PushClipRect({origin.x,draw->GetClipRectMin().y},{origin.x+maximumWidth,draw->GetClipRectMax().y},true);
     const auto first = std::max(0, static_cast<int>(std::floor((draw->GetClipRectMin().x - origin.x + Padding) / TileWidth)));
-    const auto last = std::min(static_cast<int>(std::ceil((entry.width + Padding * 2) / TileWidth)), static_cast<int>(std::ceil((draw->GetClipRectMax().x - origin.x + Padding) / TileWidth)));
+    const auto last = std::min(static_cast<int>(std::ceil((entry.shape->width + Padding * 2) / TileWidth)), static_cast<int>(std::ceil((draw->GetClipRectMax().x - origin.x + Padding) / TileWidth)));
     const auto height = static_cast<float>(static_cast<int>(std::ceil(size * 1.5f)) + Padding * 2);
     for (int index = first; index < last; ++index) {
         auto texture = impl->tile(entry, index); const ImVec2 min{origin.x + static_cast<float>(index * TileWidth - Padding), origin.y - Padding};
@@ -243,13 +275,13 @@ void Painter::draw(const std::string& label, const std::vector<std::wstring>& te
     if (maximumWidth > 0) draw->PopClipRect();
 }
 Inspection Painter::inspect(const std::string& label, const std::vector<std::wstring>& terms, float size, float maximumWidth) {
-    const auto& entry = impl->entry(label, terms, size, IM_COL32_WHITE,maximumWidth); Inspection result; result.width = entry.width;
-    UINT32 count = 0; entry.layout->GetLineMetrics(nullptr,0,&count);
+    const auto& entry = impl->entry(label, terms, size, IM_COL32_WHITE,maximumWidth); Inspection result; result.width = entry.shape->width;
+    UINT32 count = 0; entry.shape->layout->GetLineMetrics(nullptr,0,&count);
     std::vector<DWRITE_LINE_METRICS> lines(count);
-    if (count) { check(entry.layout->GetLineMetrics(lines.data(),count,&count)); for (const auto& line : lines) result.trimmed = result.trimmed || line.isTrimmed; }
-    for (const auto& cluster : entry.clusters) result.clusters.push_back(cluster.length);
+    if (count) { check(entry.shape->layout->GetLineMetrics(lines.data(),count,&count)); for (const auto& line : lines) result.trimmed = result.trimmed || line.isTrimmed; }
+    for (const auto& cluster : entry.shape->clusters) result.clusters.push_back(cluster.length);
     result.highlightedClusters = entry.highlights.size();
     ComPtr<Renderer> audit; audit.Attach(new Renderer(nullptr, impl->parameters.Get(), RGB(255, 255, 255)));
-    check(entry.layout->Draw(nullptr, audit.Get(), 0, 0)); result.missingGlyph = audit->missingGlyph; return result;
+    check(entry.shape->layout->Draw(nullptr, audit.Get(), 0, 0)); result.missingGlyph = audit->missingGlyph; return result;
 }
 }

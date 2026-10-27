@@ -45,6 +45,7 @@ public:
     int vertices = 0;
     double markerRatio = 0;
     explicit WaveformImage(SDL_Renderer* value) : renderer(value) {}
+    void resetTexture() { if (texture) SDL_DestroyTexture(texture); texture = nullptr; source.reset(); columns = 0; }
     ~WaveformImage() { if (texture) SDL_DestroyTexture(texture); }
     WaveformImage(const WaveformImage&) = delete;
     WaveformImage& operator=(const WaveformImage&) = delete;
