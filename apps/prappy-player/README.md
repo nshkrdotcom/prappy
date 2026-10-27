@@ -1,5 +1,9 @@
 # Prappy Player
 
+<p align="center">
+  <img src="assets/player-banner.jpg" alt="Sculpted mint glass and gold sound ribbons on charcoal" width="100%">
+</p>
+
 Compact Windows x64 music player: SDL3, Dear ImGui and audio-only libmpv.
 Defaults to **500 physical pixels** of content width (also the minimum), with
 18px text and adjustable width and height. Starts with
