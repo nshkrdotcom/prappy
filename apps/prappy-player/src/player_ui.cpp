@@ -9,6 +9,7 @@
 #include "preferences.h"
 #include "ui_wake.h"
 #include "ui_schedule.h"
+#include "grouped_list.h"
 #include <windowsx.h>
 #include <shellapi.h>
 #include <dwmapi.h>
@@ -284,6 +285,7 @@ int runPlayer(HINSTANCE instance) {
         std::wstring waveformId;
         std::shared_ptr<const analysis::Result> waveform;
         Browse browser;
+        GroupedList grouped;
         uint64_t browseVisits = UINT64_MAX;
         bool browseCatalogDirty = true;
         const auto gainForPath = [&](const fs::path& path) {
@@ -697,6 +699,7 @@ int runPlayer(HINSTANCE instance) {
                             return entries[a].time != entries[b].time ? entries[a].time > entries[b].time : entries[a].id > entries[b].id;
                         });
                     }
+                    if (!historyView && (library.order == 1 || library.order == 2)) grouped.rebuild(library, visible);
                     filterDirty = false;
                 }
                 ImGui::SameLine(); ImGui::TextDisabled("%zu / %zu", visible.size(), historyView ? history.playedCount : library.tracks.size());
@@ -708,7 +711,9 @@ int runPlayer(HINSTANCE instance) {
                     if (resetScroll) { ImGui::SetScrollY(0); ImGui::SetScrollX(0); }
                     const auto current = key(audio.current);
                     const auto highlightTerms = Browse::tokens(search);
+                    uiProbe.drawnTracks = 0;
                     auto row = [&](size_t i) {
+                        ++uiProbe.drawnTracks;
                         if (historyView) {
                             const auto& entry = std::as_const(history.entries)[i];
                             const bool unavailable = playback.unavailable.contains(key(entry.path));
@@ -757,21 +762,22 @@ int runPlayer(HINSTANCE instance) {
                         ImGuiListClipper clipper; clipper.Begin(static_cast<int>(visible.size()));
                         while (clipper.Step()) for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) row(visible[static_cast<size_t>(i)]);
                     } else {
-                        size_t begin = 0;
-                        while (begin < visible.size()) {
-                            const auto& first = library.tracks[visible[begin]];
-                            const auto group = library.order == 1 ? first.directory : first.type;
-                            size_t end = begin + 1;
-                            while (end < visible.size() && (library.order == 1 ? library.tracks[visible[end]].directory : library.tracks[visible[end]].type) == group) ++end;
-                            ImGui::PushID(group.c_str());
-                            const bool open = ImGui::CollapsingHeader((group + " (" + std::to_string(end - begin) + ")").c_str(), ImGuiTreeNodeFlags_DefaultOpen);
-                            rememberControl();
-                            tooltip(group);
-                            if (open) {
-                                ImGuiListClipper clipper; clipper.Begin(static_cast<int>(end - begin));
-                                while (clipper.Step()) for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) row(visible[begin + static_cast<size_t>(i)]);
-                            }
-                            ImGui::PopID(); begin = end;
+                        grouped.flatten(visible);
+                        ImGuiListClipper clipper;
+                        clipper.Begin(static_cast<int>(grouped.rows.size()), ImGui::GetTextLineHeightWithSpacing());
+                        while (clipper.Step()) for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+                            const auto item = grouped.rows[static_cast<size_t>(i)];
+                            if (!item.header) { row(item.index); continue; }
+                            const auto& group = grouped.groups[item.index];
+                            ImGui::PushID(group.key.c_str());
+                            ImGui::SetNextItemOpen(group.open, ImGuiCond_Always);
+                            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {uiStyle.FramePadding.x, 0});
+                            const bool open = ImGui::CollapsingHeader(group.label.c_str());
+                            ImGui::PopStyleVar();
+                            uiProbe.observe(("group-" + std::to_string(item.index)).c_str(), open != group.open);
+                            rememberControl(); tooltip(group.key);
+                            if (open != group.open) { grouped.toggle(item.index, open); schedule.request(2); }
+                            ImGui::PopID();
                         }
                     }
                     if (historyView && history.entries.empty()) ImGui::TextWrapped("Tracks appear here after they successfully load.");

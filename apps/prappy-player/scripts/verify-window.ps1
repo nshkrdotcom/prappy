@@ -108,7 +108,13 @@ try {
     Require (($r.Right-$r.Left) -gt 900) 'Maximize uses screen width'
     Capture 'player-maximized'
     [PlayerNative]::SendMessage($hwnd,0x112,[IntPtr](0xf120),[IntPtr]::Zero) | Out-Null
-    $r = Rect
+    # Native restore animation/resize messages can finish after SendMessage returns.
+    $restoreTimer=[Diagnostics.Stopwatch]::StartNew()
+    do {
+        $r = Rect
+        if ((!([PlayerNative]::IsZoomed($hwnd))) -and ($r.Right-$r.Left) -eq 900) { break }
+        Start-Sleep -Milliseconds 10
+    } while ($restoreTimer.Elapsed.TotalSeconds -lt 3)
     Require ((!([PlayerNative]::IsZoomed($hwnd))) -and ($r.Right-$r.Left) -eq 900) 'Restore preserves chosen width'
     if ($Interactive) {
     [PlayerNative]::SetWindowPos($hwnd,[IntPtr]::Zero,0,0,(500+$frameWidth),(250+$frameHeight),0x6) | Out-Null

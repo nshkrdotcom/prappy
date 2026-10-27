@@ -19,6 +19,7 @@ struct UiProbe {
     uint64_t acknowledged = 0;
     float scrollX = 0, scrollY = 0, scrollMaxY = 0;
     int order = 0;
+    size_t drawnTracks = 0;
     std::map<ImGuiKey, bool> keys;
     std::vector<std::string> controls;
     std::map<std::string, uint64_t> activations;
@@ -113,6 +114,7 @@ struct UiProbe {
         std::ostringstream out; out << state << ' ' << acknowledged << '\n';
         out << "SCROLL " << scrollX << ' ' << scrollY << ' ' << scrollMaxY << '\n';
         out << "ORDER " << order << '\n';
+        out << "DRAWN " << drawnTracks << '\n';
         if (!features.empty()) out << features << '\n';
         if (!telemetry.empty()) out << telemetry << '\n';
         for (const auto& [name, count] : activations) out << "ACTIVATION " << std::quoted(name) << ' ' << count << '\n';

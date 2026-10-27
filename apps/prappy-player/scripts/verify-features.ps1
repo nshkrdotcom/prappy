@@ -44,8 +44,13 @@ function Read-Shared([string]$path) {
 function StateText { Read-Shared "$stateDirectory/player-history.txt" }
 function Read-Ui {
     if (!(Test-Path -LiteralPath "$stateDirectory/ui-status.txt")) { return $null }
-    try { $text = Read-Shared "$stateDirectory/ui-status.txt" }
-    catch [IO.IOException] { return $null } # Replacement may overlap this read; poll for the next complete snapshot.
+    for ($readAttempt=0; $readAttempt -lt 5; ++$readAttempt) {
+        try { $text = Read-Shared "$stateDirectory/ui-status.txt"; break }
+        catch [IO.IOException] {
+            if ($readAttempt -eq 4) { return $null }
+            Start-Sleep -Milliseconds 1 # A snapshot replacement can overlap opening the reader.
+        }
+    }
     $lines = $text -split '\r?\n'; $ready = $lines[0] -split ' '
     if ($ready[0] -ne 'READY') { return $null }
     $state = [pscustomobject]@{Width=[int]$ready[1];Height=[int]$ready[2];Repeat=[int]$ready[3];Cursor=[uint64]$ready[4];Count=[int]$ready[5];Pending=[bool][int]$ready[6];Paused=[bool][int]$ready[7];History=[bool][int]$ready[8];Visible=[int]$ready[9];Ack=[uint64]$ready[10];Controls=@{};Activations=@{};Tooltip='';ScrollY=0;ScrollMaxY=0;SortOrder=0;Topmost=$false;Strip=$false;Normalize=$false;Gain=0;Position=0;Duration=0;Waveform=0;Queued=0;View=0;Scoped=$false;Peak=0}
@@ -66,6 +71,7 @@ function Read-Ui {
             $state.ScrollMaxY=[double]::Parse($matches[3],[Globalization.CultureInfo]::InvariantCulture)
         }
         elseif ($line -match '^ORDER ([0-9]+)$') { $state.SortOrder=[int]$matches[1] }
+        elseif ($line -match '^DRAWN ([0-9]+)$') { $state | Add-Member DrawnTracks ([int]$matches[1]) -Force }
         elseif ($line -match '^LOOP ([0-9]+) ([0-9]+) ([01]) ([01])$') {
             $state | Add-Member Presents ([uint64]$matches[1]) -Force
             $state | Add-Member TextInput ([bool][int]$matches[3]) -Force
@@ -291,7 +297,7 @@ try {
     # Add a long catalog only after the existing two-track navigation checks.
     $template=[IO.File]::ReadAllBytes("$fixture/a/same.wav")
     for ($index=0; $index -lt 120; $index++) {
-        $directory=Join-Path $stateDirectory ('media/group-{0:D2}' -f [int][Math]::Floor($index/20))
+        $directory=Join-Path $stateDirectory ('media/group-{0:D3}' -f $index)
         New-Item -ItemType Directory -Force $directory | Out-Null
         $bytes=$template.Clone()
         [BitConverter]::GetBytes([int]($index+1000)).CopyTo($bytes,16384)
@@ -308,9 +314,18 @@ try {
         for ($step=0; $step -lt $mode; $step++) { Send-UiInput 'KEY DOWN 1'; Send-UiInput 'KEY DOWN 0' }
         Send-UiInput 'KEY ENTER 1'; Send-UiInput 'KEY ENTER 0'
         $null=Wait-Ui {param($s) $s.SortOrder -eq $mode -and $s.ScrollMaxY -gt 100} "sort mode $mode selected"
+        if ($mode -eq 1) {
+            $expandedGroups=Read-Ui
+            Require ($null -ne $expandedGroups.DrawnTracks -and $expandedGroups.DrawnTracks -le [Math]::Ceiling($expandedGroups.Height/18)+4) 'Directory groups draw only viewport tracks across 120 folders'
+            Click 'group-0'
+            $collapsed=Wait-Ui {param($s) $s.ScrollMaxY -lt $expandedGroups.ScrollMaxY-10} 'directory header collapses its track'
+            Click 'group-0'
+            $null=Wait-Ui {param($s) [Math]::Abs($s.ScrollMaxY-$expandedGroups.ScrollMaxY) -lt 1} 'directory header restores its track'
+        }
         Send-UiInput 'MOVE 240 300'
         Send-UiInput 'WHEEL -5'
         $beforeScroll=Wait-Ui {param($s) $s.ScrollY -gt 50} "mode $mode scrolled down"
+        Require ($beforeScroll.DrawnTracks -le [Math]::Ceiling($beforeScroll.Height/18)+4) "Only viewport tracks are drawn while scrolling sort mode $mode"
         $row=$beforeScroll.Controls.Keys | Where-Object {$_ -like 'library-*' -and $beforeScroll.Controls[$_].Y -gt 180 -and $beforeScroll.Controls[$_].Y -lt 400} | Sort-Object | Select-Object -First 1
         Require ($null -ne $row) "mode $mode has a visible track below the top"
         $visits=$beforeScroll.Count

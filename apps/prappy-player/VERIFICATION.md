@@ -1,5 +1,33 @@
 # Windows verification
 
+## Directory-group scrolling, 2026-10-26
+
+The old grouped view created a separate auto-measuring clipper for every group.
+Each clipper submitted its first track, including offscreen groups. Thousands of
+offscreen text layouts repeatedly evicted the visible filename cache entries.
+Directory and file-type views now cache a flattened sequence of group headers
+and tracks, with one fixed-height viewport clipper. Group membership is rebuilt
+only after catalog/filter changes; collapsed rows are rebuilt on a toggle.
+Headers use the track row height, and collapsed state is kept independently for
+directory and file-type sorting.
+
+The model regression covers 10,000 tracks across 5,000 folders, collapse,
+switching sort modes and changed visible indices. The UI fixture now spans 120
+folders and asserts that drawing remains bounded by viewport height, checks
+collapse/expand scroll extents, and retains the existing selection/scroll tests
+in all three sort modes. The test reader retries snapshot-open races instead of
+occasionally returning a null observation during continuous rendering.
+Native window verification also waits for restore animation/resize completion
+before asserting the restored width, instead of sampling a transition frame.
+
+On the real library of approximately 6,000 tracks, four-second continuous-frame
+samples with isolated copied state showed directory rendering improve from
+1.2fps to 28.7fps. Filename mode measured 26.4fps before and 28.9fps after.
+The corrected directory frame submitted nine visible tracks. Scanning and lazy
+analysis remained active, so these are observed desktop results, not controlled
+CPU microbenchmarks. The normal Release player/state was preserved during the
+comparison; all test instances close and cancel their work afterward.
+
 ## Unicode, idle rendering and transport alignment, 2026-10-26
 
 Release, Release with MSVC static analysis, Debug and Debug with AddressSanitizer

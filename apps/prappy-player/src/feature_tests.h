@@ -2,10 +2,32 @@
 #include "browse.h"
 #include "playback.h"
 #include "preferences.h"
+#include "grouped_list.h"
 #include <SDL3/SDL.h>
 
 inline void featureTests(const fs::path& root, const Library& fixture, std::ostream& log) {
     const auto require = [](bool value, const char* message) { if (!value) throw std::runtime_error(message); };
+    {
+        Library many; many.order = 1;
+        std::vector<size_t> visible;
+        for (size_t i = 0; i < 10000; ++i) {
+            Track track; track.directory = "folder-" + std::to_string(i / 2); track.type = "wav";
+            many.tracks.push_back(std::move(track)); visible.push_back(i);
+        }
+        GroupedList grouped; grouped.rebuild(many, visible); grouped.flatten(visible);
+        require(grouped.groups.size() == 5000 && grouped.rows.size() == 15000 &&
+            grouped.rows[0].header && !grouped.rows[1].header && grouped.rows[2].index == 1,
+            "Grouped rows lost headers or track identity.");
+        grouped.toggle(0, false); grouped.flatten(visible);
+        require(grouped.rows.size() == 14998 && grouped.rows[1].header, "Collapsed group retained hidden tracks.");
+        many.order = 2; grouped.rebuild(many, visible); grouped.flatten(visible);
+        require(grouped.groups.size() == 1 && grouped.rows.size() == 10001, "File-type group inherited a directory collapse.");
+        many.order = 1; grouped.rebuild(many, visible); grouped.flatten(visible);
+        require(!grouped.groups[0].open && grouped.rows.size() == 14998, "Directory collapse was lost after sorting.");
+        visible.erase(visible.begin(), visible.begin() + 2); grouped.rebuild(many, visible); grouped.flatten(visible);
+        require(grouped.groups.front().key == "folder-1" && grouped.rows[1].index == 2, "Filtered groups retained stale indices.");
+        log << "PASS grouped list: 10000 tracks, flattened headers, collapse, independent sort state and filtered identities\n";
+    }
     require(wslLinuxPath(L"\\\\wsl.localhost\\Ubuntu\\home\\home\\a b.flac") == "/home/home/a b.flac", "WSL Linux conversion failed.");
     require(wslLinuxPath(L"\\\\WSL$\\Ubuntu\\home\\Beyonc\u00e9.flac") == "/home/Beyonc\xc3\xa9.flac", "WSL alias/Unicode conversion failed.");
     require(wslLinuxPath(L"\\\\?\\UNC\\wsl.localhost\\Ubuntu\\home\\music.wav") == "/home/music.wav", "Extended WSL conversion failed.");
