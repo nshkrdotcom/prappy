@@ -314,7 +314,9 @@ operate the scraper, change its recordings or interfere with collection jobs.
   Strip mode keeps transport, waveform and meter in 86 content pixels of height;
   use More to return. Ctrl+Shift+M toggles strip mode, and Ctrl+Shift+T toggles
   topmost. These settings, folder scope, waveform height, hidden directories and
-  pins use `player-ui.txt` format 2. Catalog and analysis-cache formats are unchanged.
+  pins and volume use `player-ui.txt` format 3. Existing format 2 settings are
+  preserved with a default volume of 70. Volume changes are saved automatically
+  and restored on startup, including mute. Catalog and analysis-cache formats are unchanged.
 - Sorting changes fallback library progression without reordering history.
   Refresh reloads config and scans once, preserving playback by full path.
   If the playing file disappears from the list, it can finish; Next starts at

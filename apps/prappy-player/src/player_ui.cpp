@@ -266,6 +266,7 @@ int runPlayer(HINSTANCE instance) {
         uint64_t preferenceRevision = 0, savedPreferences = 0;
         std::chrono::steady_clock::time_point nextPreferenceSave{};
         Library library; Audio audio;
+        audio.volume = preferences.volume;
         Scan scan;
         scan.notify = notify;
         try { createDefaultConfig(config); } catch (const std::exception& e) { library.notice = e.what(); }
@@ -948,7 +949,12 @@ int runPlayer(HINSTANCE instance) {
             ImGui::SetNextItemWidth(repeatX - gap - sliderX);
             // Preserve whole-point mouse/keyboard adjustments with an external readout.
             int volume = static_cast<int>(std::round(audio.volume));
-            if (ImGui::SliderInt("##volume", &volume, 0, 100, "")) audio.setVolume(volume);
+            if (ImGui::SliderInt("##volume", &volume, 0, 100, "")) {
+                audio.setVolume(volume);
+                preferences.volume = static_cast<int>(std::round(audio.volume));
+                ++preferenceRevision;
+                nextPreferenceSave = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+            }
             uiProbe.observe("volume", ImGui::IsItemClicked());
             rememberControl(); tooltip("Volume: " + std::to_string(static_cast<int>(std::round(audio.volume))) + "%");
             ImGui::SetCursorPos({repeatX, transportRowY});

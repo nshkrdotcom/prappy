@@ -152,6 +152,18 @@ inline void featureTests(const fs::path& root, const Library& fixture, std::ostr
     require(loaded.topmost && loaded.strip && loaded.normalize && loaded.folder == preferences.folder, "Window/normalization preferences did not round trip.");
     require(loaded.transportHeight == 390 && loaded.hiddenDirectories == preferences.hiddenDirectories && loaded.pinnedDirectories == preferences.pinnedDirectories,
         "Directory/panel preferences did not round trip.");
+    for (const int volume : {0, 37, 100}) {
+        preferences.volume = volume; stateio::write(prefs, preferences.serialize());
+        require(Preferences::load(prefs).volume == volume, "Volume preference did not round trip.");
+    }
+    stateio::write(prefs, "PRAPPY_UI 2\n1 1 1 390\n\"\"\n0\n0\n");
+    const auto legacy = Preferences::load(prefs);
+    require(legacy.volume == 70 && legacy.topmost && legacy.strip && legacy.normalize && legacy.transportHeight == 390,
+        "Legacy preferences did not retain settings with default volume.");
+    for (const auto volume : {"-1", "101", "invalid"}) {
+        stateio::write(prefs, std::string("PRAPPY_UI 3\n0 0 0 390\n\"\"\n0\n0\n") + volume + "\n");
+        require(Preferences::load(prefs).volume == 70, "Invalid saved volume was accepted.");
+    }
     log << "PASS features model: WSL paths, queue/forward trail, retained-history views, ranked search, duration/type/offline filters, gain/headroom, preferences\n" << std::flush;
 
     Audio audio; audio.open(true); History history; HistoryFile file(root / "feature-playback.txt"); Playback player(audio, library, history, file);
