@@ -2,12 +2,29 @@
 #include "sample_editor.h"
 #include "sample_audition.h"
 #include "state_io.h"
+#include "waveform_amplitude.h"
 #include <fstream>
 namespace sampling {
 inline int integrationTest(const fs::path& manifestPath,const fs::path& logPath){
     std::ofstream log(logPath);
     const auto require=[](bool v,const char* m){if(!v)throw std::runtime_error(m);};
     try{
+        AmplitudeScale scale;require(scale.gain==1 && scale.project(0,false)==1 && scale.project(0,true)==-1,"Actual display reference failed");
+        scale.fit(.01,true);require(scale.mode==AmplitudeMode::Visible && std::abs(scale.gain-100)<1e-9,"Quiet visible fit failed");
+        require(std::abs((scale.project(.01,false)-1)+(scale.project(-.01,true)+1))<1e-9,"Linked stereo scaling failed");
+        scale.drag(scale.gain,80);require(scale.mode==AmplitudeMode::Manual && std::abs(scale.gain-200)<1e-9,"Manual ruler scale failed");
+        scale.fit(0,false);require(scale.gain==1,"Silence must not amplify noise indefinitely");
+        scale.fit(1e-5,false);require(scale.gain==AmplitudeScale::MaxGain,"Quiet fit bound failed");
+        scale.fit(2,true);require(scale.gain==.5,"Above-full-scale fit failed");
+        scale.actual();require(scale.gain==1 && scale.mode==AmplitudeMode::Actual,"Display reset failed");
+        require(scale.project(100,false)<2 && scale.project(-100,true)>-2,"Display must stay inside channel lanes");
+        StereoEnvelope envelope,projected;std::vector<float> quiet(2000,.01f);quiet[1999]=-.5f;
+        require(envelope.fromPcm(quiet,5000,5000,6000,100) && envelope.x.size()<=100 && envelope.peak==.5,"Envelope frame bounds or peak failed");
+        const auto original=quiet;scale.fit(envelope.peak,false);envelope.project(scale,projected);require(quiet==original && envelope.lmin[0]<.02,"Display mutated source PCM");
+        require(!envelope.fromPcm(quiet,5000,4999,6000,100),"Partial PCM cannot define visible fit");
+        const std::vector<PeakBin> bins={{0,100,-.1,.1,-.2,.2},{100,200,-.5,.5,-.75,.75}};
+        envelope.fromOverview(bins,100,101);require(envelope.x.size()==1 && envelope.peak==.75,"Overview range intersection failed");
+        log<<"PASS visual amplitude: linked fit, silence/bounds, manual drag, reset, lane clipping and immutable PCM/envelopes\n";
         Editor e;e.reset(48000,{1000,2000});e.change({1001,1999});e.undo();require(e.span==Span{1000,2000},"Undo failed");e.redo();require(e.span==Span{1001,1999},"Redo failed");e.change({-100,999999});require(e.span==Span{0,48000},"Frame clamps failed");e.change({47999,48000});require(e.span.end-e.span.start==1,"One-frame EOF failed");
         require(e.snap(1003,{1000,2000},5)==1000 && e.snap(1010,{1000},5)==1010,"Snap tolerance failed");
         e.reset(48000,{1000,2000});e.beginGesture();e.change({1100,2000});e.change({1200,2000});e.endGesture();e.undo();require(e.span==Span{1000,2000},"Drag gesture must undo as one edit");

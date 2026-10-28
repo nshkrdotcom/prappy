@@ -2,6 +2,7 @@
 #include "sample_editor.h"
 #include "sample_audition.h"
 #include "audio.h"
+#include "waveform_amplitude.h"
 #include <array>
 #include <set>
 namespace sampling {
@@ -27,6 +28,14 @@ class Workspace {
     double viewportStart=0,viewportEnd=48000;
     Frame pcmStart=0,pcmEnd=0;
     std::vector<float> pcm;
+    AmplitudeScale amplitude;
+    StereoEnvelope envelope,displayEnvelope;
+    std::vector<PeakBin> overviewBins;
+    uint64_t waveformRevision=0,envelopeRevision=~uint64_t{0},envelopeBuilds=0;
+    Frame envelopeStart=-1,envelopeEnd=-1;
+    size_t envelopeBudget=0;
+    double projectedGain=-1,rulerInitial=1;
+    bool fitAmplitudeNow=false;
     std::vector<Frame> beats,onsets;
     std::vector<Json> anchors;
     std::string gridId;int gridRevision=0;
@@ -49,7 +58,7 @@ class Workspace {
     Json humanFacts(bool forSample=false)const;
     void requestAudition(Span);
     void process(Audio&);
-    void waveform();
+    void waveform(const std::function<void(const char*,bool)>&);
 public:
     bool open=false;
     Workspace(fs::path,std::function<void()>);
@@ -59,6 +68,6 @@ public:
     void tick(Audio&);
     void draw(Audio&,const std::function<void(const char*,bool)>&);
     bool active()const{return open;}
-    std::string diagnostics()const{return Json{{"open",open},{"capture",capture.is_null()?Json(nullptr):capture.at("id")},{"region",region},{"start",editor.span.start},{"end",editor.span.end},{"pcm_frames",pcm.size()/2},{"beats",beats.size()},{"pending",pending.size()},{"notice",notice}}.dump();}
+    std::string diagnostics()const{return Json{{"open",open},{"capture",capture.is_null()?Json(nullptr):capture.at("id")},{"region",region},{"start",editor.span.start},{"end",editor.span.end},{"pcm_frames",pcm.size()/2},{"beats",beats.size()},{"pending",pending.size()},{"notice",notice},{"amplitude_mode",static_cast<int>(amplitude.mode)},{"amplitude_gain",amplitude.gain},{"visible_peak",envelope.peak},{"envelope_builds",envelopeBuilds}}.dump();}
 };
 }

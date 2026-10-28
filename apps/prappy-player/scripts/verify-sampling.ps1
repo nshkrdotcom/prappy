@@ -37,7 +37,7 @@ function Read-Ui {
    if($line.StartsWith('SAMPLER ')){$ui.Sample=$line.Substring(8)|ConvertFrom-Json}
    elseif($line -match '^ACTIVATION "([^"]+)" ([0-9]+)$'){$ui.Activations[$matches[1]]=[uint64]$matches[2]}
    elseif($line -match '^CONTROL "([^"]+)" ([^ ]+) ([^ ]+) ([^ ]+) ([^ ]+) ([01]) ([01]) ([0-9]+)$'){
-    $ui.Controls[$matches[1]]=[pscustomobject]@{X=([double]::Parse($matches[2],[Globalization.CultureInfo]::InvariantCulture)+[double]::Parse($matches[4],[Globalization.CultureInfo]::InvariantCulture))/2;Y=([double]::Parse($matches[3],[Globalization.CultureInfo]::InvariantCulture)+[double]::Parse($matches[5],[Globalization.CultureInfo]::InvariantCulture))/2;Clicks=[uint64]$matches[8];Hovered=($matches[6] -eq "1");Active=($matches[7] -eq "1")}
+    $ui.Controls[$matches[1]]=[pscustomobject]@{X=([double]::Parse($matches[2],[Globalization.CultureInfo]::InvariantCulture)+[double]::Parse($matches[4],[Globalization.CultureInfo]::InvariantCulture))/2;Y=([double]::Parse($matches[3],[Globalization.CultureInfo]::InvariantCulture)+[double]::Parse($matches[5],[Globalization.CultureInfo]::InvariantCulture))/2;Left=[double]::Parse($matches[2],[Globalization.CultureInfo]::InvariantCulture);Right=[double]::Parse($matches[4],[Globalization.CultureInfo]::InvariantCulture);Clicks=[uint64]$matches[8];Hovered=($matches[6] -eq "1");Active=($matches[7] -eq "1")}
    }
   }
   return $ui
@@ -88,6 +88,29 @@ try{
  Click 'sample-item-0'
  $selected=Wait-Ui {param($ui)$ui.Sample.pcm_frames -gt 0} 'canonical PCM'
  $start=$selected.Sample.start
+ Click 'sample-amplitude-fit'
+ $initialFit=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 1 -and $ui.Sample.amplitude_gain -gt 1} 'visible amplitude fit'
+ $overview=(Read-Ui).Controls['sample-waveform-overview']
+ Send-Input ('MOVE '+($overview.Left+($overview.Right-$overview.Left)*.8).ToString([Globalization.CultureInfo]::InvariantCulture)+' '+$overview.Y.ToString([Globalization.CultureInfo]::InvariantCulture))
+ Send-Input 'DOWN';Send-Input 'UP';Send-Input 'DOWN';Send-Input 'UP'
+ $null=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 1 -and $ui.Sample.amplitude_gain -gt $initialFit.Sample.amplitude_gain*1.1} 'fit follows quieter visible passage'
+ Click 'sample-amplitude-actual'
+ $null=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 0 -and $ui.Sample.amplitude_gain -eq 1} 'actual amplitude reference'
+ $ui=Wait-Ui {param($ui)$ui.Controls.ContainsKey('sample-amplitude-ruler')} 'amplitude ruler'
+ $ruler=$ui.Controls['sample-amplitude-ruler']
+ Send-Input ('MOVE '+$ruler.X.ToString([Globalization.CultureInfo]::InvariantCulture)+' '+$ruler.Y.ToString([Globalization.CultureInfo]::InvariantCulture))
+ Send-Input 'DOWN'
+ $null=Wait-Ui {param($ui)$ui.Controls['sample-amplitude-ruler'].Active} 'ruler drag begins'
+ Send-Input ('MOVE '+$ruler.X.ToString([Globalization.CultureInfo]::InvariantCulture)+' '+($ruler.Y-40).ToString([Globalization.CultureInfo]::InvariantCulture))
+ Send-Input 'UP'
+ $null=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 2 -and $ui.Sample.amplitude_gain -gt 1} 'manual amplitude drag'
+ Send-Input 'DOWN';Send-Input 'UP';Send-Input 'DOWN';Send-Input 'UP'
+ $null=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 0 -and $ui.Sample.amplitude_gain -eq 1} 'ruler double-click resets actual scale'
+ Click 'sample-amplitude-fit-now'
+ $amplitude=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 2 -and $ui.Sample.amplitude_gain -gt 1} 'one-shot visible fit'
+ Click 'sample-fit'
+ $null=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 2 -and [Math]::Abs($ui.Sample.amplitude_gain-$amplitude.Sample.amplitude_gain) -lt .000001} 'manual amplitude holds across time zoom'
+ if($amplitude.Sample.start -ne $start -or $amplitude.Sample.end -ne $selected.Sample.end){throw 'Display amplitude changed splice boundaries'}
  Click 'sample-in-plus'
  $null=Wait-Ui {param($ui)$ui.Sample.start -eq $start+1} 'one-frame nudge'
  Click 'sample-undo'
@@ -109,11 +132,13 @@ try{
  Require-CleanReport
  $draft=Get-Content "$state/sample-draft.json" -Raw | ConvertFrom-Json
  if($draft.region.id -ne $regionId -or $draft.span.start -ne $start+1){throw 'Saved draft mismatch'}
+ if($draft.amplitude_mode -ne 2 -or [Math]::Abs($draft.amplitude_gain-$amplitude.Sample.amplitude_gain) -gt .000001 -or [Math]::Abs($draft.gain-.7) -gt .000001){throw 'Amplitude persistence or independent audio gain failed'}
  Remove-Item -LiteralPath "$state/ui-status.txt","$state/ui-command.txt"
  $script:sequence=0
  $process=Start-Process "$app/build/$BuildVariant/PrappyPlayer.exe" -WindowStyle Hidden -PassThru -ArgumentList '--window-test',('"'+$state+'"')
  $null=Wait-Ui {param($ui)$ui.Sample.region.id -eq $regionId -and $ui.Sample.start -eq $start+1} 'draft restored'
  $null=Wait-Ui {param($ui)$ui.Sample.pcm_frames -gt 0 -and $ui.Sample.region.id -eq $regionId} 'reconnected sample'
+ $null=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 2 -and [Math]::Abs($ui.Sample.amplitude_gain-$amplitude.Sample.amplitude_gain) -lt .000001} 'amplitude restored'
  Write-Host "PASS sampling UI: browse, PCM, exact nudge, undo/redo, save, audition, background analysis, export and reopen. Evidence: $state"
 }finally{
  if($process -and !$process.HasExited){$null=$process.CloseMainWindow();if(!$process.WaitForExit(10000)){throw "Test player did not close: $($process.Id)"}}

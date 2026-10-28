@@ -44,7 +44,7 @@ void Workspace::browse(){
     get("collections",endpoint(library)+"/collections");
 }
 void Workspace::openCapture(Json item,std::optional<Span> selected){
-    ++generation;analysisJob.clear();capture=std::move(item);pcm.clear();pcmStart=pcmEnd=0;beats.clear();onsets.clear();anchors.clear();overview=nullptr;timing=nullptr;gridId.clear();gridRevision=0;
+    ++generation;++waveformRevision;overviewBins.clear();envelope.clear();displayEnvelope.clear();projectedGain=-1;analysisJob.clear();capture=std::move(item);pcm.clear();pcmStart=pcmEnd=0;beats.clear();onsets.clear();anchors.clear();overview=nullptr;timing=nullptr;gridId.clear();gridRevision=0;
     const Frame total=capture.at("timeline").at("frame_count").get<Frame>();
     editor.reset(total,selected.value_or(Span{0,std::min<Frame>(total,Rate*4)}));
     viewportStart=static_cast<double>(std::max<Frame>(0,editor.span.start-Rate));
@@ -98,13 +98,14 @@ void Workspace::discardConflicts(){
 void Workspace::persist(){
     Json draft={{"capture",capture},{"region",region},{"span",{{"start",editor.span.start},{"end",editor.span.end}}},{"name",regionName},{"kind",kind},
                 {"fields",fields},{"edited_facets",editedFacets},{"pending",pending},{"library",library},{"open",open},{"metadata",metadata},{"metadata_target",metadataTarget},{"metadata_target_revision",metadataTargetRevision},{"metadata_revision",metadataRevision},
-                {"search",libraryQuery},{"facet",facet},{"facet_value",facetValue},{"tab",tab},{"offset",browseOffset},{"viewport_start",viewportStart},{"viewport_end",viewportEnd},{"snap",snapMode},{"loop",loop},{"gain",previewGain}};
+                {"search",libraryQuery},{"facet",facet},{"facet_value",facetValue},{"tab",tab},{"offset",browseOffset},{"viewport_start",viewportStart},{"viewport_end",viewportEnd},{"snap",snapMode},{"loop",loop},{"gain",previewGain},{"amplitude_mode",static_cast<int>(amplitude.mode)},{"amplitude_gain",amplitude.gain}};
     stateio::write(directory/"sample-draft.json",draft.dump(2));draftDirty=false;persistedSpan=editor.span;
 }
 void Workspace::restore(){
     try{auto config=Json::parse(stateio::read(directory/"sampling-connection.json"));serverUrl=config.at("url");tokenFile=config.at("token_file");library=config.value("library","");}catch(const std::exception&){}
     try{auto d=Json::parse(stateio::read(directory/"sample-draft.json"));capture=d.at("capture");region=d.at("region");regionName=d.at("name");kind=d.at("kind");fields=d.at("fields");editedFacets=d.at("edited_facets").get<std::set<std::string>>();pending=d.at("pending");library=d.at("library");open=d.value("open",false);metadata=d.value("metadata",Json::object());metadataTarget=d.value("metadata_target","");metadataTargetRevision=d.value("metadata_target_revision",1);metadataRevision=d.value("metadata_revision",0);
         libraryQuery=d.value("search","");facet=d.value("facet","");facetValue=d.value("facet_value","");tab=std::clamp(d.value("tab",0),0,2);browseOffset=d.value("offset",size_t{0});viewportStart=d.value("viewport_start",0.);viewportEnd=d.value("viewport_end",48000.);snapMode=std::clamp(d.value("snap",0),0,4);loop=d.value("loop",false);previewGain=std::clamp(d.value("gain",.7f),0.f,1.f);
+        amplitude.mode=static_cast<AmplitudeMode>(std::clamp(d.value("amplitude_mode",0),0,2));amplitude.gain=AmplitudeScale::bounded(d.value("amplitude_gain",1.));if(amplitude.mode==AmplitudeMode::Actual)amplitude.actual();
         if(!capture.is_null())editor.reset(capture.at("timeline").at("frame_count"),{d.at("span").at("start"),d.at("span").at("end")});
     }catch(const std::exception&){capture=nullptr;region=nullptr;pending=Json::array();}
 }
@@ -140,9 +141,13 @@ void Workspace::process(Audio& audio){
         else if(tag=="collectionMember")items.push_back(reply.body);
         else if(tag=="reloadRegion"){region=reply.body;get("capture",endpoint(library)+"/entities/"+region.at("capture_id").get<std::string>());}
         else if(tag=="collections")collections=reply.body.at("items");
-        else if(tag=="overview")overview=reply.body;
+        else if(tag=="overview"){
+            overview=reply.body;overviewBins.clear();Frame at=overview.value("origin_frame",Frame{0});const Frame step=overview.at("frames_per_bin");
+            for(const auto& p:overview.at("peaks")){overviewBins.push_back({at,std::min(editor.total,at+step),p[0].get<double>(),p[1].get<double>(),p[2].get<double>(),p[3].get<double>()});at+=step;}
+            ++waveformRevision;
+        }
         else if(tag=="pcm"){
-            pcmStart=reply.body.at("origin_frame");pcm=std::move(reply.pcm);pcmEnd=pcmStart+static_cast<Frame>(pcm.size()/2);
+            pcmStart=reply.body.at("origin_frame");pcm=std::move(reply.pcm);pcmEnd=pcmStart+static_cast<Frame>(pcm.size()/2);++waveformRevision;
         }else if(tag=="audition"){audition.play(std::move(reply.pcm),loop);audition.gain(previewGain);notice="Auditioning canonical PCM";}
         else if(tag=="timing"){
             timing=reply.body;anchors.clear();onsets.clear();gridId.clear();gridRevision=0;
@@ -218,7 +223,7 @@ void Workspace::tick(Audio& audio){
         if(draftDirty && now>=persistDue)persist();
     }catch(const std::exception& e){notice=e.what();}
 }
-void Workspace::waveform(){
+void Workspace::waveform(const std::function<void(const char*,bool)>& observe){
     if(capture.is_null())return;
     if(ImPlot::BeginPlot("Overview",ImVec2(-1,95),ImPlotFlags_NoLegend|ImPlotFlags_NoMenus)){
         ImPlot::SetupAxes(nullptr,nullptr,ImPlotAxisFlags_NoTickLabels,ImPlotAxisFlags_NoDecorations);
@@ -235,7 +240,33 @@ void Workspace::waveform(){
         if(ImPlot::IsPlotHovered()&&ImGui::IsMouseDoubleClicked(0)){const auto frame=ImPlot::GetPlotMousePos().x;viewportStart=std::max(0.,frame-Rate*2);viewportEnd=std::min(static_cast<double>(editor.total),frame+Rate*2);fit=true;detailDue=std::chrono::steady_clock::now();}
         ImPlot::EndPlot();
     }
-    if(ImPlot::BeginPlot("Stereo detail",ImVec2(-1,std::max(150.f,ImGui::GetContentRegionAvail().y-290)),ImPlotFlags_NoLegend|ImPlotFlags_NoMenus)){
+    observe("sample-waveform-overview",false);
+    const auto previousMode=amplitude.mode;const auto previousGain=amplitude.gain;
+    const auto modeButton=[&](const char* label,const char* id,AmplitudeMode mode){
+        if(amplitude.mode==mode)ImGui::PushStyleColor(ImGuiCol_Button,ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        const bool clicked=ImGui::Button(label);observe(id,clicked);
+        if(amplitude.mode==mode)ImGui::PopStyleColor();
+        return clicked;
+    };
+    ImGui::TextUnformatted("Display");ImGui::SameLine();
+    if(modeButton("Actual level","sample-amplitude-actual",AmplitudeMode::Actual)){amplitude.actual();fitAmplitudeNow=false;}ImGui::SameLine();
+    if(modeButton("Fit visible","sample-amplitude-fit",AmplitudeMode::Visible)){amplitude.mode=AmplitudeMode::Visible;fitAmplitudeNow=true;}ImGui::SameLine();
+    if(modeButton("Manual","sample-amplitude-manual",AmplitudeMode::Manual)){amplitude.mode=AmplitudeMode::Manual;fitAmplitudeNow=false;}ImGui::SameLine();
+    const bool fitNow=ImGui::Button("Fit now");observe("sample-amplitude-fit-now",fitNow);
+    if(fitNow){amplitude.mode=AmplitudeMode::Manual;fitAmplitudeNow=true;}ImGui::SameLine();
+    ImGui::Text("%.2fx / %+.1f dB",amplitude.gain,amplitude.db());
+    const float height=std::max(150.f,ImGui::GetContentRegionAvail().y-290);
+    const auto rulerPos=ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##amplitude-ruler",{44,height});observe("sample-amplitude-ruler",false);
+    if(ImGui::IsItemActivated())rulerInitial=amplitude.gain;
+    if(ImGui::IsItemActive() && ImGui::IsMouseDragging(0)){amplitude.drag(rulerInitial,-ImGui::GetMouseDragDelta(0).y);fitAmplitudeNow=false;}
+    if(ImGui::IsItemHovered()){
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+        ImGui::SetTooltip("Display amplitude only; ruler labels are dBFS\nDrag up to enlarge, down to shrink\nDouble-click: actual level");
+        if(ImGui::IsMouseDoubleClicked(0)){amplitude.actual();fitAmplitudeNow=false;}
+    }
+    ImGui::SameLine(0,0);
+    if(ImPlot::BeginPlot("Stereo detail",ImVec2(-1,height),ImPlotFlags_NoLegend|ImPlotFlags_NoMenus)){
         ImPlot::SetupAxes("Time","L / R",ImPlotAxisFlags_None,ImPlotAxisFlags_NoTickLabels);
         ImPlot::SetupAxisFormat(ImAxis_X1,timeLabel);
         ImPlot::SetupAxisLimits(ImAxis_Y1,-2.1,2.1,ImGuiCond_Always);
@@ -243,17 +274,31 @@ void Workspace::waveform(){
         const auto limits=ImPlot::GetPlotLimits();
         const double left=std::clamp(limits.X.Min,0.,static_cast<double>(editor.total-1)),right=std::clamp(limits.X.Max,left+1,static_cast<double>(editor.total));
         if(std::abs(left-viewportStart)>1 || std::abs(right-viewportEnd)>1){viewportStart=left;viewportEnd=right;detailDue=std::chrono::steady_clock::now()+std::chrono::milliseconds(180);}
-        if(!pcm.empty() && viewportEnd-viewportStart<=Rate*60){
-            const Frame a=std::max(pcmStart,static_cast<Frame>(left)),b=std::min(pcmEnd,static_cast<Frame>(right)+1);
-            const Frame step=std::max<Frame>(1,(b-a)/1200);
-            std::vector<double>x,lmin,lmax,rmin,rmax;
-            for(Frame at=a;at<b;at+=step){float lo=1e9f,hi=-1e9f,ro=1e9f,rh=-1e9f;for(Frame j=at;j<std::min(b,at+step);++j){const auto i=static_cast<size_t>(j-pcmStart)*2;lo=std::min(lo,pcm[i]);hi=std::max(hi,pcm[i]);ro=std::min(ro,pcm[i+1]);rh=std::max(rh,pcm[i+1]);}x.push_back(static_cast<double>(at));lmin.push_back(lo+1);lmax.push_back(hi+1);rmin.push_back(ro-1);rmax.push_back(rh-1);}
-            plotStereo("Detail",x,lmin,lmax,rmin,rmax,step==1);
+        const auto first=static_cast<Frame>(std::floor(left)),end=std::min(editor.total,static_cast<Frame>(std::ceil(right)));
+        const auto budget=static_cast<size_t>(std::clamp(ImPlot::GetPlotSize().x,64.f,8192.f));
+        const auto now=std::chrono::steady_clock::now();
+        const bool settled=detailDue==std::chrono::steady_clock::time_point{} || now>=detailDue;
+        const bool changed=envelopeRevision!=waveformRevision || envelopeStart!=first || envelopeEnd!=end || envelopeBudget!=budget;
+        if(changed && (settled || envelope.x.empty() || fitAmplitudeNow)){
+            if(!envelope.fromPcm(pcm,pcmStart,first,end,budget))envelope.fromOverview(overviewBins,first,end);
+            envelopeRevision=waveformRevision;envelopeStart=first;envelopeEnd=end;envelopeBudget=budget;++envelopeBuilds;projectedGain=-1;
+            if(amplitude.mode==AmplitudeMode::Visible && !envelope.x.empty())amplitude.fit(envelope.peak,true);
         }
-        if((pcm.empty() || viewportEnd-viewportStart>Rate*60) && !overview.is_null()){
-            std::vector<double>x,lmin,lmax,rmin,rmax;Frame at=overview.value("origin_frame",Frame{0});const Frame step=overview.at("frames_per_bin");
-            for(const auto& p:overview.at("peaks")){if(at+step>=left&&at<=right){x.push_back(static_cast<double>(at));lmin.push_back(p[0].get<double>()+1);lmax.push_back(p[1].get<double>()+1);rmin.push_back(p[2].get<double>()-1);rmax.push_back(p[3].get<double>()-1);}at+=step;}
-            plotStereo("Overview detail",x,lmin,lmax,rmin,rmax,false);
+        if(fitAmplitudeNow && !envelope.x.empty()){
+            amplitude.fit(envelope.peak,amplitude.mode==AmplitudeMode::Visible);fitAmplitudeNow=false;
+        }
+        if(projectedGain!=amplitude.gain){envelope.project(amplitude,displayEnvelope);projectedGain=amplitude.gain;}
+        plotStereo("Detail",displayEnvelope.x,displayEnvelope.lmin,displayEnvelope.lmax,displayEnvelope.rmin,displayEnvelope.rmax,displayEnvelope.individual);
+        // Draw a channel-aware amplitude ruler outside the plot's horizontal pan/zoom area.
+        auto draw=ImGui::GetWindowDrawList();draw->AddRectFilled(rulerPos,{rulerPos.x+42,rulerPos.y+height},IM_COL32(29,34,38,255));
+        for(const bool rightChannel:{false,true}){
+            const auto zero=ImPlot::PlotToPixels(left,rightChannel?-1.:1.);
+            draw->AddText({rulerPos.x+3,zero.y-8},IM_COL32(195,200,205,255),rightChannel?"R":"L");
+            for(const double position:{-.8,-.4,.4,.8}){
+                const auto pixel=ImPlot::PlotToPixels(left,(rightChannel?-1.:1.)+position);
+                const auto level=std::abs(position)/(.9*amplitude.gain);char text[24]{};std::snprintf(text,sizeof(text),"%.0f",20*std::log10(level));
+                draw->AddText({rulerPos.x+17,pixel.y-7},IM_COL32(165,175,185,255),text);
+            }
         }
         for(const auto frame:beats)if(frame>=left&&frame<=right){double x=static_cast<double>(frame);ImPlot::DragLineX(static_cast<int>(frame%100000000)+100,&x,ImVec4(.4f,.5f,.7f,.35f),1,ImPlotDragToolFlags_NoInputs);}
         double a=static_cast<double>(editor.span.start),b=static_cast<double>(editor.span.end);
@@ -268,6 +313,8 @@ void Workspace::waveform(){
         if(ImPlot::DragLineX(2,&b,ImVec4(1,.7f,.2f,1),3)){editor.beginGesture();editor.change({editor.span.start,snapped(b)});}
         ImPlot::EndPlot();
     }
+    observe("sample-waveform-detail",false);
+    if(previousMode!=amplitude.mode || previousGain!=amplitude.gain){draftDirty=true;persistDue=std::chrono::steady_clock::now()+std::chrono::milliseconds(200);}
 }
 void Workspace::draw(Audio& audio,const std::function<void(const char*,bool)>& observe){
     if(!open)return;
@@ -312,7 +359,7 @@ void Workspace::draw(Audio& audio,const std::function<void(const char*,bool)>& o
                 client->submit({"download","GET",capture.at("original_url"),{{"expected_sha256",capture.at("blob_sha256")}},generation,path});
             }
             ImGui::SameLine();if(button("Classify / detect beats","sample-classify")){Json payload={{"capture_id",capture.at("id")},{"start_frame",std::max<Frame>(0,editor.span.start-Rate*10)},{"end_frame",std::min(editor.total,editor.span.end+Rate*10)}};if(!region.is_null()){payload["target_id"]=region.at("id");payload["target_revision"]=region.at("revision");}command("classify",payload);}
-            waveform();if(!ImGui::IsMouseDown(0))editor.endGesture();
+            waveform(observe);if(!ImGui::IsMouseDown(0))editor.endGesture();
             Span edited=editor.span;ImGui::SetNextItemWidth(150);ImGui::InputScalar("In",ImGuiDataType_S64,&edited.start);ImGui::SameLine();ImGui::SetNextItemWidth(150);ImGui::InputScalar("Out (exclusive)",ImGuiDataType_S64,&edited.end);editor.change(edited);
             ImGui::Text("Length: %lld frames / %.6f seconds",static_cast<long long>(editor.span.end-editor.span.start),static_cast<double>(editor.span.end-editor.span.start)/Rate);
             if(button("In -1","sample-in-minus"))editor.change({editor.span.start-1,editor.span.end});ImGui::SameLine();if(button("In +1","sample-in-plus"))editor.change({editor.span.start+1,editor.span.end});ImGui::SameLine();

@@ -39,6 +39,25 @@ Snap supports onsets, beats, sixteenth notes and zero crossings; Alt bypasses it
 Audition a selection, its boundaries, or a loop using the canonical float PCM also
 used by preparation. Preview gain affects audition independently of song gain.
 
+The **Display** row above stereo detail controls waveform amplitude visually:
+
+- **Actual level:** fixed full-scale reference.
+- **Fit visible:** fit the visible time range, updating after zooming or panning
+  settles. Stereo channels share a scale, preserving their relative levels.
+- **Manual:** keep the current scale as you navigate.
+- **Fit now:** fit the visible range once and hold that scale in Manual.
+
+Drag the left amplitude ruler **up to enlarge**, **down to shrink**. Dragging switches
+to Manual without jumping. Double-click it to reset Actual level. Ruler ticks show
+source dBFS; the Display row shows magnification and its dB equivalent. Each channel
+stays centered on zero; enlarged drawing is clipped inside its own lane.
+**This never changes playback volume, sample boundaries, source PCM or exports.**
+Mode and magnification survive closing/reopening. Silence uses unity scale and
+enlargement is bounded. The overview keeps its reference scale for context.
+Fitting uses exact PCM when it covers the visible range, otherwise conservative
+overlapping overview peaks until precise PCM arrives. Envelopes are cached when
+the viewport/data changes rather than rescanned every rendered frame.
+
 **Classify / detect beats** submits a durable CPU job. Energy, tempo, onsets and
 beats are estimates with processor/evidence identities. They never move a cut or
 become human acceptance automatically. Correct beat frames/downbeats explicitly
