@@ -501,7 +501,7 @@ int runPlayer(HINSTANCE instance) {
             auto now = UiSchedule::Clock::now();
             const auto flags = SDL_GetWindowFlags(window);
             const bool visibleWindow = (flags & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN)) == 0;
-            const bool playing = audio.active && !audio.paused;
+            const bool playing = (audio.active && !audio.paused) || sampleWorkspace.animating();
             const bool probeHeld = uiProbe.scripted && (uiProbe.mouseDown || uiProbe.rightDown ||
                 std::any_of(uiProbe.keys.begin(), uiProbe.keys.end(), [](const auto& value) { return value.second; }));
             const bool animate = (visibleWindow && (playing || mouseHeld || !heldKeys.empty() || probeHeld || displayedPeak > 0)) || gainMoving;
@@ -545,7 +545,7 @@ int runPlayer(HINSTANCE instance) {
                 if (!uiProbe.scripted && (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) &&
                     event.key.key == SDLK_SPACE && !io.WantTextInput && !composing &&
                     !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
-                    if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) togglePlayback();
+                    if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) { if(sampleWorkspace.active())sampleWorkspace.toggleTransport(audio);else togglePlayback(); }
                     continue;
                 }
                 if (!uiProbe.scripted) ImGui_ImplSDL3_ProcessEvent(&event);
@@ -622,7 +622,7 @@ int runPlayer(HINSTANCE instance) {
                 if (probeSequence != uiProbe.acknowledged) { probeSequence = uiProbe.acknowledged; schedule.input(now); if (!inputTimestamp) inputTimestamp = SDL_GetTicksNS(); }
             }
             if (!visibleWindow) { schedule.paint = now + std::chrono::milliseconds(33); continue; }
-            const bool animateNow = (audio.active && !audio.paused) || mouseHeld || !heldKeys.empty() || probeHeld || displayedPeak > 0 || gainMoving;
+            const bool animateNow = sampleWorkspace.animating() || (audio.active && !audio.paused) || mouseHeld || !heldKeys.empty() || probeHeld || displayedPeak > 0 || gainMoving;
             if (!schedule.due(now, animateNow)) continue;
             const auto frameStart = Presentation::Clock::now();
             textPainter.beginFrame();

@@ -1,5 +1,6 @@
 #pragma once
 #include "sample_editor.h"
+#include "sample_client.h"
 #include "sample_audition.h"
 #include "state_io.h"
 #include "waveform_amplitude.h"
@@ -10,6 +11,13 @@ inline int integrationTest(const fs::path& manifestPath,const fs::path& logPath)
     std::ofstream log(logPath);
     const auto require=[](bool v,const char* m){if(!v)throw std::runtime_error(m);};
     try{
+        EditorTransport transport;require(transport.loop&&transport.scope==PlaybackScope::Selection,"Editor must default to looped selection");
+        require(transport.bounds({1000,2000},100000)==Span{1000,2000},"Selection playback bounds failed");
+        transport.scope=PlaybackScope::Context;require(transport.bounds({1000,2000},100000)==Span{0,50000},"Context lead-in/tail bounds failed");
+        transport.scope=PlaybackScope::Recording;require(transport.bounds({1000,2000},Rate*900)==Span{0,Rate*900},"Recording transport must support long sources");
+        transport.boundary=BoundaryCheck::End;require(!transport.effectiveLoop()&&transport.bounds({1000,2000},100000)==Span{0,14000},"Boundary check must be explicit and one-shot");
+        transport.range={1000,2000};transport.cursor=1500;transport.stop();require(transport.cursor==1000&&transport.state==PlaybackState::Stopped,"Stop must reset to playback start");
+        log<<"PASS editor transport: default loop, selection/context/long-recording scopes, boundary checks and stop\n";
         const auto fractional=waveformRange(945674.152727865,992634.595901516,29728601);
         require(fractional==WaveformRange{945674,992635},"Fractional viewport must request its last intersecting sample");
         StereoEnvelope fractionalEnvelope;const std::vector<float> fractionalPcm(static_cast<size_t>(fractional.end-fractional.start)*2,.01f);
@@ -82,7 +90,15 @@ inline int integrationTest(const fs::path& manifestPath,const fs::path& logPath)
         require(!corrupt.error.empty() && !fs::exists(logPath.parent_path()/"rejected.flac.partial"),"Corrupt download must be removed");
         std::stop_source stopped;stopped.request_stop();require(!perform(connection,{"libraries","GET","/v1/libraries",nullptr,0,{}},stopped.get_token()).error.empty(),"Cancelled request should stop");
         SDL_SetHint(SDL_HINT_AUDIO_DRIVER,"dummy");
-        Audition preview;preview.play(std::move(pcm),true);SDL_Delay(100);preview.stop();
+        Audition preview;preview.start(std::move(pcm),1000,{1000,2000},1000,true);SDL_Delay(100);
+        require(!preview.snapshot().finished&&preview.snapshot().cursor>=1000&&preview.snapshot().cursor<2000,"Loop playhead must map into absolute source frames");
+        preview.pause(true);const auto paused=preview.snapshot().cursor;SDL_Delay(80);require(preview.snapshot().cursor==paused,"Paused playhead must not advance");
+        preview.loop(false);preview.pause(false);
+        const auto until=SDL_GetTicks()+2000;while(!preview.snapshot().finished&&SDL_GetTicks()<until)SDL_Delay(10);
+        require(preview.snapshot().finished&&preview.snapshot().cursor==2000,"Live loop disable must drain once and end at Out");preview.stop();
+        preview.start(std::vector<float>(2000,.1f),0,{0,2000},0,false);preview.enqueue(std::vector<float>(2000,.1f),1000);
+        const auto streamed=SDL_GetTicks()+2000;while(!preview.snapshot().finished&&SDL_GetTicks()<streamed)SDL_Delay(10);
+        require(preview.snapshot().finished&&preview.snapshot().cursor==2000,"Prefetched PCM block handoff must preserve playback timeline");preview.stop();
         log<<"PASS native save/edit/replay, metadata search, collection, verified export and SDL loop lifetime\nALL PASS\n";
         return 0;
     }catch(const std::exception& ex){log<<"FAIL "<<ex.what()<<"\n";return 1;}

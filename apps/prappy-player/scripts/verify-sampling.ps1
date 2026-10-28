@@ -1,6 +1,6 @@
 #Requires -Version 7.0
 param([Parameter(Mandatory)][string]$Manifest,[string]$BuildVariant='Release',
-    [switch]$StartupOnly,[switch]$WorkstationDefaults)
+    [switch]$StartupOnly,[switch]$WorkstationDefaults,[switch]$RecordingOnly)
 $ErrorActionPreference='Stop'
 $app=Split-Path $PSScriptRoot -Parent
 $fixture=Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json
@@ -87,6 +87,28 @@ try{
  }
  Click 'sample-item-0'
  $selected=Wait-Ui {param($ui)$ui.Sample.waveform_exact_pcm} 'canonical PCM detail'
+ if($RecordingOnly){
+  Click 'sample-scope-recording';Click 'sample-loop';Click 'sample-follow';Click 'sample-play'
+  $null=Wait-Ui {param($ui)$ui.Sample.playback_state -eq 'Playing'} 'recording transport'
+  $streamed=Wait-Ui {param($ui)$ui.Sample.playback_chunks -ge 2 -and $ui.Sample.playhead -gt 48000*30} 'recording crosses prefetched chunk boundary'
+  if($streamed.Sample.viewport_start -le 0 -or $streamed.Sample.playhead -lt $streamed.Sample.viewport_start -or $streamed.Sample.playhead -gt $streamed.Sample.viewport_end){throw 'Follow playhead did not reveal recording position'}
+  $null=Wait-Ui {param($ui)$ui.Sample.playback_state -eq 'Stopped' -and $ui.Sample.playhead -eq $ui.Sample.playback_end} 'recording EOF drains and stops'
+  Capture 'recording-eof'
+  Click 'sample-stop';Click 'sample-play'
+  $null=Wait-Ui {param($ui)$ui.Sample.playback_state -eq 'Playing'} 'recording restart'
+  Send-Input 'NATIVE_KEY SPACE 1';Send-Input 'NATIVE_KEY SPACE 0'
+  $paused=Wait-Ui {param($ui)$ui.Sample.playback_state -eq 'Paused'} 'Space pauses editor transport'
+  $plot=(Read-Ui).Controls['sample-waveform-detail']
+  Send-Input ('MOVE '+($plot.Left+($plot.Right-$plot.Left)*.8).ToString([Globalization.CultureInfo]::InvariantCulture)+' '+$plot.Y.ToString([Globalization.CultureInfo]::InvariantCulture))
+  Send-Input 'DOWN';Send-Input 'UP'
+  $null=Wait-Ui {param($ui)$ui.Sample.playback_state -eq 'Paused' -and $ui.Sample.playhead -gt $paused.Sample.playhead+48000} 'waveform click seeks paused recording'
+  Send-Input 'NATIVE_KEY SPACE 1';Send-Input 'NATIVE_KEY SPACE 0'
+  $null=Wait-Ui {param($ui)$ui.Sample.playback_state -eq 'Playing'} 'Space resumes editor transport'
+  Click 'sample-item-0'
+  $null=Wait-Ui {param($ui)$ui.Sample.playback_state -eq 'Stopped' -and $ui.Sample.playback_scope -eq 0} 'source switch stops audition'
+  Write-Host "PASS long recording chunks, audible playhead, EOF, follow, Space, click seek and source-switch stop. Evidence: $state"
+  return
+ }
  $start=$selected.Sample.start
  Click 'sample-amplitude-fit'
  $initialFit=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 1 -and $ui.Sample.amplitude_gain -gt 1} 'visible amplitude fit'
@@ -122,7 +144,32 @@ try{
  $saved=Wait-Ui {param($ui)$ui.Sample.region -and $ui.Sample.pending -eq 0} 'saved sample'
  $regionId=$saved.Sample.region.id
  Click 'sample-play'
- $null=Wait-Ui {param($ui)$ui.Sample.notice -eq 'Auditioning canonical PCM'} 'canonical audition'
+ $playing=Wait-Ui {param($ui)$ui.Sample.playback_state -eq 'Playing' -and $ui.Sample.playback_loop -and $ui.Sample.playback_scope -eq 0} 'default looped selection transport'
+ $null=Wait-Ui {param($ui)$ui.Sample.playhead -gt $playing.Sample.playhead+12000} 'audible playhead advances'
+ Capture 'playing-selection'
+ Click 'sample-play'
+ $paused=Wait-Ui {param($ui)$ui.Sample.playback_state -eq 'Paused'} 'pause audition'
+ Send-Input 'MOVE 5 5'
+ if((Read-Ui).Sample.playhead -ne $paused.Sample.playhead){throw 'Paused playhead moved'}
+ Click 'sample-play'
+ $null=Wait-Ui {param($ui)$ui.Sample.playback_state -eq 'Playing'} 'resume audition'
+ Click 'sample-in-plus'
+ $null=Wait-Ui {param($ui)$ui.Sample.playback_start -eq $start+2 -and $ui.Sample.playback_state -eq 'Playing'} 'live boundary edit updates audible range'
+ Click 'sample-undo'
+ $null=Wait-Ui {param($ui)$ui.Sample.playback_start -eq $start+1 -and $ui.Sample.playback_state -eq 'Playing'} 'undo updates audition'
+ Click 'sample-scope-context'
+ $null=Wait-Ui {param($ui)$ui.Sample.playback_scope -eq 1 -and $ui.Sample.playback_start -eq 0 -and $ui.Sample.playback_state -eq 'Playing'} 'context audition'
+ Click 'sample-scope-recording'
+ $null=Wait-Ui {param($ui)$ui.Sample.playback_scope -eq 2 -and $ui.Sample.playback_end -gt $ui.Sample.end -and $ui.Sample.playback_state -eq 'Playing'} 'recording audition'
+ Click 'sample-loop'
+ $null=Wait-Ui {param($ui)!$ui.Sample.playback_loop -and $ui.Sample.playback_state -eq 'Playing'} 'live loop toggle'
+ Click 'sample-scope-selection'
+ $null=Wait-Ui {param($ui)$ui.Sample.playback_scope -eq 0 -and $ui.Sample.playback_state -eq 'Playing'} 'selection audition restored'
+ Click 'sample-stop'
+ $null=Wait-Ui {param($ui)$ui.Sample.playback_state -eq 'Stopped' -and $ui.Sample.playhead -eq $ui.Sample.start} 'stop resets to In'
+ Click 'sample-loop'
+ Click 'sample-start'
+ $null=Wait-Ui {param($ui)$ui.Sample.playback_start -eq 0 -and $ui.Sample.playback_state -eq 'Playing'} 'boundary check'
  Click 'sample-stop'
  Click 'sample-classify'
  $null=Wait-Ui {param($ui)$ui.Sample.notice -eq 'Analysis ready: estimates are proposals.'} 'background beat detection'
@@ -134,6 +181,7 @@ try{
  $draft=Get-Content "$state/sample-draft.json" -Raw | ConvertFrom-Json
  if($draft.region.id -ne $regionId -or $draft.span.start -ne $start+1){throw 'Saved draft mismatch'}
  if($draft.amplitude_mode -ne 2 -or [Math]::Abs($draft.amplitude_gain-$amplitude.Sample.amplitude_gain) -gt .000001 -or [Math]::Abs($draft.gain-.7) -gt .000001){throw 'Amplitude persistence or independent audio gain failed'}
+ if(!$draft.transport_loop -or $draft.transport_scope -ne 0 -or $draft.transport_follow){throw 'Editor transport preferences were not saved'}
  Remove-Item -LiteralPath "$state/ui-status.txt","$state/ui-command.txt"
  $script:sequence=0
  $process=Start-Process "$app/build/$BuildVariant/PrappyPlayer.exe" -WindowStyle Hidden -PassThru -ArgumentList '--window-test',('"'+$state+'"')

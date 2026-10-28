@@ -39,6 +39,32 @@ Snap supports onsets, beats, sixteenth notes and zero crossings; Alt bypasses it
 Audition a selection, its boundaries, or a loop using the canonical float PCM also
 used by preparation. Preview gain affects audition independently of song gain.
 
+### Editor playback
+
+The editor has its own transport, and pauses ordinary song playback while open.
+**Selection** is the default when choosing a recording or saved sample, with
+**Loop enabled initially**. The selected region is shaded green. A white playhead
+in both waveforms shows playback position; the status row identifies Playing,
+Paused, Loading, Buffering or Stopped, the scope, elapsed/duration and source time.
+
+- **Selection:** play between In and Out. The loop toggle takes effect immediately.
+- **Context:** include one second before and after the selected region, clamped
+  to the recording. The surrounding playback range is tinted blue.
+- **Recording:** play the source from the playhead. Long recordings stream in
+  bounded background chunks rather than requiring a whole-song download.
+
+**Play/Pause/Resume** and **Space** control this editor transport. Space does not
+interrupt typing. **Stop** resets the playhead to the scope's beginning. Click the
+detail waveform to position/seek the playhead within the chosen scope; dragging
+time or amplitude views never changes playback boundaries. **Follow playhead**
+scrolls when playback moves outside the view; leave it off to inspect freely.
+
+While auditioning Selection or Context, boundary edits apply after releasing the
+handle, with an explicit loading state while the revised cut is fetched. Undo/redo
+and numeric edits update that audition too. **Hear start/end** are labeled one-shot
+boundary checks; they do not inherit looping. Switching recordings stops playback.
+Loop, scope and follow preferences persist, but reopening never starts sound itself.
+
 The **Display** row above stereo detail controls waveform amplitude visually:
 
 - **Actual level:** fixed full-scale reference.
