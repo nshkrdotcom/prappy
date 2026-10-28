@@ -12,7 +12,7 @@ class WaveformImage {
     SDL_Renderer* renderer;
     SDL_Texture* texture = nullptr;
     std::shared_ptr<const analysis::Result> source;
-    int columns = 0;
+    int rasterWidth = 0;
     struct Copy { SDL_Renderer* renderer; SDL_Texture* texture; ImVec2 min,max; float split; };
     static void copy(const ImDrawList*,const ImDrawCmd* command) {
         const auto& data = *static_cast<const Copy*>(command->UserCallbackData);
@@ -45,14 +45,17 @@ public:
     int vertices = 0;
     double markerRatio = 0;
     explicit WaveformImage(SDL_Renderer* value) : renderer(value) {}
-    void resetTexture() { if (texture) SDL_DestroyTexture(texture); texture = nullptr; source.reset(); columns = 0; }
+    void resetTexture() { if (texture) SDL_DestroyTexture(texture); texture = nullptr; source.reset(); rasterWidth = 0; }
     ~WaveformImage() { if (texture) SDL_DestroyTexture(texture); }
     WaveformImage(const WaveformImage&) = delete;
     WaveformImage& operator=(const WaveformImage&) = delete;
     void prepare(const std::shared_ptr<const analysis::Result>& waveform, float width) {
-        const int count = std::clamp(static_cast<int>(std::ceil(width/2)),1,2048);
-        if (source == waveform && columns == count) return;
-        source = waveform; columns = count;
+        // Preserve odd widths: shrinking an even raster by one pixel drops a
+        // gap under nearest-neighbor sampling and joins two waveform bars.
+        const int pixelsWide = std::clamp(static_cast<int>(std::ceil(width)),1,4096);
+        const int count = (pixelsWide+1)/2;
+        if (source == waveform && rasterWidth == pixelsWide) return;
+        source = waveform; rasterWidth = pixelsWide;
         if (texture) { SDL_DestroyTexture(texture); texture = nullptr; }
         if (!source || source->levels.empty() || source->levels.front().empty()) return;
         size_t level = 0;
@@ -62,7 +65,6 @@ public:
         for (const auto& peak : peaks) amplitude = std::max({amplitude,std::abs(peak.leftMin),std::abs(peak.leftMax),std::abs(peak.rightMin),std::abs(peak.rightMax)});
         const auto scale = amplitude > 1e-12f ? .9f/amplitude : 1;
         constexpr int Height = 128;
-        const int pixelsWide = count*2;
         std::vector<Uint8> pixels(static_cast<size_t>(pixelsWide)*Height*4,0);
         const double framesPerBin = static_cast<double>(analysis::FramesPerPeak*(1ULL << level));
         for (int x = 0; x < count; ++x) {

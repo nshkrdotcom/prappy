@@ -17,7 +17,8 @@ inline void waveformRenderTests(std::ostream& log) {
             if (surface) SDL_DestroySurface(surface);
         }
     };
-    for (const auto& [size,dpi] : {std::pair{ImVec2{500,26},1.0f},std::pair{ImVec2{1920,720},1.0f},
+    for (const auto& [size,dpi] : {std::pair{ImVec2{500,26},1.0f},std::pair{ImVec2{501,128},1.0f},
+        std::pair{ImVec2{999,128},1.0f},std::pair{ImVec2{1001,128},1.0f},std::pair{ImVec2{1921,128},1.0f},std::pair{ImVec2{1920,720},1.0f},
         std::pair{ImVec2{3840,1600},1.0f},std::pair{ImVec2{1920,720},2.0f}}) {
         Canvas canvas;
         const int width = static_cast<int>(size.x), height = static_cast<int>(size.y);
@@ -64,6 +65,11 @@ inline void waveformRenderTests(std::ostream& log) {
             }
             // Both stereo lanes must extend across the right-hand side at large sizes.
             for (const auto lane : {.25,.75}) {
+                if (dpi == 1) for (int x = 0; x < width; ++x) {
+                    if (std::abs(x-static_cast<int>(width*ratio)) <= 6) continue;
+                    require((mask[static_cast<size_t>(height*lane)*width+x] > .1f) == (x%2 == 0),
+                        "Waveform bar/gap cadence changed across its width.");
+                }
                 size_t lit = 0;
                 for (int x = width*3/4; x < width-4; ++x) lit += mask[static_cast<size_t>(height*lane)*width+x] > .1f ? 1 : 0;
                 require(lit > static_cast<size_t>(width/16),"Waveform was diagonally clipped at the right edge.");
