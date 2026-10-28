@@ -197,6 +197,14 @@ function Check-DirectoryRow([string]$name) {
     Require ($state.Controls['directories'].Left -lt $state.Controls['directory-overflow'].Left) "$name retains Folders before overflow"
 }
 function Capture([string]$name) {
+    $layout=Read-Ui
+    if (!$layout.Strip -and $layout.Controls.ContainsKey('footer')) {
+        $footer=$layout.Controls['footer']; $play=$layout.Controls['play']
+        Require ([Math]::Abs(($layout.Height-$footer.Bottom)-$footer.Left) -le 1) "$name footer bottom and left margins match"
+        Require ($footer.Top-$play.Bottom -ge 3 -and $footer.Top-$play.Bottom -le 5) "$name footer sits tightly below transport"
+        Require ($layout.Controls['seek'].Bottom -le $layout.Controls['transport-status'].Top -and
+            $layout.Controls['transport-status'].Bottom -lt $play.Top) "$name waveform, status and transport do not overlap"
+    }
     $rect = [FeatureNative+Rect]::new()
     [FeatureNative]::GetWindowRect($hwnd,[ref]$rect) | Out-Null
     $bitmap = [Drawing.Bitmap]::new($rect.Right-$rect.Left,$rect.Bottom-$rect.Top)
@@ -608,7 +616,8 @@ try {
     $null=Wait-Ui {param($s) $s.Width -eq 500} 'waveform restores from maximized size'
     Require ($raised.Paused -and [Math]::Abs($raised.Position-$position) -lt .01) 'resizing transport does not seek or resume playback'
     $null=Move-Control 'transport-resize'; Send-UiInput 'DOUBLE_CLICK'
-    $reset=Wait-Ui {param($s) $s.PanelPreferred -eq 202 -and $s.Controls['seek'].Bottom-$s.Controls['seek'].Top -eq 26 -and
+    $compactWaveHeight=$layout.Controls['seek'].Bottom-$layout.Controls['seek'].Top
+    $reset=Wait-Ui {param($s) $s.PanelPreferred -eq 202 -and $s.Controls['seek'].Bottom-$s.Controls['seek'].Top -eq $compactWaveHeight -and
         [Math]::Abs($s.Controls['transport-resize'].Y-($s.Height-$s.PanelHeight-3)) -lt 1} 'double-click restores compact waveform height'
     Require ($reset.Paused -and [Math]::Abs($reset.Position-$position) -lt .01 -and $reset.Count -eq $raised.Count) 'double-click reset does not seek, play or select an underlying row'
     $divider=Move-Control 'transport-resize'

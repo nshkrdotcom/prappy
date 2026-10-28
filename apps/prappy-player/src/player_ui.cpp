@@ -29,7 +29,7 @@ namespace fs = std::filesystem;
 constexpr int Width = 500;
 constexpr float Scale = Width / 350.0f;
 constexpr float u(float value) { return value * Scale; }
-constexpr int MinHeight = 250, TransportHeight = 202;
+constexpr int MinHeight = 250;
 static WNDPROC originalProc;
 static constexpr wchar_t AppId[] = L"nshkrdotcom.Prappy.Player";
 static std::vector<SDL_FRect> controls, nextControls;
@@ -900,9 +900,13 @@ int runPlayer(HINSTANCE instance) {
             }
             tooltip(details);
             double seek = audio.displayPosition();
+            const float footerY = static_cast<float>(height) - std::round(uiStyle.WindowPadding.x) - ImGui::GetTextLineHeight();
+            constexpr float buttonHeight = 34, arrowWidth = 46, playWidth = 80, repeatWidth = 34, refreshWidth = 92;
+            const float waveformHeight = footerY - buttonHeight - ImGui::GetTextLineHeight() -
+                uiStyle.ItemSpacing.y * 3 - ImGui::GetCursorPosY();
             ImGui::BeginDisabled(!audio.loaded || audio.duration <= 0);
             if (waveformSeek(waveformImage, waveformId == currentAnalysisId ? waveform : nullptr, seek, audio.duration,
-                {static_cast<float>(width) - u(16), 26 + static_cast<float>(panelHeight-TransportHeight)})) audio.seek(seek);
+                {static_cast<float>(width) - u(16), waveformHeight})) audio.seek(seek);
             uiProbe.observe("seek", ImGui::IsItemActivated());
             rememberControl();
             ImGui::EndDisabled();
@@ -913,7 +917,6 @@ int runPlayer(HINSTANCE instance) {
             ImGui::SameLine(); peakMeter(displayedPeak, {std::max(30.0f, static_cast<float>(width) - ImGui::GetCursorPosX() - 12), 6}, ImGui::GetTextLineHeight());
             uiProbe.observe("peak-meter", false); tooltip("Decoded sample peak before volume/gain; not a true-peak meter");
             const float transportRowY = std::round(ImGui::GetCursorPosY());
-            constexpr float buttonHeight = 34, arrowWidth = 46, playWidth = 80, repeatWidth = 34, refreshWidth = 92;
             const float transportLeft = std::round(uiStyle.WindowPadding.x);
             const float transportRight = static_cast<float>(width) - transportLeft;
             const float playX = transportLeft + arrowWidth + gap, nextX = playX + playWidth + gap;
@@ -970,12 +973,13 @@ int runPlayer(HINSTANCE instance) {
             rememberControl();
             ImGui::EndDisabled();
             tooltip("Refresh the catalog. Hold Shift to reverify duplicate contents and rebuild audio analysis.");
-            ImGui::SetCursorPosY(static_cast<float>(height) - u(24));
+            ImGui::SetCursorPos({transportLeft, footerY});
             ImGui::PushStyleColor(ImGuiCol_Text, audio.error.empty() ? ImVec4(.68f, .72f, .72f, 1) : ImVec4(1, .63f, .5f, 1));
             const auto message = !historyFile.notice.empty() ? historyFile.notice : (!playback.notice.empty() ? playback.notice :
                 (!audio.error.empty() ? audio.error : (scan.running() ? statusText(library.notice, scan.status()) : library.notice)));
             const auto displayMessage = statusText(message, playback.folder.empty() ? "" : "Folder: " + library.pathLabel(playback.folder));
             ImGui::TextUnformatted(displayMessage.c_str()); tooltip(displayMessage); ImGui::PopStyleColor();
+            uiProbe.observe("footer", false);
             draw->AddRect({0, 0}, {static_cast<float>(width - 1), static_cast<float>(height - 1)}, IM_COL32(90, 99, 99, 255));
             }
             ImGui::End(); controls.swap(nextControls); ImGui::Render();
