@@ -62,8 +62,9 @@ Resource limits include a 1 MiB command body, ten-minute PCM requests, 180-secon
 CPU analysis windows, and a 24 GiB derived PCM cache. Cache corruption is rebuilt;
 changed/missing originals are rejected. Original files are never modified.
 
-The development build currently lives in `build/Release-Sampling`, separately
-from the older pinned `build/Release` executable. See [development-signing.md](development-signing.md)
+The normal build is `build/Release/PrappyPlayer.exe`, which is also the existing
+pinned shortcut target. Sampling-suffixed variants are isolated test builds;
+validated changes must also be rebuilt into the normal Release destination. See [development-signing.md](development-signing.md)
 for the measured, intermittent Windows launch behavior; signature validation alone
 does not guarantee Smart App Control acceptance.
 
