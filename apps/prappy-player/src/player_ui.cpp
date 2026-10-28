@@ -917,7 +917,8 @@ int runPlayer(HINSTANCE instance) {
             const float transportRight = static_cast<float>(width) - transportLeft;
             const float playX = transportLeft + arrowWidth + gap, nextX = playX + playWidth + gap;
             const float refreshX = transportRight - refreshWidth, repeatX = refreshX - gap - repeatWidth;
-            const float valueX = nextX + arrowWidth + gap, sliderX = valueX + 46 + gap;
+            const float valueWidth = std::max(46.0f, std::ceil(ImGui::CalcTextSize("Vol 100").x) + 2.0f);
+            const float valueX = nextX + arrowWidth + gap, sliderX = valueX + valueWidth + gap;
             ImGui::SetCursorPos({transportLeft, transportRowY});
             ImGui::BeginDisabled(!playback.adjacent(-1));
             if (navigationButton("##back", false, {arrowWidth, buttonHeight})) playback.navigate(-1);
@@ -939,7 +940,7 @@ int runPlayer(HINSTANCE instance) {
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
                 tooltip(std::string(playback.adjacent(1) ? "Forward: " : "Next in library: ") + library.pathLabel(playback.destination(1)));
             ImGui::SetCursorPos({valueX, transportRowY});
-            ImGui::Dummy({46, buttonHeight});
+            ImGui::Dummy({valueWidth, buttonHeight});
             const auto volumeLabel = "Vol " + std::to_string(static_cast<int>(std::round(audio.volume)));
             centeredLabel(volumeLabel.c_str(), ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ImGui::GetColorU32(ImGuiCol_Text));
             uiProbe.observe("volume-value", false);
