@@ -874,7 +874,7 @@ int runPlayer(HINSTANCE instance) {
             }
             auto draw = ImGui::GetWindowDrawList();
             draw->AddRectFilled({0, transportY}, {static_cast<float>(width), static_cast<float>(height)}, IM_COL32(49, 53, 56, 255));
-            ImGui::SetCursorPos({u(8), transportY + u(4)});
+            ImGui::SetCursorPos({u(8), transportY + u(2)});
             filenameText(audio.current.empty() ? "Choose a track from List" : library.pathLabel(audio.current));
             uiProbe.observe("audio-info", false);
             if (!audio.current.empty()) rememberControl();
