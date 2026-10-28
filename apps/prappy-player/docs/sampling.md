@@ -4,23 +4,27 @@ Prappy Player stays native Windows. The audioharvest HTTP service runs in WSL.
 It exposes only explicitly configured library roots and requires a private token.
 No library registry, original audio or collection process is changed by connecting.
 
-Start the server in a WSL terminal from the scraper checkout:
+## Start using it
+
+Open Prappy from your existing pin, then **More > Sampling workspace** (or **Ctrl+M**).
+Prappy starts the local WSL backend if needed and connects automatically.
+**You do not need a terminal, server options, or connection settings.**
+The server and token-file fields are prefilled for Workstation.
+
+For standalone backend use, run just this from the scraper checkout:
 
 ```bash
-./scripts/serve.sh --root /absolute/path/to/library \
-  --token-file "$HOME/.config/audioharvest/server.token"
+./prappy.sh
 ```
 
-The server creates a private token file if absent and listens on localhost:8765.
-Keep this foreground terminal open. Multiple `--root` arguments expose multiple
-libraries. Install server dependencies deliberately through the pinned studio
-environment; this launch command never installs anything or downloads models.
-
-In Prappy, select **More → Sampling workspace**, then **Connection**. Use
-`http://127.0.0.1:8765` and the token-file path, for example
-`\\wsl.localhost\ubuntu26-dev\home\home\.config\audioharvest\server.token`.
-The worker reads credentials; the draft contains only the path. Remote connections
-require HTTPS. HTTP redirects are refused to protect bearer credentials.
+That script takes no options. It uses the existing library at
+`~/.local/share/audioharvest/phase-02-library`, the private token at
+`~/.config/audioharvest/server.token`, and localhost port 8765. Concurrent launches
+share one server. The backend stays available after closing the player; startup
+errors are logged in `~/.local/state/audioharvest/prappy-server.log` in WSL.
+No models or packages are downloaded. No Windows security settings are changed.
+The Connection dialog is available only if you intentionally use another server;
+normal local use requires no edits there.
 
 Choose a library, then a recording, saved sample or collection. Search and metadata
 filters use effective recording/sample facts. The browser pages through recordings

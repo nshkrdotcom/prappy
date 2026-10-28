@@ -25,6 +25,19 @@ std::wstring wide(const std::string& s) {
     MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,s.data(),static_cast<int>(s.size()),result.data(),count);
     return result;
 }
+void startWorkstationBackend() {
+    std::array<wchar_t,MAX_PATH> system{};
+    const auto length=GetSystemDirectoryW(system.data(),static_cast<UINT>(system.size()));
+    if(!length || length>=system.size())throw std::runtime_error("Cannot locate Windows WSL launcher.");
+    const auto executable=fs::path(system.data())/L"wsl.exe";
+    std::wstring command=L"\""+executable.wstring()+L"\" -d ubuntu26-dev -- bash /home/home/p/g/n/scraper/prappy.sh";
+    STARTUPINFOW startup{};startup.cb=sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if(!CreateProcessW(executable.c_str(),command.data(),nullptr,nullptr,FALSE,
+        CREATE_NO_WINDOW|CREATE_NEW_PROCESS_GROUP,nullptr,nullptr,&startup,&process))
+        throw std::runtime_error("Cannot start Workstation backend: Windows error "+std::to_string(GetLastError()));
+    CloseHandle(process.hThread);CloseHandle(process.hProcess);
+}
 }
 std::string uuid() {
     GUID id{}; if (FAILED(CoCreateGuid(&id))) throw std::runtime_error("Cannot generate command identity.");
@@ -148,6 +161,20 @@ Client::Client(Connection c,std::function<void()> n) : connection(std::move(c)),
         Request request;
         {std::unique_lock lock(mutex);if(!wake.wait(lock,stop,[&]{return !pending.empty();}))break;request=std::move(pending.front());pending.pop_front();}
         auto result=perform(connection,request,stop);
+        if(request.tag=="libraries" && !result.error.empty() && connection.startWorkstation && !stop.stop_requested()) {
+            try {
+                startWorkstationBackend();
+                // Retry the same endpoint while WSL starts, without touching the UI thread.
+                // The launcher lock prevents duplicate servers across player instances.
+                const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(45);
+                do {
+                    {std::unique_lock lock(mutex);wake.wait_for(lock,stop,std::chrono::milliseconds(250),[]{return false;});}
+                    if(stop.stop_requested())break;
+                    result=perform(connection,request,stop);
+                } while(!result.error.empty() && std::chrono::steady_clock::now()<deadline);
+                if(!result.error.empty() && !stop.stop_requested())result.error="Workstation backend did not start. See ~/.local/state/audioharvest/prappy-server.log in WSL. "+result.error;
+            }catch(const std::exception& e){result.error=e.what();}
+        }
         {std::lock_guard lock(mutex);completed.push_back(std::move(result));}
         if(notify)notify();
     }

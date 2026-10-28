@@ -23,7 +23,7 @@ class Workspace {
     size_t browseOffset=0,browseTotal=0;
     int metadataTargetRevision=1,metadataRevision=0;
     int tab=0,snapMode=0,selectedAnchor=0;
-    bool fit=true,loop=false,sourcePending=false;
+    bool fit=true,loop=false,sourcePending=false,connectionAttempted=false;
     double viewportStart=0,viewportEnd=48000;
     Frame pcmStart=0,pcmEnd=0;
     std::vector<float> pcm;

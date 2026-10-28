@@ -9,7 +9,7 @@
 #include <vector>
 namespace sampling {
 using Json = nlohmann::json;
-struct Connection { std::string url = "http://127.0.0.1:8765", token; fs::path credentialFile; };
+struct Connection { std::string url = "http://127.0.0.1:8765", token; fs::path credentialFile; bool startWorkstation=false; };
 struct Request {
     std::string tag, method = "GET", path;
     Json body;

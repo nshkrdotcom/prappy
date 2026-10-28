@@ -1,13 +1,15 @@
 #Requires -Version 7.0
-param([Parameter(Mandatory)][string]$Manifest,[string]$BuildVariant='Release')
+param([Parameter(Mandatory)][string]$Manifest,[string]$BuildVariant='Release',
+    [switch]$StartupOnly,[switch]$WorkstationDefaults)
 $ErrorActionPreference='Stop'
 $app=Split-Path $PSScriptRoot -Parent
 $fixture=Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json
 $state=Join-Path $app ('build/sampling-ui-'+[Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force "$state/media" | Out-Null
 "directory=$state/media`nextensions=wav" | Set-Content "$state/player.ini"
-@{url=$fixture.url;token_file=$fixture.token_file;library=$fixture.library_id} | ConvertTo-Json | Set-Content "$state/sampling-connection.json"
-@{capture=$null;region=$null;name='UI sample';kind='unknown';fields=@{};edited_facets=@();pending=@();library=$fixture.library_id;open=$true} | ConvertTo-Json -Depth 5 | Set-Content "$state/sample-draft.json"
+if(!$WorkstationDefaults){@{url=$fixture.url;token_file=$fixture.token_file;library=$fixture.library_id} | ConvertTo-Json | Set-Content "$state/sampling-connection.json"}
+$initialLibrary=if($WorkstationDefaults){''}else{$fixture.library_id}
+@{capture=$null;region=$null;name='UI sample';kind='unknown';fields=@{};edited_facets=@();pending=@();library=$initialLibrary;open=$true} | ConvertTo-Json -Depth 5 | Set-Content "$state/sample-draft.json"
 Add-Type -AssemblyName System.Drawing
 Add-Type @'
 using System;
@@ -42,7 +44,7 @@ function Read-Ui {
  }catch [IO.IOException]{return $null}
 }
 function Wait-Ui([scriptblock]$Condition,[string]$Description){
- $until=(Get-Date).AddSeconds(30)
+ $until=(Get-Date).AddSeconds(60)
  while((Get-Date)-lt $until){$ui=Read-Ui;if($ui -and (& $Condition $ui)){return $ui};if($process.HasExited){throw "Player exited during $Description"};Start-Sleep -Milliseconds 20}
  throw "Timed out: $Description. State: $((Read-Ui).Sample | ConvertTo-Json -Compress -Depth 6)"
 }
@@ -78,7 +80,11 @@ function Require-CleanReport {
 try{
  $process=Start-Process "$app/build/$BuildVariant/PrappyPlayer.exe" -WindowStyle Hidden -PassThru -ArgumentList '--window-test',('"'+$state+'"')
  $null=Wait-Ui {param($ui)$ui.Sample.open} 'sampling workspace'
- Click 'sample-connect'
+ if($StartupOnly){
+  $null=Wait-Ui {param($ui)$ui.Sample.notice -eq 'Connected' -and $ui.Controls.ContainsKey('sample-item-0')} 'automatic backend connection'
+  Write-Host "PASS automatic backend connection without configuration or Connect click. Evidence: $state"
+  return
+ }
  Click 'sample-item-0'
  $selected=Wait-Ui {param($ui)$ui.Sample.pcm_frames -gt 0} 'canonical PCM'
  $start=$selected.Sample.start
@@ -107,7 +113,6 @@ try{
  $script:sequence=0
  $process=Start-Process "$app/build/$BuildVariant/PrappyPlayer.exe" -WindowStyle Hidden -PassThru -ArgumentList '--window-test',('"'+$state+'"')
  $null=Wait-Ui {param($ui)$ui.Sample.region.id -eq $regionId -and $ui.Sample.start -eq $start+1} 'draft restored'
- Click 'sample-connect'
  $null=Wait-Ui {param($ui)$ui.Sample.pcm_frames -gt 0 -and $ui.Sample.region.id -eq $regionId} 'reconnected sample'
  Write-Host "PASS sampling UI: browse, PCM, exact nudge, undo/redo, save, audition, background analysis, export and reopen. Evidence: $state"
 }finally{

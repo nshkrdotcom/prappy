@@ -27,9 +27,11 @@ Workspace::Workspace(fs::path d,std::function<void()> n):directory(std::move(d))
 Workspace::~Workspace(){try{persist();}catch(const std::exception& e){OutputDebugStringA(e.what());}}
 void Workspace::get(std::string tag,std::string path){if(client){Json context=tag=="sampleMetadata"?draftSnapshot():Json();client->submit({std::move(tag),"GET",std::move(path),context,generation,{}});}}
 void Workspace::connect(){
+    connectionAttempted=true;
     try{
         connection.url=serverUrl;
         connection.token.clear();connection.credentialFile=stateio::pathFromText(tokenFile);
+        connection.startWorkstation=serverUrl=="http://127.0.0.1:8765";
         client=std::make_unique<Client>(connection,notify);get("libraries","/v1/libraries");notice="Connecting...";
         stateio::write(directory/"sampling-connection.json",Json{{"url",serverUrl},{"token_file",tokenFile},{"library",library}}.dump(2));
     }catch(const std::exception& e){notice=e.what();}
@@ -208,6 +210,7 @@ void Workspace::process(Audio& audio){
 }
 void Workspace::tick(Audio& audio){
     try{
+        if(open && !connectionAttempted)connect();
         process(audio);
         const auto now=std::chrono::steady_clock::now();
         if(!analysisJob.empty()&&now>=jobDue){jobDue=now+std::chrono::seconds(1);get("job",endpoint(library)+"/jobs/"+analysisJob);}
@@ -278,7 +281,7 @@ void Workspace::draw(Audio& audio,const std::function<void(const char*,bool)>& o
         ImGui::SameLine();if(button("Connection","sample-connection"))ImGui::OpenPopup("Backend connection");
         ImGui::SameLine();ImGui::TextUnformatted(notice.c_str());
         if(ImGui::BeginPopup("Backend connection")){input("Server URL",serverUrl);input("Token file",tokenFile);if(ImGui::Button("Connect")){connect();ImGui::CloseCurrentPopup();}ImGui::EndPopup();}
-        if(!client){ImGui::TextWrapped("Connect to the audioharvest server to browse recordings and samples.");if(button("Connect to Workstation","sample-connect"))connect();}
+        if(!client || libraries.empty()){ImGui::TextWrapped("Prappy starts the local Workstation backend automatically. If startup failed, retry or inspect Connection.");if(button("Retry connection","sample-connect"))connect();}
         std::string libraryLabel="Choose library";for(const auto& lib:libraries)if(lib.at("id")==library)libraryLabel=lib.at("name");
         if(ImGui::BeginCombo("Library",libraryLabel.c_str())){for(const auto& lib:libraries){auto id=lib.at("id").get<std::string>();if(ImGui::Selectable((lib.at("name").get<std::string>()+"##"+id).c_str(),id==library)){library=id;++generation;capture=nullptr;region=nullptr;items=Json::array();browse();}}ImGui::EndCombo();}
         const bool sidebar=size.x>=780;
