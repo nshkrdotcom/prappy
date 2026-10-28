@@ -3,12 +3,21 @@
 #include "sample_audition.h"
 #include "state_io.h"
 #include "waveform_amplitude.h"
+#include "waveform_viewport.h"
 #include <fstream>
 namespace sampling {
 inline int integrationTest(const fs::path& manifestPath,const fs::path& logPath){
     std::ofstream log(logPath);
     const auto require=[](bool v,const char* m){if(!v)throw std::runtime_error(m);};
     try{
+        const auto fractional=waveformRange(945674.152727865,992634.595901516,29728601);
+        require(fractional==WaveformRange{945674,992635},"Fractional viewport must request its last intersecting sample");
+        StereoEnvelope fractionalEnvelope;const std::vector<float> fractionalPcm(static_cast<size_t>(fractional.end-fractional.start)*2,.01f);
+        require(fractionalEnvelope.fromPcm(fractionalPcm,fractional.start,fractional.start,fractional.end,800),"Fractional viewport must render exact PCM rather than overview");
+        require(waveformRange(9.2,10.8,10)==WaveformRange{9,10} && waveformRange(-1.,.2,10)==WaveformRange{0,1},"Viewport bounds at recording edges failed");
+        require(waveformRange(1000.,2000.,10000)==WaveformRange{1000,2000},"Integer viewport must not request extra samples");
+        require(waveformRange(1000.,2000.,10000)!=waveformRange(1000.,2000.1,10000),"Sub-frame navigation across an integer boundary must refresh PCM");
+        log<<"PASS fractional waveform viewport: request/render coverage, integer bounds and one-frame EOF\n";
         AmplitudeScale scale;require(scale.gain==1 && scale.project(0,false)==1 && scale.project(0,true)==-1,"Actual display reference failed");
         scale.fit(.01,true);require(scale.mode==AmplitudeMode::Visible && std::abs(scale.gain-100)<1e-9,"Quiet visible fit failed");
         require(std::abs((scale.project(.01,false)-1)+(scale.project(-.01,true)+1))<1e-9,"Linked stereo scaling failed");

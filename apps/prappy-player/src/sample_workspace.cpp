@@ -44,7 +44,7 @@ void Workspace::browse(){
     get("collections",endpoint(library)+"/collections");
 }
 void Workspace::openCapture(Json item,std::optional<Span> selected){
-    ++generation;++waveformRevision;overviewBins.clear();envelope.clear();displayEnvelope.clear();projectedGain=-1;analysisJob.clear();capture=std::move(item);pcm.clear();pcmStart=pcmEnd=0;beats.clear();onsets.clear();anchors.clear();overview=nullptr;timing=nullptr;gridId.clear();gridRevision=0;
+    ++generation;++waveformRevision;overviewBins.clear();envelopePcm=false;envelope.clear();displayEnvelope.clear();projectedGain=-1;analysisJob.clear();capture=std::move(item);pcm.clear();pcmStart=pcmEnd=0;beats.clear();onsets.clear();anchors.clear();overview=nullptr;timing=nullptr;gridId.clear();gridRevision=0;
     const Frame total=capture.at("timeline").at("frame_count").get<Frame>();
     editor.reset(total,selected.value_or(Span{0,std::min<Frame>(total,Rate*4)}));
     viewportStart=static_cast<double>(std::max<Frame>(0,editor.span.start-Rate));
@@ -60,8 +60,8 @@ void Workspace::loadDetails(bool refresh){
     const auto base=endpoint(library)+"/captures/"+capture.at("id").get<std::string>();
     if(overview.is_null()||refresh)get("overview",base+"/overview");
     if(timing.is_null()||refresh)get("timing",base+"/timing");
-    const Frame start=std::max<Frame>(0,static_cast<Frame>(viewportStart));
-    const Frame end=std::min<Frame>(editor.total,std::max<Frame>(start+1,static_cast<Frame>(viewportEnd)));
+    const auto range=waveformRange(viewportStart,viewportEnd,editor.total);
+    const Frame start=range.start,end=range.end;
     if(end-start<=Rate*60)get("pcm",base+"/pcm?start="+std::to_string(start)+"&end="+std::to_string(end)+"&timeline="+capture.at("timeline_id").get<std::string>());
 }
 void Workspace::metadataFields(const Json& values){editedFacets.clear();fields=Json::object();for(const char* key:{"title","artist","album","date","genres","moods","instruments","roles","tags","uses","key","tempo_bpm","energy","notes","character"})fields[key]=values.contains(key)?show(values[key]):"";}
@@ -255,6 +255,7 @@ void Workspace::waveform(const std::function<void(const char*,bool)>& observe){
     const bool fitNow=ImGui::Button("Fit now");observe("sample-amplitude-fit-now",fitNow);
     if(fitNow){amplitude.mode=AmplitudeMode::Manual;fitAmplitudeNow=true;}ImGui::SameLine();
     ImGui::Text("%.2fx / %+.1f dB",amplitude.gain,amplitude.db());
+    if(!envelopePcm){ImGui::SameLine();ImGui::TextDisabled(viewportEnd-viewportStart>Rate*60?"Overview - zoom for detail":"Loading detailed waveform...");}
     const float height=std::max(150.f,ImGui::GetContentRegionAvail().y-290);
     const auto rulerPos=ImGui::GetCursorScreenPos();
     ImGui::InvisibleButton("##amplitude-ruler",{44,height});observe("sample-amplitude-ruler",false);
@@ -273,14 +274,17 @@ void Workspace::waveform(const std::function<void(const char*,bool)>& observe){
         if(fit){ImPlot::SetupAxisLimits(ImAxis_X1,viewportStart,viewportEnd,ImGuiCond_Always);fit=false;}
         const auto limits=ImPlot::GetPlotLimits();
         const double left=std::clamp(limits.X.Min,0.,static_cast<double>(editor.total-1)),right=std::clamp(limits.X.Max,left+1,static_cast<double>(editor.total));
-        if(std::abs(left-viewportStart)>1 || std::abs(right-viewportEnd)>1){viewportStart=left;viewportEnd=right;detailDue=std::chrono::steady_clock::now()+std::chrono::milliseconds(180);}
-        const auto first=static_cast<Frame>(std::floor(left)),end=std::min(editor.total,static_cast<Frame>(std::ceil(right)));
+        const auto range=waveformRange(left,right,editor.total);
+        if(range!=waveformRange(viewportStart,viewportEnd,editor.total))detailDue=std::chrono::steady_clock::now()+std::chrono::milliseconds(180);
+        viewportStart=left;viewportEnd=right;
+        const auto first=range.start,end=range.end;
         const auto budget=static_cast<size_t>(std::clamp(ImPlot::GetPlotSize().x,64.f,8192.f));
         const auto now=std::chrono::steady_clock::now();
         const bool settled=detailDue==std::chrono::steady_clock::time_point{} || now>=detailDue;
         const bool changed=envelopeRevision!=waveformRevision || envelopeStart!=first || envelopeEnd!=end || envelopeBudget!=budget;
         if(changed && (settled || envelope.x.empty() || fitAmplitudeNow)){
-            if(!envelope.fromPcm(pcm,pcmStart,first,end,budget))envelope.fromOverview(overviewBins,first,end);
+            envelopePcm=envelope.fromPcm(pcm,pcmStart,first,end,budget);
+            if(!envelopePcm)envelope.fromOverview(overviewBins,first,end);
             envelopeRevision=waveformRevision;envelopeStart=first;envelopeEnd=end;envelopeBudget=budget;++envelopeBuilds;projectedGain=-1;
             if(amplitude.mode==AmplitudeMode::Visible && !envelope.x.empty())amplitude.fit(envelope.peak,true);
         }

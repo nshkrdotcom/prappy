@@ -86,7 +86,7 @@ try{
   return
  }
  Click 'sample-item-0'
- $selected=Wait-Ui {param($ui)$ui.Sample.pcm_frames -gt 0} 'canonical PCM'
+ $selected=Wait-Ui {param($ui)$ui.Sample.waveform_exact_pcm} 'canonical PCM detail'
  $start=$selected.Sample.start
  Click 'sample-amplitude-fit'
  $initialFit=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 1 -and $ui.Sample.amplitude_gain -gt 1} 'visible amplitude fit'
@@ -94,6 +94,7 @@ try{
  Send-Input ('MOVE '+($overview.Left+($overview.Right-$overview.Left)*.8).ToString([Globalization.CultureInfo]::InvariantCulture)+' '+$overview.Y.ToString([Globalization.CultureInfo]::InvariantCulture))
  Send-Input 'DOWN';Send-Input 'UP';Send-Input 'DOWN';Send-Input 'UP'
  $null=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 1 -and $ui.Sample.amplitude_gain -gt $initialFit.Sample.amplitude_gain*1.1} 'fit follows quieter visible passage'
+ $null=Wait-Ui {param($ui)$ui.Sample.waveform_exact_pcm -and $ui.Sample.pcm_start -le [Math]::Floor($ui.Sample.viewport_start) -and $ui.Sample.pcm_end -ge [Math]::Ceiling($ui.Sample.viewport_end)} 'fractional navigation retains exact PCM detail'
  Click 'sample-amplitude-actual'
  $null=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 0 -and $ui.Sample.amplitude_gain -eq 1} 'actual amplitude reference'
  $ui=Wait-Ui {param($ui)$ui.Controls.ContainsKey('sample-amplitude-ruler')} 'amplitude ruler'

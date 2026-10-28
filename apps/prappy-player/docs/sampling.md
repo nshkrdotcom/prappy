@@ -57,6 +57,9 @@ enlargement is bounded. The overview keeps its reference scale for context.
 Fitting uses exact PCM when it covers the visible range, otherwise conservative
 overlapping overview peaks until precise PCM arrives. Envelopes are cached when
 the viewport/data changes rather than rescanned every rendered frame.
+Fractional zoom/pan bounds request every intersecting sample using the same frame
+range as drawing. While detail is loading, a label distinguishes the overview
+from precise PCM; views over sixty seconds indicate that zooming reveals detail.
 
 **Classify / detect beats** submits a durable CPU job. Energy, tempo, onsets and
 beats are estimates with processor/evidence identities. They never move a cut or
