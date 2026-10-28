@@ -147,8 +147,20 @@ inline void featureTests(const fs::path& root, const Library& fixture, std::ostr
     measured.loudness.reset(); require(normalizationGain(&measured, true) == 0 && normalizationGain(nullptr, true) == 0, "Unknown loudness received gain.");
     Preferences preferences; preferences.topmost = preferences.strip = preferences.normalize = true; preferences.folder = a.parent_path();
     preferences.transportHeight = 390; preferences.hiddenDirectories = {a.parent_path()}; preferences.pinnedDirectories = {b.parent_path()};
+    auto& session = preferences.session;
+    session.expanded = session.history = session.positioned = session.maximized = session.normalMaximized = true;
+    session.x = -800; session.y = 120; session.width = 950; session.height = 740;
+    session.expandedHeight = 850; session.normalHeight = 740;
+    session.view = 3; session.order = 2; session.availability = 1;
+    session.minimum = 12.5; session.maximum = 99.25; session.measuredOnly = true;
+    session.search = "quoted \"search\" \\ path"; session.extension = "wav";
+    session.directorySearch = "nested folder"; session.directoryLocation = a.parent_path();
+    session.includedDirectories = {a.parent_path(),b.parent_path()};
+    session.closedGroups = {{1,"folder with spaces"},{2,"wav"}};
+    session.scrollX = 45.5f; session.scrollY = 620.25f;
     const auto prefs = root / "preferences.txt"; stateio::write(prefs, preferences.serialize());
     const auto loaded = Preferences::load(prefs);
+    require(loaded.session == preferences.session, "Complete browser/window session did not round trip.");
     require(loaded.topmost && loaded.strip && loaded.normalize && loaded.folder == preferences.folder, "Window/normalization preferences did not round trip.");
     require(loaded.transportHeight == 390 && loaded.hiddenDirectories == preferences.hiddenDirectories && loaded.pinnedDirectories == preferences.pinnedDirectories,
         "Directory/panel preferences did not round trip.");
@@ -156,6 +168,22 @@ inline void featureTests(const fs::path& root, const Library& fixture, std::ostr
         preferences.volume = volume; stateio::write(prefs, preferences.serialize());
         require(Preferences::load(prefs).volume == volume, "Volume preference did not round trip.");
     }
+    const auto validSession = preferences.session;
+    for (int invalid = 0; invalid < 6; ++invalid) {
+        preferences.session = validSession;
+        switch (invalid) {
+        case 0: preferences.session.width = -1; break;
+        case 1: preferences.session.view = 4; break;
+        case 2: preferences.session.scrollY = -1; break;
+        case 3: preferences.session.search.assign(256,'x'); break;
+        case 4: preferences.session.minimum = -1; break;
+        case 5: preferences.session.directorySearch.assign(128,'x'); break;
+        }
+        stateio::write(prefs,preferences.serialize());
+        require(Preferences::load(prefs).session == Preferences::Session{}, "Invalid session was accepted.");
+    }
+    stateio::write(prefs,"PRAPPY_UI 3\n1 0 1 390\n\"\"\n0\n0\n37\n");
+    require(Preferences::load(prefs).volume == 37 && Preferences::load(prefs).session == Preferences::Session{}, "Version 3 migration failed.");
     stateio::write(prefs, "PRAPPY_UI 2\n1 1 1 390\n\"\"\n0\n0\n");
     const auto legacy = Preferences::load(prefs);
     require(legacy.volume == 70 && legacy.topmost && legacy.strip && legacy.normalize && legacy.transportHeight == 390,

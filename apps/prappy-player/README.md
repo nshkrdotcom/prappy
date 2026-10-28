@@ -7,7 +7,14 @@
 Compact Windows x64 music player: SDL3, Dear ImGui and audio-only libmpv.
 Defaults to **500 physical pixels** of content width (also the minimum), with
 18px text and adjustable width and height. Starts with
-the list collapsed; playback controls always stay at the bottom.
+the list collapsed on first launch; playback controls always stay at the bottom.
+Subsequent launches restore search, browsing filters and included/hidden folders,
+sort/grouping and collapsed groups, the Library/History tab, List expansion,
+scroll position, folder-browser location/search, and window position, size and
+maximization. Strip mode also remembers the previous normal window height.
+These join volume, normalization, topmost, panel height, pinned folders and
+playback/history state in the existing saved settings. Older settings files
+remain readable. Window geometry is fitted to an available monitor on restore.
 The UI uses SDL's Direct3D 11 renderer for hardware-accelerated drawing at 4K.
 Input, ImGui and rendering stay on the window thread, with one queued GPU frame;
 audio seeking and library analysis run independently. Paused idle stays event driven.

@@ -77,6 +77,7 @@ function Read-Ui {
             $state.ScrollMaxY=[double]::Parse($matches[3],[Globalization.CultureInfo]::InvariantCulture)
         }
         elseif ($line -match '^ORDER ([0-9]+)$') { $state.SortOrder=[int]$matches[1] }
+        elseif ($line -match '^SESSION (.+)$') { $state | Add-Member Session $matches[1] -Force }
         elseif ($line -match '^RENDERER (.+)$') { $state | Add-Member Renderer $matches[1] -Force }
         elseif ($line -match '^PLAYBACK_ERROR(.*)$') { $state | Add-Member PlaybackError $matches[1].Trim() -Force }
         elseif ($line -match '^FRAME (\S+) (\S+) (\S+) (\S+) (\S+)$') {
@@ -655,15 +656,20 @@ try {
     $null=Wait-Ui {param($s) $s.Strip -and $s.Topmost -and $s.Normalize -and $s.Paused -and $s.Queued -eq 1 -and $s.Waveform -gt 0} 'strip/topmost/normalization/queue restore together paused'
     Require (([FeatureNative]::GetWindowLongPtr($hwnd,-20).ToInt64() -band 8) -ne 0) 'native topmost restores after restart'
     $restored=Read-Ui
-    Require ($restored.Included -eq 0 -and $restored.Hidden -eq 1 -and $restored.Pins -eq 1 -and $restored.PanelPreferred -ge 310) 'height, hidden directories and pins restore; includes remain temporary'
+    Require ($restored.Included -eq 1 -and $restored.Hidden -eq 1 -and $restored.Pins -eq 1 -and $restored.PanelPreferred -ge 310) 'panel, included/hidden directories and pins restore'
     Send-UiInput 'KEY CTRL 1'; Send-UiInput 'KEY SHIFT 1'; Send-UiInput 'KEY M 1'; Send-UiInput 'KEY M 0'; Send-UiInput 'KEY SHIFT 0'; Send-UiInput 'KEY CTRL 0'
     $compact=Wait-Ui {param($s) !$s.Strip -and $s.Height -ge 250} 'strip keyboard shortcut restores normal layout'
+    $null=Wait-Ui {param($s) $s.Height -ge 710 -and $s.Controls.ContainsKey('directories')} 'strip recalls the previous normal window height'
+    Click 'list'
+    $compact=Wait-Ui {param($s) $s.Height -eq 250} 'List collapses the restored browser'
     Require ($compact.PanelPreferred -ge 310 -and $compact.PanelHeight -eq 202) 'small window clamps the panel without losing the preferred height'
     Send-UiInput 'KEY CTRL 1'; Send-UiInput 'KEY SHIFT 1'; Send-UiInput 'KEY T 1'; Send-UiInput 'KEY T 0'; Send-UiInput 'KEY SHIFT 0'; Send-UiInput 'KEY CTRL 0'
     $null=Wait-Ui {param($s) !$s.Topmost} 'topmost keyboard shortcut toggles preference'
     Require (([FeatureNative]::GetWindowLongPtr($hwnd,-20).ToInt64() -band 8) -eq 0) 'topmost shortcut clears native style'
     Click 'list'
-    $null=Wait-Ui {param($s) $s.PanelHeight -ge 310 -and $s.Visible -eq 121} 'expanded window restores saved waveform height and excludes hidden subtree'
+    $null=Wait-Ui {param($s) $s.PanelHeight -ge 310 -and $s.Visible -eq 1} 'expanded window restores saved waveform height and included/hidden subtree filters'
+    Click 'directories'; Click 'directory-all'; Dismiss-Popup
+    $null=Wait-Ui {param($s) $s.Included -eq 0 -and $s.Visible -eq 121} 'restored include selection can be cleared while retaining exclusions'
     $null=Move-Control 'transport-resize'; Send-UiInput 'DOUBLE_CLICK'
     $null=Wait-Ui {param($s) $s.PanelPreferred -eq 202} 'restored panel supports double-click reset'
     Click 'search'
@@ -696,7 +702,44 @@ try {
     $beforeReset=Read-Ui; Send-UiInput 'RENDER_RESET'
     $reset=Wait-Ui {param($s) $s.WaveBuilds -gt $beforeReset.WaveBuilds -and $s.TextRasterized -gt $beforeReset.TextRasterized} 'renderer reset rebuilds waveform and text textures'
     Require ($reset.Renderer -eq 'direct3d11' -and $reset.Paused -and [Math]::Abs($reset.Position-$beforeReset.Position) -lt .02) 'renderer recovery preserves paused playback and position'
+    Select-Combo 'order' 2
+    Search 'scope'
+    Click 'filters'; Select-Combo 'availability' 1
+    Click 'measured-only'; Dismiss-Popup
+    [FeatureNative]::SetWindowPos($hwnd,[IntPtr]::Zero,180,160,810,760,0x44) | Out-Null
+    $persisted=Wait-Ui {param($s) $s.Width -ge 700 -and $s.SortOrder -eq 2 -and $s.Session -eq '1 1 0 0 1 "" "scope"'} 'search, filters, grouping and expanded layout ready to persist'
+    $savedRectangle=New-Object FeatureNative+Rect
+    [FeatureNative]::GetWindowRect($hwnd,[ref]$savedRectangle) | Out-Null
 } finally {
     if (!$process.HasExited) { $null=$process.CloseMainWindow(); if (!$process.WaitForExit(5000)) { Stop-Process -Id $process.Id -Force; throw 'Restored feature player did not close.' } }
 }
 Require ($process.ExitCode -eq 0) 'Restored feature player clean shutdown'
+$script:inputSequence=0
+Remove-Item -LiteralPath "$stateDirectory/ui-command.txt","$stateDirectory/ui-status.txt" -ErrorAction SilentlyContinue
+$process=Start-Process -FilePath "$app/build/$BuildVariant/PrappyPlayer.exe" -WindowStyle Hidden -PassThru -ArgumentList '--window-test',('"{0}"' -f $stateDirectory)
+try {
+    $persisted=Wait-Ui {param($s) $s.Width -ge 700 -and $s.SortOrder -eq 2 -and $s.Session -eq '1 1 0 0 1 "" "scope"'} 'search, filters, grouping and List toggle restore after closing and reopening'
+    $process.Refresh(); $hwnd=$process.MainWindowHandle
+    $restoredRectangle=New-Object FeatureNative+Rect
+    [FeatureNative]::GetWindowRect($hwnd,[ref]$restoredRectangle) | Out-Null
+    Require ([Math]::Abs($restoredRectangle.Left-$savedRectangle.Left) -le 2 -and [Math]::Abs($restoredRectangle.Top-$savedRectangle.Top) -le 2 -and $restoredRectangle.Right-$restoredRectangle.Left -eq $savedRectangle.Right-$savedRectangle.Left -and $restoredRectangle.Bottom-$restoredRectangle.Top -eq $savedRectangle.Bottom-$savedRectangle.Top) 'window position and size restore after restart'
+    Click 'History##tab'; Click 'list'
+    $null=Wait-Ui {param($s) $s.History -and $s.Height -eq 250 -and $s.Session.StartsWith('0 ')} 'History tab and collapsed List ready to persist'
+    [FeatureNative]::ShowWindow($hwnd,3) | Out-Null
+    $null=Wait-Ui {param($s) $s.Width -gt 1000} 'maximized session ready to persist'
+} finally {
+    if (!$process.HasExited) { $null=$process.CloseMainWindow(); if (!$process.WaitForExit(5000)) { Stop-Process -Id $process.Id -Force; throw 'Persistence test player did not close.' } }
+}
+Require ($process.ExitCode -eq 0) 'Persistence restart clean shutdown'
+$script:inputSequence=0
+Remove-Item -LiteralPath "$stateDirectory/ui-command.txt","$stateDirectory/ui-status.txt" -ErrorAction SilentlyContinue
+$process=Start-Process -FilePath "$app/build/$BuildVariant/PrappyPlayer.exe" -WindowStyle Hidden -PassThru -ArgumentList '--window-test',('"{0}"' -f $stateDirectory)
+try {
+    $null=Wait-Ui {param($s) $s.Width -gt 1000 -and $s.History -and $s.Session.StartsWith('0 ')} 'maximization, History tab and collapsed List restore together'
+    $process.Refresh(); $hwnd=$process.MainWindowHandle
+    [FeatureNative]::ShowWindow($hwnd,9) | Out-Null
+    $null=Wait-Ui {param($s) $s.Height -eq 250 -and $s.Width -lt 1000} 'maximized session retains its normal window size'
+} finally {
+    if (!$process.HasExited) { $null=$process.CloseMainWindow(); if (!$process.WaitForExit(5000)) { Stop-Process -Id $process.Id -Force; throw 'Maximized persistence player did not close.' } }
+}
+Require ($process.ExitCode -eq 0) 'Maximized restart clean shutdown'

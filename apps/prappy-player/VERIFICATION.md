@@ -735,3 +735,24 @@ The ASan runtime run was blocked by Windows Application Control at process
 launch, so no ASan runtime pass is claimed. Log: build/ownership-health.log.
 The paused-idle check now waits for an observed quiet period (bounded at twenty
 seconds), then independently asserts no further frames over two seconds.
+## Complete UI session persistence, 2026-10-27
+
+Preferences format 4 adds search, listening/availability/extension/duration
+filters, measured-only, included folders, sort/grouping and collapsed groups,
+Library/History selection, List expansion, scroll offsets, folder-browser
+location/search, normal window geometry and maximization, and strip mode's
+previous normal height/maximization. Versions 2 and 3 remain readable. Session
+changes use the existing debounced asynchronous writer and synchronous final
+flush. Minimized/maximized dimensions do not replace the normal rectangle;
+restored geometry is fitted to an available monitor.
+
+Release, Debug and MSVC static analysis builds passed. Release and Debug passed
+the complete playback/dedup stress, state/DSP/cache/preferences, feature UI,
+native-window and relaunch matrix, with clean Debug CRT leak reports. Preference
+model tests cover full-session round trips, invalid values and v2/v3 migration.
+Four UI lifetimes exercise included/hidden folder restoration, strip-to-normal
+height, search/filter/grouping/List state, exact native rectangle restoration,
+History plus collapsed List plus maximization, and restoring the normal size
+from maximization. Log: build/persistence-health.log. ASan runtime remains
+unavailable because Windows Application Control blocked its executable launch
+in the preceding ownership verification.

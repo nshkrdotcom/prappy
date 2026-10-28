@@ -291,10 +291,20 @@ int runPlayer(HINSTANCE instance) {
         std::wstring waveformId;
         std::shared_ptr<const analysis::Result> waveform;
         Browse browser;
+        browser.view = static_cast<Browse::View>(preferences.session.view);
+        browser.availability = preferences.session.availability;
+        browser.extension = preferences.session.extension;
+        browser.minimum = preferences.session.minimum; browser.maximum = preferences.session.maximum;
+        browser.measuredOnly = preferences.session.measuredOnly;
+        library.order = preferences.session.order; library.sort();
+        for (const auto& path : preferences.session.includedDirectories) DirectoryFilter::set(browser.directories.included, path, true);
         for (const auto& path : preferences.hiddenDirectories) DirectoryFilter::set(browser.directories.excluded, path, true);
         DirectoryIndex directoryIndex; directoryIndex.rebuild(library); directoryIndex.prioritize(preferences.pinnedDirectories);
         DirectoryUi directoryUi;
+        directoryUi.location = preferences.session.directoryLocation.wstring();
+        std::copy(preferences.session.directorySearch.begin(), preferences.session.directorySearch.end(), directoryUi.search);
         GroupedList grouped;
+        grouped.closed = preferences.session.closedGroups;
         uint64_t browseVisits = UINT64_MAX;
         bool browseCatalogDirty = true;
         const auto gainForPath = [&](const fs::path& path) {
@@ -313,7 +323,7 @@ int runPlayer(HINSTANCE instance) {
         };
         playback.restore();
         constexpr int StripHeight = 86;
-        window = SDL_CreateWindow("Prappy Player", Width, preferences.strip ? StripHeight : MinHeight,
+        window = SDL_CreateWindow("Prappy Player", preferences.session.width, preferences.strip ? StripHeight : std::max(MinHeight,preferences.session.height),
             SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE);
         if (!window) throw std::runtime_error(SDL_GetError());
         uiProbe.windowID = SDL_GetWindowID(window);
@@ -340,18 +350,35 @@ int runPlayer(HINSTANCE instance) {
         platform = ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
         graphics = ImGui_ImplSDLRenderer3_Init(renderer);
         if (!platform || !graphics) throw std::runtime_error("Cannot initialize UI renderer.");
-        SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+        if (preferences.session.positioned) {
+            auto& s = preferences.session;
+            RECT rectangle{s.x,s.y,s.x+s.width,s.y+s.height};
+            MONITORINFO monitor{sizeof(MONITORINFO)};
+            if (GetMonitorInfoW(MonitorFromRect(&rectangle,MONITOR_DEFAULTTONEAREST),&monitor)) {
+                const auto& work = monitor.rcWork;
+                s.width = std::min(s.width,static_cast<int>(std::max<LONG>(Width,work.right-work.left)));
+                s.height = std::min(s.height,static_cast<int>(std::max<LONG>(MinHeight,work.bottom-work.top)));
+                SDL_SetWindowSize(window,s.width,preferences.strip ? StripHeight : std::max(MinHeight,s.height));
+                s.x = std::clamp(s.x,static_cast<int>(work.left),static_cast<int>(std::max(work.left,work.right-s.width)));
+                s.y = std::clamp(s.y,static_cast<int>(work.top),static_cast<int>(std::max(work.top,work.bottom-std::min(s.height,86))));
+            }
+            SDL_SetWindowPosition(window,s.x,s.y);
+        } else SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+        if (preferences.session.maximized && !preferences.strip) SDL_MaximizeWindow(window);
         SDL_ShowWindow(window);
         scan.begin(config, library.order, &library, true);
-        bool done = false, expanded = false;
-        bool historyView = false;
+        bool done = false, expanded = preferences.session.expanded;
+        bool historyView = preferences.session.history;
         uint64_t historyGeneration = 0;
         char search[256]{};
+        std::copy(preferences.session.search.begin(),preferences.session.search.end(),search);
+        bool restoreScroll = true;
+        float savedScrollX = preferences.session.scrollX, savedScrollY = preferences.session.scrollY;
         bool filterDirty = true, resetListScroll = true;
         std::vector<size_t> visible;
-        int expandedHeight = 710;
-        int normalHeight = MinHeight;
-        bool normalMaximized = false;
+        int expandedHeight = preferences.session.expandedHeight;
+        int normalHeight = preferences.session.normalHeight;
+        bool normalMaximized = preferences.session.normalMaximized;
         double displayedPeak = 0;
         fs::path contextPath;
         float transportDragY = 0; int transportDragHeight = 0;
@@ -780,10 +807,16 @@ int runPlayer(HINSTANCE instance) {
                 ImGui::SameLine(); ImGui::TextDisabled("%zu / %zu", visible.size(), historyView ? history.playedCount : library.tracks.size());
                 ImGui::SetCursorPos(listStart);
                 if (ImGui::BeginChild("Tracks", {0, std::max(1.0f, searchY - listStart.y - uiStyle.ItemSpacing.y)}, ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar)) {
+                    if (restoreScroll && !scan.running()) {
+                        ImGui::SetScrollX(preferences.session.scrollX); ImGui::SetScrollY(preferences.session.scrollY);
+                        restoreScroll = false;
+                    } else if (resetScroll && !restoreScroll) { ImGui::SetScrollY(0); ImGui::SetScrollX(0); }
+                    if (!restoreScroll && !resetScroll) {
+                        savedScrollX = ImGui::GetScrollX(); savedScrollY = ImGui::GetScrollY();
+                    }
                     if (uiProbe.enabled) {
                         uiProbe.scrollX = ImGui::GetScrollX(); uiProbe.scrollY = ImGui::GetScrollY(); uiProbe.scrollMaxY = ImGui::GetScrollMaxY();
                     }
-                    if (resetScroll) { ImGui::SetScrollY(0); ImGui::SetScrollX(0); }
                     const auto current = key(audio.current);
                     const auto highlightTerms = Browse::tokens(search);
                     uiProbe.drawnTracks = 0;
@@ -996,6 +1029,31 @@ int runPlayer(HINSTANCE instance) {
                     schedule.caret = now + std::chrono::milliseconds(static_cast<int>(std::ceil(delay * 1000)));
                 }
             }
+            {
+                auto snapshot = preferences.session;
+                snapshot.scrollX = savedScrollX; snapshot.scrollY = savedScrollY;
+                snapshot.expanded = expanded; snapshot.history = historyView;
+                snapshot.expandedHeight = expandedHeight; snapshot.normalHeight = normalHeight; snapshot.normalMaximized = normalMaximized;
+                snapshot.search = search; snapshot.view = static_cast<int>(browser.view); snapshot.order = library.order;
+                snapshot.availability = browser.availability; snapshot.extension = browser.extension;
+                snapshot.minimum = browser.minimum; snapshot.maximum = browser.maximum; snapshot.measuredOnly = browser.measuredOnly;
+                snapshot.includedDirectories.clear();
+                for (const auto& rule : browser.directories.included) snapshot.includedDirectories.push_back(rule.path);
+                snapshot.closedGroups = grouped.closed;
+                snapshot.directoryLocation = fs::path(directoryUi.location); snapshot.directorySearch = directoryUi.search;
+                const auto windowFlags = SDL_GetWindowFlags(window);
+                if (!(windowFlags & SDL_WINDOW_MINIMIZED)) {
+                    snapshot.maximized = (windowFlags & SDL_WINDOW_MAXIMIZED) != 0;
+                    if (!snapshot.maximized) {
+                        SDL_GetWindowPosition(window,&snapshot.x,&snapshot.y);
+                        SDL_GetWindowSize(window,&snapshot.width,&snapshot.height); snapshot.positioned = true;
+                    }
+                }
+                if (snapshot != preferences.session) {
+                    preferences.session = std::move(snapshot); ++preferenceRevision;
+                    nextPreferenceSave = now + std::chrono::milliseconds(300); schedule.request(2);
+                }
+            }
             if (windowTest) {
                 uiProbe.order = library.order;
                 size_t queued = 0; for (const auto& entry : history.entries) if (entry.queued) ++queued;
@@ -1008,6 +1066,9 @@ int runPlayer(HINSTANCE instance) {
                 uiProbe.telemetry = "LOOP " + std::to_string(schedule.presents) + " " + std::to_string(schedule.wakeups) + " " + std::to_string(SDL_TextInputActive(window)) + " " + std::to_string(composing);
                 uiProbe.telemetry += "\nPANEL " + std::to_string(preferences.transportHeight) + " " + std::to_string(preferences.strip ? 0 : TransportLayout::height(preferences.transportHeight,height,expanded));
                 uiProbe.telemetry += "\nDIRS " + std::to_string(browser.directories.included.size()) + " " + std::to_string(browser.directories.excluded.size()) + " " + std::to_string(preferences.pinnedDirectories.size());
+                std::ostringstream sessionProbe;
+                sessionProbe << "\nSESSION " << expanded << ' ' << browser.availability << ' ' << browser.minimum << ' ' << browser.maximum << ' ' << browser.measuredOnly << ' ' << std::quoted(browser.extension) << ' ' << std::quoted(std::string(search));
+                uiProbe.telemetry += sessionProbe.str();
                 uiProbe.telemetry += "\nWAVE " + std::to_string(waveformImage.rebuilds) + " " + std::to_string(waveformImage.vertices) + " " + std::to_string(waveformImage.markerRatio) + " " + std::to_string(audio.seekSequence);
                 const auto textStats = textPainter.cacheStats();
                 const auto& timing = presentation.timing;
