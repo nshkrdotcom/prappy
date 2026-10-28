@@ -50,9 +50,8 @@ public:
     WaveformImage(const WaveformImage&) = delete;
     WaveformImage& operator=(const WaveformImage&) = delete;
     void prepare(const std::shared_ptr<const analysis::Result>& waveform, float width) {
-        // Preserve odd widths: shrinking an even raster by one pixel drops a
-        // gap under nearest-neighbor sampling and joins two waveform bars.
-        const int pixelsWide = std::clamp(static_cast<int>(std::ceil(width)),1,4096);
+        // draw() supplies the exact device-pixel span, including odd widths.
+        const int pixelsWide = std::max(static_cast<int>(std::round(width)),1);
         const int count = (pixelsWide+1)/2;
         if (source == waveform && rasterWidth == pixelsWide) return;
         source = waveform; rasterWidth = pixelsWide;
@@ -93,7 +92,16 @@ public:
         ++rebuilds;
     }
     void draw(const std::shared_ptr<const analysis::Result>& waveform,ImVec2 min,ImVec2 max,double ratio) {
-        prepare(waveform,max.x-min.x);
+        // Layout widths can be fractional after font/UI scaling. Sampling an
+        // integer raster into that span skips/repeats a column near its middle.
+        // Snap both edges in device space and rasterize that same pixel span.
+        float renderScaleX = 1, renderScaleY = 1;
+        SDL_GetRenderScale(renderer,&renderScaleX,&renderScaleY);
+        const float pixelScale = renderScaleX == 1 ? ImGui::GetIO().DisplayFramebufferScale.x : renderScaleX;
+        const float origin = ImGui::GetMainViewport()->Pos.x;
+        min.x = origin+std::round((min.x-origin)*pixelScale)/pixelScale;
+        max.x = origin+std::round((max.x-origin)*pixelScale)/pixelScale;
+        prepare(waveform,(max.x-min.x)*pixelScale);
         auto draw = ImGui::GetWindowDrawList();
         const auto before = draw->VtxBuffer.Size;
         const float split = static_cast<float>(std::clamp(ratio,0.0,1.0));

@@ -704,3 +704,20 @@ Independent review caught the inactive-intent edge; a focused follow-up passed.
 Native text input is now explicitly stopped during window shutdown, after releasing
 the instance lock, so active IME teardown is not left to implicit window destruction.
 The final GPU UI and close/relaunch suites passed (build/short-restore-ui.log, build/short-restore-relaunch.log). The final Release executable was installed without interrupting the running session.
+## Fractional waveform width artifact - 2026-10-27
+
+The previous odd-integer-width fix did not address fractional layout widths.
+Captured the actual Direct3D11 player at window widths 800, 801, 1000, 1001,
+1200 and 1201 using the restored library track. The waveform's layout width
+ended in .143 pixels. Before this fix, its alternating bar/gap sequence had
+one repeated column at screenshot x=463, 464, 580, 581, 698 and 698 respectively
+(about 58% across). After snapping both horizontal edges to device pixels and
+rasterizing that exact span, all six captures have zero repeated columns in
+the lane-center scan, excluding the playback marker. Enlarged before/after
+crops were also visually inspected. Captures: build/wave-inspect/.
+
+The expanded pixel regression reproduces the failure on the previous committed
+renderer. It now checks fractional bounds using both software and Direct3D11
+pixel readback. Release and Debug builds and their complete state regression
+suites pass, including 32 waveform cases per build.
+
