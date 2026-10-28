@@ -38,8 +38,8 @@ audio playback.
 Seeking queues work asynchronously on mpv's thread and coalesces waiting targets.
 The marker follows clicks immediately and interpolates between playback updates;
 input redraws immediately while playback animation targets 60fps. The thin stereo
-waveform uses a bounded raster cache, rebuilt only for a new track or horizontal
-resolution. Expanding its height reuses that image. Decoder position, duration,
+waveform uses ImPlot with cached envelopes bounded by horizontal resolution.
+The sampling editor shares the stereo plot primitive and adds exact PCM detail. Decoder position, duration,
 pause and meter updates arrive through mpv events without per-frame property reads.
 
 NVIDIA's overlay can mistake a GPU-rendered desktop app for a game. The optional
@@ -444,3 +444,14 @@ alternate-copy queue identity and same-name/same-sample files that differ in the
 middle; it also runs the playback integration checks on the deduplicated list.
 
 See [THIRD_PARTY.md](THIRD_PARTY.md) for versions, licenses and provenance.
+
+## Sampling workspace
+
+Open **More → Sampling workspace**, or press **Ctrl+M** to mark the playing song.
+The native editor browses audioharvest recordings, exact sample revisions and
+collections. It provides stereo waveform zoom, frame-accurate boundaries,
+undo/redo, beat/onset snapping, loop audition, metadata corrections and verified
+lossless export. Drafts and pending commands survive closing and reopening.
+
+See [sampling setup and workflow](docs/sampling.md) for the WSL server command,
+connection, metadata scope, revision/conflict behavior and test instructions.

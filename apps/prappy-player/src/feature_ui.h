@@ -1,6 +1,6 @@
 #pragma once
 #include "analysis.h"
-#include "waveform_image.h"
+#include "waveform_view.h"
 #include "browse.h"
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -17,7 +17,7 @@ inline bool revealFile(HWND window, const fs::path& path) {
     return SUCCEEDED(opened);
 }
 
-inline bool waveformSeek(WaveformImage& image, const std::shared_ptr<const analysis::Result>& waveform, double& position, double duration, ImVec2 size) {
+inline bool waveformSeek(WaveformView& image, const std::shared_ptr<const analysis::Result>& waveform, double& position, double duration, ImVec2 size) {
     ImGui::InvisibleButton("##waveform", size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_EnableNav);
     const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
     auto draw = ImGui::GetWindowDrawList();

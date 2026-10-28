@@ -5,6 +5,8 @@ Third-party files retain their own licenses. No submodules are used.
 
 | Component | Pinned upstream | Local files | License |
 |---|---|---|---|
+| ImPlot | [72de27832d1e6299bcc930ce01073d899d420392](https://github.com/epezent/implot/tree/72de27832d1e6299bcc930ce01073d899d420392) | `third_party/implot` | MIT, deployed `licenses/implot.txt` |
+| nlohmann JSON 3.12.0 | [v3.12.0](https://github.com/nlohmann/json/tree/v3.12.0) | `third_party/json/json.hpp` | MIT, deployed `licenses/json.txt` |
 | SDL 3.4.18 | [829a65d769d935c4852f8159e964312c0957260a](https://github.com/libsdl-org/SDL/tree/829a65d769d935c4852f8159e964312c0957260a) | `third_party/SDL` | zlib, `LICENSE.txt` |
 | Dear ImGui 1.93.0 | [c1aaac65e896a45f81f47a4d68f9959e0f86c859](https://github.com/ocornut/imgui/tree/c1aaac65e896a45f81f47a4d68f9959e0f86c859) | Core files and SDL3/SDLRenderer3 backends | MIT, `LICENSE.txt` |
 | FreeType 2.13.3 | [VER-2-13-3](https://github.com/freetype/freetype/tree/VER-2-13-3) | Downloaded source; statically linked, ImGui's matching upstream FreeType adapter | FreeType License, deployed `licenses/FreeType.txt` |

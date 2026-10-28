@@ -12,6 +12,9 @@
 #include "grouped_list.h"
 #include "directory_ui.h"
 #include "presentation.h"
+#include "sample_workspace.h"
+#include "sample_tests.h"
+#include "implot.h"
 #include <windowsx.h>
 #include <shellapi.h>
 #include <dwmapi.h>
@@ -226,6 +229,7 @@ int runPlayer(HINSTANCE instance) {
     std::vector<std::wstring> args; for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
     if (args.size() == 3 && args[0] == L"--self-test") return selfTest(args[1], args[2]);
     if (args.size() == 3 && args[0] == L"--state-test") return stateTests(args[1], args[2]);
+    if (args.size() == 3 && args[0] == L"--sampling-test") return sampling::integrationTest(args[1],args[2]);
     SDL_Window* window = nullptr; SDL_Renderer* renderer = nullptr;
     Presentation presentation;
     bool imgui = false, platform = false, graphics = false;
@@ -341,12 +345,14 @@ int runPlayer(HINSTANCE instance) {
         // Software comparison is available only in isolated test windows.
         renderer = presentation.open(window,windowTest && SDL_GetEnvironmentVariable(SDL_GetEnvironment(),"PRAPPY_TEST_SOFTWARE") != nullptr);
         IMGUI_CHECKVERSION(); ImGui::CreateContext(); imgui = true;
+        ImPlot::CreateContext();
         auto& io = ImGui::GetIO(); io.IniFilename = nullptr; io.LogFilename = nullptr;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         style();
         text::loadFonts();
-        WaveformImage waveformImage(renderer);
+        WaveformView waveformImage(renderer);
         text::Painter textPainter(renderer); text::active = &textPainter;
+        sampling::Workspace sampleWorkspace(stateDirectory,notify);
         platform = ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
         graphics = ImGui_ImplSDLRenderer3_Init(renderer);
         if (!platform || !graphics) throw std::runtime_error("Cannot initialize UI renderer.");
@@ -429,6 +435,7 @@ int runPlayer(HINSTANCE instance) {
         };
         const auto moreMenu = [&] {
             if (ImGui::BeginPopup("Options")) {
+                if (menuItem("Sampling workspace (Ctrl+M)", "sampling")) { sampleWorkspace.open=true; ImGui::CloseCurrentPopup(); }
                 if (ImGui::Checkbox("Always on top", &preferences.topmost)) {
                     SDL_SetWindowAlwaysOnTop(window, preferences.topmost); ++preferenceRevision;
                 }
@@ -482,7 +489,15 @@ int runPlayer(HINSTANCE instance) {
         uint64_t probeSequence = 0;
         size_t scanFound = 0, scanChecked = 0;
         Uint64 inputTimestamp = 0;
+        bool samplingWasOpen=false;
+        int listeningWidth=Width,listeningHeight=MinHeight;
         while (!done) {
+            sampleWorkspace.tick(audio);
+            if (sampleWorkspace.active()!=samplingWasOpen) {
+                if (sampleWorkspace.active()) { SDL_GetWindowSize(window,&listeningWidth,&listeningHeight); SDL_SetWindowSize(window,std::max(1100,listeningWidth),std::max(850,listeningHeight)); }
+                else SDL_SetWindowSize(window,listeningWidth,listeningHeight);
+                samplingWasOpen=sampleWorkspace.active();
+            }
             auto now = UiSchedule::Clock::now();
             const auto flags = SDL_GetWindowFlags(window);
             const bool visibleWindow = (flags & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN)) == 0;
@@ -617,6 +632,7 @@ int runPlayer(HINSTANCE instance) {
             ImGui::NewFrame();
             uiProbe.begin();
             nextControls.clear();
+            if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_M, ImGuiInputFlags_RouteGlobal)) sampleWorkspace.mark(audio);
             if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_M, ImGuiInputFlags_RouteGlobal)) setStrip(!preferences.strip);
             if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_T, ImGuiInputFlags_RouteGlobal)) {
                 preferences.topmost = !preferences.topmost; ++preferenceRevision; SDL_SetWindowAlwaysOnTop(window, preferences.topmost);
@@ -1015,7 +1031,10 @@ int runPlayer(HINSTANCE instance) {
             uiProbe.observe("footer", false);
             draw->AddRect({0, 0}, {static_cast<float>(width - 1), static_cast<float>(height - 1)}, IM_COL32(90, 99, 99, 255));
             }
-            ImGui::End(); controls.swap(nextControls); ImGui::Render();
+            ImGui::End();
+            sampleWorkspace.draw(audio,[&](const char* name,bool activated){uiProbe.observe(name,activated);});
+            if (sampleWorkspace.active()) nextControls.push_back({0,0,static_cast<float>(width),static_cast<float>(height)});
+            controls.swap(nextControls); ImGui::Render();
             presentation.paint(frameStart,Presentation::Clock::now(),inputTimestamp,[&] {
                 ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(),renderer);
             });
@@ -1076,6 +1095,7 @@ int runPlayer(HINSTANCE instance) {
                 uiProbe.telemetry += "\nFRAME " + std::to_string(timing.build) + " " + std::to_string(timing.draw) + " " + std::to_string(timing.present) + " " + std::to_string(timing.total) + " " + std::to_string(timing.input);
                 uiProbe.telemetry += "\nTEXT " + std::to_string(textStats.shaped) + " " + std::to_string(textStats.rasterized) + " " + std::to_string(textStats.bytes);
                 uiProbe.telemetry += "\nPLAYBACK_ERROR " + (audio.error.empty() ? playback.notice : audio.error);
+                uiProbe.telemetry += "\nSAMPLER " + sampleWorkspace.diagnostics();
                 std::ostringstream status;
                 status << "READY " << width << ' ' << height << ' ' << static_cast<int>(history.repeat) << ' '
                     << (history.current() ? history.current()->id : 0) << ' ' << history.playedCount << ' '
@@ -1101,7 +1121,7 @@ int runPlayer(HINSTANCE instance) {
     if (window) SDL_StopTextInput(window);
     if (graphics) ImGui_ImplSDLRenderer3_Shutdown();
     if (platform) ImGui_ImplSDL3_Shutdown();
-    if (imgui) ImGui::DestroyContext();
+    if (imgui) { ImPlot::DestroyContext(); ImGui::DestroyContext(); }
     presentation.close();
     if (uiProbe.enabled) {
         if (const auto gate = SDL_GetEnvironmentVariable(SDL_GetEnvironment(),"PRAPPY_TEST_EXIT_GATE")) {

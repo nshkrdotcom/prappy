@@ -493,7 +493,7 @@ try {
     Send-UiInput 'DOWN'; Send-UiInput 'UP'
     $null=Wait-Ui {param($s) $s.Paused -and $s.Position -gt 1.5 -and $s.Position -lt 2.8} 'waveform mouse seeking preserves pause'
     $held=Read-Ui
-    Require ($held.WaveVertices -le 12 -and [Math]::Abs($held.MarkerRatio-.7) -lt .01) 'cached waveform and immediate marker use at most twelve vertices'
+    Require ($held.WaveVertices -le ($held.Width*64+512) -and [Math]::Abs($held.MarkerRatio-.7) -lt .01) 'cached waveform and immediate marker use viewport-bounded geometry'
     Send-UiInput 'DOWN'; $held=Read-Ui; Start-Sleep -Milliseconds 150; $stationary=Read-Ui; Send-UiInput 'UP'
     Require ($stationary.SeekSequence -eq $held.SeekSequence -and $stationary.WaveBuilds -eq $held.WaveBuilds) 'holding a stationary seek sends no repeated commands or waveform rebuilds'
     Send-UiInput 'KEY HOME 1'; Send-UiInput 'KEY HOME 0'
@@ -609,9 +609,9 @@ try {
     Send-UiInput 'UP'
     $raised=Wait-Ui {param($s) $s.PanelPreferred -ge 310 -and $s.Controls['seek'].Bottom-$s.Controls['seek'].Top -gt 130} 'dragging transport upward enlarges the waveform'
     Capture 'transport-expanded'
-    Require ($raised.WaveBuilds -eq $beforeExpansion.WaveBuilds -and $raised.WaveVertices -le 12) 'tall waveform reuses its raster and constant-size drawing'
+    Require ($raised.WaveBuilds -eq $beforeExpansion.WaveBuilds -and $raised.WaveVertices -le ($raised.Width*64+512)) 'tall waveform reuses its envelope and bounded drawing'
     [FeatureNative]::ShowWindow($hwnd,3) | Out-Null
-    $null=Wait-Ui {param($s) $s.Width -gt 1000 -and $s.WaveVertices -le 12} 'maximized waveform retains bounded drawing'
+    $null=Wait-Ui {param($s) $s.Width -gt 1000 -and $s.WaveVertices -le ($s.Width*64+512)} 'maximized waveform retains bounded drawing'
     Send-UiInput 'MOVE 0 0'; Capture 'waveform-maximized'
     [FeatureNative]::ShowWindow($hwnd,9) | Out-Null
     $null=Wait-Ui {param($s) $s.Width -eq 500} 'waveform restores from maximized size'

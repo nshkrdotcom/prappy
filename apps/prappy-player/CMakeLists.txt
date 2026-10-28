@@ -40,7 +40,11 @@ add_library(imgui STATIC
 target_compile_definitions(imgui PUBLIC IMGUI_USE_WCHAR32 IMGUI_ENABLE_FREETYPE)
 target_include_directories(imgui SYSTEM PUBLIC third_party/imgui third_party/imgui/backends third_party/imgui/misc/freetype)
 target_link_libraries(imgui PUBLIC SDL3::SDL3-static freetype)
-add_executable(prappy_player WIN32 src/main.cpp src/player_ui.cpp src/analysis.cpp src/text.cpp src/tests.cpp assets/player.rc)
+add_library(implot STATIC third_party/implot/implot.cpp third_party/implot/implot_items.cpp)
+target_include_directories(implot SYSTEM PUBLIC third_party/implot)
+target_link_libraries(implot PUBLIC imgui)
+add_executable(prappy_player WIN32 src/main.cpp src/player_ui.cpp src/analysis.cpp src/text.cpp src/tests.cpp src/sample_client.cpp src/sample_workspace.cpp assets/player.rc)
+target_include_directories(prappy_player SYSTEM PRIVATE third_party/json)
 set_property(SOURCE assets/player.rc APPEND PROPERTY OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/player.ico")
 set_target_properties(prappy_player PROPERTIES OUTPUT_NAME "PrappyPlayer")
 target_include_directories(prappy_player SYSTEM PRIVATE third_party/mpv/include)
@@ -49,7 +53,7 @@ target_compile_options(prappy_player PRIVATE /W4 /WX /permissive- /utf-8 /EHsc /
 if(PRAPPY_ANALYZE)
   target_compile_options(prappy_player PRIVATE /analyze /analyze:external-)
 endif()
-target_link_libraries(prappy_player PRIVATE imgui shell32 ole32 comctl32 bcrypt dwmapi dwrite)
+target_link_libraries(prappy_player PRIVATE implot imgui shell32 ole32 comctl32 bcrypt dwmapi dwrite winhttp)
 target_link_options(prappy_player PRIVATE /INCREMENTAL:NO /MANIFEST:EMBED /MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/assets/player.manifest)
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mpv/libmpv-2.dll")
   message(FATAL_ERROR "Missing libmpv runtime. Run scripts/deps.ps1.")
@@ -68,4 +72,8 @@ add_custom_command(TARGET prappy_player POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/freetype/docs/FTL.TXT" "$<TARGET_FILE_DIR:prappy_player>/licenses/FreeType.txt"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/LICENSE.txt" "$<TARGET_FILE_DIR:prappy_player>/licenses/imgui.txt")
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/LICENSE.txt" "$<TARGET_FILE_DIR:prappy_player>/licenses/imgui.txt"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/implot/LICENSE" "$<TARGET_FILE_DIR:prappy_player>/licenses/implot.txt"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/json/LICENSE.MIT" "$<TARGET_FILE_DIR:prappy_player>/licenses/json.txt")

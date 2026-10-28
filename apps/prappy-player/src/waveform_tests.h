@@ -1,5 +1,5 @@
 #pragma once
-#include "waveform_image.h"
+#include "waveform_view.h"
 #include "imgui_impl_sdlrenderer3.h"
 #include <ostream>
 
@@ -10,9 +10,11 @@ inline void waveformRenderTests(std::ostream& log) {
         SDL_Renderer* renderer = nullptr;
         SDL_Window* window = nullptr;
         ImGuiContext* context = nullptr;
+        ImPlotContext* plot = nullptr;
         bool backend = false;
         ~Canvas() {
             if (backend) ImGui_ImplSDLRenderer3_Shutdown();
+            if (plot) ImPlot::DestroyContext(plot);
             if (context) ImGui::DestroyContext(context);
             if (renderer) SDL_DestroyRenderer(renderer);
             if (window) SDL_DestroyWindow(window);
@@ -37,6 +39,7 @@ inline void waveformRenderTests(std::ostream& log) {
         require(canvas.renderer != nullptr,"Cannot create waveform test renderer.");
         require(SDL_SetRenderScale(canvas.renderer,dpi,dpi),"Cannot set waveform test display scale.");
         canvas.context = ImGui::CreateContext();
+        canvas.plot = ImPlot::CreateContext();
         auto& io = ImGui::GetIO(); io.IniFilename = nullptr; io.LogFilename = nullptr;
         const ImVec2 logical{size.x/dpi,size.y/dpi};
         io.DisplaySize = logical; io.DisplayFramebufferScale = {dpi,dpi}; io.DeltaTime = 1.0f/60;
@@ -49,7 +52,7 @@ inline void waveformRenderTests(std::ostream& log) {
             const float amplitude = .3f+.6f*static_cast<float>(i%137)/136;
             waveform->levels[0][i] = {-amplitude,amplitude,-amplitude,amplitude};
         }
-        WaveformImage image(canvas.renderer);
+        WaveformView image(canvas.renderer);
         std::vector<float> reference;
         constexpr double First = .2137;
         for (const auto ratio : {First,.4173,.8031}) {
@@ -74,8 +77,7 @@ inline void waveformRenderTests(std::ostream& log) {
             for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
                 const auto pixel = static_cast<Uint8*>(rgba->pixels)+static_cast<size_t>(y)*rgba->pitch+x*4;
                 const auto offset = static_cast<size_t>(y)*width+x;
-                const auto tint = x < static_cast<int>(width*ratio) ? 224.0f : 126.0f;
-                mask[offset] = pixel[1]/tint;
+                mask[offset] = pixel[1]/255.0f;
                 if (!reference.empty() && std::abs(x-static_cast<int>(width*First)) > 6 && std::abs(x-static_cast<int>(width*ratio)) > 6) {
                     if (std::abs(mask[offset]-reference[offset]) >= .025f) log << "Pixel mismatch " << width << 'x' << height << " at " << x << ',' << y << ": " << reference[offset] << " vs " << mask[offset] << '\n';
                     require(std::abs(mask[offset]-reference[offset]) < .025f,"Waveform silhouette changed as playback marker moved.");
@@ -83,18 +85,13 @@ inline void waveformRenderTests(std::ostream& log) {
             }
             // Both stereo lanes must extend across the right-hand side at large sizes.
             for (const auto lane : {.25,.75}) {
-                if (dpi == 1) for (int x = 0; x < width-(fractional ? 1 : 0); ++x) {
-                    if (std::abs(x-static_cast<int>(width*ratio)) <= 6) continue;
-                    require((mask[static_cast<size_t>(height*lane)*width+x] > .1f) == (x%2 == 0),
-                        "Waveform bar/gap cadence changed across its width.");
-                }
                 size_t lit = 0;
-                for (int x = width*3/4; x < width-4; ++x) lit += mask[static_cast<size_t>(height*lane)*width+x] > .1f ? 1 : 0;
+                for (int x = width*3/4; x < width-4; ++x) lit += mask[static_cast<size_t>(height*lane)*width+x] > .2f ? 1 : 0;
                 require(lit > static_cast<size_t>(width/16),"Waveform was diagonally clipped at the right edge.");
             }
-            require(image.rebuilds == 1 && image.vertices <= 12,"Moving waveform marker rebuilt its raster or geometry.");
+            require(image.rebuilds == 1 && image.vertices <= width*64+512,"Moving waveform marker rebuilt data or exceeded viewport geometry bounds.");
             if (reference.empty()) reference = std::move(mask);
         }
-        log << "PASS waveform " << driver << " pixels " << width << 'x' << height << " scale " << dpi << " fractional " << fractional << ": stable silhouette, full stereo width, fixed raster and <=12 vertices\n";
+        log << "PASS waveform " << driver << " pixels " << width << 'x' << height << " scale " << dpi << " fractional " << fractional << ": stable silhouette, full stereo width and viewport-bounded geometry\n";
     }
 }
