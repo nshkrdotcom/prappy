@@ -27,5 +27,8 @@ if ($Asan) {
     if (!(Test-Path -LiteralPath $runtime)) { throw "ASan runtime missing: $runtime. Install the Visual Studio C++ AddressSanitizer component." }
     Copy-Item -LiteralPath $runtime -Destination $build -Force
 }
+if (Test-Path -LiteralPath "$env:USERPROFILE/.config/prappy/development-signing.json") {
+    & "$PSScriptRoot/sign-development.ps1" -BuildDirectory $build
+}
 Write-Host "Built $build\PrappyPlayer.exe"
 if ($Run) { Start-Process -FilePath "$build\PrappyPlayer.exe" -WorkingDirectory $build -WindowStyle Hidden }
