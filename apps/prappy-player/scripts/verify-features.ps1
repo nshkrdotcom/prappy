@@ -680,8 +680,17 @@ try {
     Click 'Clear'
     $null=Wait-Ui {param($s) $s.Visible -gt 0} 'Unicode search clears normally'
     Send-UiInput 'MOVE 0 0'
-    Start-Sleep -Seconds 2
+    # Wait for asynchronous analysis, persistence and hover redraws to settle
+    # instead of assuming that every diagnostic build settles in two seconds.
+    $settling=[Diagnostics.Stopwatch]::StartNew()
+    $quiet=[Diagnostics.Stopwatch]::StartNew()
     $first=(Read-Ui).Presents
+    do {
+        Start-Sleep -Milliseconds 100
+        $current=(Read-Ui).Presents
+        if ($current -ne $first) { $first=$current; $quiet.Restart() }
+    } while ($quiet.Elapsed.TotalSeconds -lt 2 -and $settling.Elapsed.TotalSeconds -lt 20)
+    Require ($quiet.Elapsed.TotalSeconds -ge 2) 'paused UI reaches a settled state'
     Start-Sleep -Seconds 2
     Require ((Read-Ui).Presents -eq $first) 'paused UI presents no idle frames after settling'
     $beforeReset=Read-Ui; Send-UiInput 'RENDER_RESET'

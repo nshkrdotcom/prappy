@@ -125,6 +125,10 @@ Result measure(const fs::path& path, std::stop_token stop, const Progress& progr
         PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1, 65536, 65536, 0, nullptr));
     OVERLAPPED io{}; io.hEvent = event.value;
     bool ioPending = false;
+    // Windows borrows this storage until completion, including cancellation.
+    // Declare it before PendingIo so cancellation and draining happen first
+    // when any wait/decoder operation throws.
+    std::vector<unsigned char> buffer(65536 + 8);
     struct PendingIo {
         HANDLE pipe;
         OVERLAPPED& io;
@@ -168,7 +172,6 @@ Result measure(const fs::path& path, std::stop_token stop, const Progress& progr
         ioPending = false;
     }
     Accumulator accumulator;
-    std::vector<unsigned char> buffer(65536 + 8);
     size_t carry = 0;
     for (;;) {
         cancelled(stop); ResetEvent(event.value); io = {}; io.hEvent = event.value;

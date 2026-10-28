@@ -8,6 +8,7 @@
 #include <stop_token>
 #include <tuple>
 #include <map>
+#include <memory>
 struct Track {
     fs::path path;
     std::string name, directory, type;
@@ -62,7 +63,10 @@ inline std::optional<Digest> digest(const Track& track, std::stop_token stop) {
     BCRYPT_ALG_HANDLE algorithm = nullptr;
     BCRYPT_HASH_HANDLE hash = nullptr;
     bool ok = BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) >= 0;
+    const auto closeAlgorithm = [](BCRYPT_ALG_HANDLE value) { BCryptCloseAlgorithmProvider(value, 0); };
+    const std::unique_ptr<void, decltype(closeAlgorithm)> algorithmOwner(algorithm, closeAlgorithm);
     if (ok) ok = BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) >= 0;
+    const std::unique_ptr<void, decltype(&BCryptDestroyHash)> hashOwner(hash, BCryptDestroyHash);
     std::vector<unsigned char> buffer(1024 * 1024);
     for (uintmax_t remaining = track.bytes; ok && remaining;) {
         if (stop.stop_requested()) { ok = false; break; }
@@ -74,8 +78,6 @@ inline std::optional<Digest> digest(const Track& track, std::stop_token stop) {
     Digest result{};
     if (ok) ok = file.peek() == std::char_traits<char>::eof() && !file.bad() &&
                  BCryptFinishHash(hash, result.data(), static_cast<ULONG>(result.size()), 0) >= 0;
-    if (hash) BCryptDestroyHash(hash);
-    if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0);
     return ok ? std::optional<Digest>(result) : std::nullopt;
 }
 inline size_t removeDuplicates(std::vector<Track>& tracks, std::stop_token stop, ScanProgress* progress, VerificationCache* cache = nullptr) {

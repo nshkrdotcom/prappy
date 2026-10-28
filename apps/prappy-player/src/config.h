@@ -7,6 +7,7 @@
 #include <set>
 #include <sstream>
 #include <vector>
+#include <memory>
 struct Config { std::vector<fs::path> roots; std::set<std::string> extensions; size_t historyLimit = 10000; };
 inline Config readConfig(const fs::path& file) {
     std::ifstream input(file);
@@ -51,7 +52,8 @@ inline void createDefaultConfig(const fs::path& file) {
     if (fs::exists(file)) return;
     PWSTR music = nullptr;
     if (FAILED(SHGetKnownFolderPath(FOLDERID_Music, 0, nullptr, &music))) throw std::runtime_error("Cannot locate your Music folder.");
-    const auto root = utf8(fs::path(music)); CoTaskMemFree(music);
+    const std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> owner(music, CoTaskMemFree);
+    const auto root = utf8(fs::path(music));
     std::ofstream out(file);
     out << "# UTF-8. Repeat directory= for more roots. Relative roots resolve beside this file.\n"
         << "directory=" << root << "\nextensions=flac,wav,mp3,opus,m4a,wv,mka,webm,ogg,aac,aiff,wma\nhistory_limit=10000\n";

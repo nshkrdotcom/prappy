@@ -11,6 +11,7 @@
 #include <functional>
 #include <optional>
 #include <chrono>
+#include <memory>
 struct AudioInfo {
     std::string codec, sampleFormat, channelLayout;
     int64_t sampleRate = 0, channels = 0;
@@ -172,7 +173,8 @@ struct Audio {
     std::string textProperty(const char* name) const {
         char* value = nullptr;
         if (get_property(handle, name, MPV_FORMAT_STRING, &value) < 0) return {};
-        std::string result = value ? value : ""; free(value); return result;
+        const std::unique_ptr<char, decltype(free)> owner(value, free);
+        return value ? value : "";
     }
     void readInfo() {
         info.codec = textProperty("current-tracks/audio/codec");

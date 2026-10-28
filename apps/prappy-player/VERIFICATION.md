@@ -721,3 +721,17 @@ renderer. It now checks fractional bounds using both software and Direct3D11
 pixel readback. Release and Debug builds and their complete state regression
 suites pass, including 32 waveform cases per build.
 
+## Resource ownership audit, 2026-10-27
+
+The asynchronous analysis read buffer now outlives the pending-I/O guard, so
+cancellation and completion draining precede buffer destruction on exceptions.
+BCrypt algorithm/hash handles, mpv property strings and known-folder allocations
+now have scoped owners before any potentially throwing C++ allocations.
+
+Release, MSVC static analysis, Debug and Debug ASan builds passed. The health
+matrix passed Release and Debug playback stress, state/DSP/cache tests, feature
+UI, native-window and relaunch checks; Debug CRT leak reports were clean.
+The ASan runtime run was blocked by Windows Application Control at process
+launch, so no ASan runtime pass is claimed. Log: build/ownership-health.log.
+The paused-idle check now waits for an observed quiet period (bounded at twenty
+seconds), then independently asserts no further frames over two seconds.
