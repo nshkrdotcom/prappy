@@ -4,6 +4,7 @@
 #include "analysis.h"
 #include "directory_filter.h"
 #include <cmath>
+#include <cwctype>
 
 struct ListeningStats { size_t count = 0; int64_t last = 0; };
 struct Browse {
@@ -34,8 +35,15 @@ struct Browse {
         const auto found = stats.find(track.id); return found == stats.end() ? ListeningStats{} : found->second;
     }
     static std::vector<std::wstring> tokens(const std::string& query) {
-        std::wistringstream input(searchText(query)); std::vector<std::wstring> result;
-        for (std::wstring term; input >> term;) result.push_back(std::move(term)); return result;
+        std::vector<std::wstring> result;
+        std::wstring term; bool quoted = false;
+        const auto flush = [&] { if (!term.empty()) { result.push_back(std::move(term)); term.clear(); } };
+        for (const auto character : searchText(query)) {
+            if (character == L'"') quoted = !quoted;
+            else if (!quoted && std::iswspace(character)) flush();
+            else term += character;
+        }
+        flush(); return result;
     }
     static int score(const Track& track, const std::vector<std::wstring>& terms) {
         int rank = 0; const auto& name = track.searchName;

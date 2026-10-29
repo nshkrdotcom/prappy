@@ -286,7 +286,9 @@ operate the scraper, change its recordings or interfere with collection jobs.
   `library\beat-suite\render\mix.flac`. Other roots use their folder name as
   the prefix. Hover for the same path and any identical-copy locations;
   scroll horizontally to read longer rows.
-- **Search** sits below the expanded list, above playback. Type words from a
+- **Search** supports quoted phrases: `"nu nu"` requires those words together
+  with the space, in both Library and History. Unquoted words match independently.
+  Search sits below the expanded list, above playback. Type words from a
   filename or relative path to filter instantly; all words must match, in any
   order, ignoring case. Matching filenames rank above directory and hidden-copy
   matches; matching tokens are highlighted in the displayed row. Searches use

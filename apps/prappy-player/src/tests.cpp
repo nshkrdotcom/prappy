@@ -69,6 +69,18 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
     try {
         waveformRenderTests(log);
         {
+            require(Browse::tokens("  artist \"NU NU\" mix ") == std::vector<std::wstring>({L"artist",L"nu nu",L"mix"}),
+                "Quoted phrase was split or kept its quotes.");
+            Track phrase, separated;
+            phrase.search = phrase.searchName = L"nu nu mix.wav";
+            separated.search = separated.searchName = L"nu other nu mix.wav";
+            const auto quoted = Browse::tokens("\"nu nu\"");
+            require(Browse::score(phrase,quoted) >= 0 && Browse::score(separated,quoted) < 0 &&
+                Browse::score(separated,Browse::tokens("nu nu")) >= 0,"Phrase search did not require contiguous spaces.");
+            require(Browse::tokens("\"nu nu") == quoted && Browse::tokens("\"\"").empty(),"Partial/empty quote handling failed.");
+            log << "PASS quoted phrase search: exact spaces, case folding, mixed terms and unfinished quotes\n";
+        }
+        {
             History h;const auto path=fs::absolute(L"history-test.wav");
             const auto old=h.add(path);h.add(path);h.visit(0);h.add(path);
             const auto retained=h.entries[1].id;const auto count=h.playedCount,next=h.nextId;

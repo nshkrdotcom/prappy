@@ -823,8 +823,7 @@ int runPlayer(HINSTANCE instance) {
                     if (!historyView) visible = browser.select(library, search);
                     else {
                         visible.clear();
-                        std::wistringstream input(searchText(search)); std::vector<std::wstring> terms;
-                        for (std::wstring term; input >> term;) terms.push_back(std::move(term));
+                        const auto terms = Browse::tokens(search);
                         for (size_t i = history.entries.size(); i > 0; --i) {
                             const auto& text = std::as_const(history.entries)[i - 1].search;
                             if (!std::as_const(history.entries)[i - 1].queued && browser.directories.accepts(std::as_const(history.entries)[i - 1].path) && std::all_of(terms.begin(), terms.end(), [&](const auto& term) { return text.find(term) != std::wstring::npos; })) visible.push_back(i - 1);
