@@ -25,11 +25,15 @@ errors are logged in `~/.local/state/audioharvest/prappy-server.log` in WSL.
 No models or packages are downloaded. No Windows security settings are changed.
 The Connection dialog is available only if you intentionally use another server;
 normal local use requires no edits there.
+The launcher also exposes the existing artist-search library when present. Ctrl+M
+resolves the playing file across all configured libraries and switches to its
+registered source automatically; it does not depend on the browser's chosen library.
 
 Choose a library, then a recording, saved sample or collection. Search and metadata
 filters use effective recording/sample facts. The browser pages through recordings
 and samples. **Ctrl+M** pauses the listening song and resolves its full file hash
-against the chosen library. Unregistered or ambiguous files require explicit
+across connected libraries, even while the editor is connecting. The position is
+captured when you press the shortcut. Unregistered or ambiguous files require explicit
 source selection/import; the player never silently invents provenance.
 
 The green In and gold Out handles select canonical 48,000 Hz stereo frames. Out

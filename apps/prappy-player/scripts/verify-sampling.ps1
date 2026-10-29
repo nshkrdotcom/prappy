@@ -1,6 +1,6 @@
 #Requires -Version 7.0
 param([Parameter(Mandatory)][string]$Manifest,[string]$BuildVariant='Release',
-    [switch]$StartupOnly,[switch]$WorkstationDefaults,[switch]$RecordingOnly)
+    [switch]$StartupOnly,[switch]$WorkstationDefaults,[switch]$RecordingOnly,[switch]$MarkOnly)
 $ErrorActionPreference='Stop'
 $app=Split-Path $PSScriptRoot -Parent
 $fixture=Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json
@@ -10,6 +10,10 @@ New-Item -ItemType Directory -Force "$state/media" | Out-Null
 if(!$WorkstationDefaults){@{url=$fixture.url;token_file=$fixture.token_file;library=$fixture.library_id} | ConvertTo-Json | Set-Content "$state/sampling-connection.json"}
 $initialLibrary=if($WorkstationDefaults){''}else{$fixture.library_id}
 @{capture=$null;region=$null;name='UI sample';kind='unknown';fields=@{};edited_facets=@();pending=@();library=$initialLibrary;open=$true} | ConvertTo-Json -Depth 5 | Set-Content "$state/sample-draft.json"
+if($MarkOnly){
+ Copy-Item -LiteralPath $fixture.mark_song -Destination "$state/media/current.wav"
+ @{capture=$fixture.previous_capture;region=$null;name='Previous draft';kind='unknown';fields=@{};edited_facets=@();pending=@();library=$fixture.library_id;span=@{start=0;end=24000};open=$false} | ConvertTo-Json -Depth 30 | Set-Content "$state/sample-draft.json"
+}
 Add-Type -AssemblyName System.Drawing
 Add-Type @'
 using System;
@@ -32,9 +36,10 @@ function Read-Ui {
   $reader=[IO.StreamReader]::new($stream)
   try{$text=$reader.ReadToEnd()}finally{$reader.Dispose()}
   $lines=$text -split '\r?\n';if(!$lines[0].StartsWith('READY ')){return $null}
-  $ui=[pscustomobject]@{Ack=[uint64](($lines[0] -split ' ')[-1]);Controls=@{};Activations=@{};Sample=$null}
+  $ui=[pscustomobject]@{Ack=[uint64](($lines[0] -split ' ')[-1]);Controls=@{};Activations=@{};Sample=$null;SongPosition=0.;SongDuration=0.;SongPaused=([int](($lines[0] -split ' ')[7]) -ne 0)}
   foreach($line in $lines){
    if($line.StartsWith('SAMPLER ')){$ui.Sample=$line.Substring(8)|ConvertFrom-Json}
+   elseif($line.StartsWith('FEATURES ')){$feature=$line -split ' ';$ui.SongPosition=[double]::Parse($feature[5],[Globalization.CultureInfo]::InvariantCulture);$ui.SongDuration=[double]::Parse($feature[6],[Globalization.CultureInfo]::InvariantCulture)}
    elseif($line -match '^ACTIVATION "([^"]+)" ([0-9]+)$'){$ui.Activations[$matches[1]]=[uint64]$matches[2]}
    elseif($line -match '^CONTROL "([^"]+)" ([^ ]+) ([^ ]+) ([^ ]+) ([^ ]+) ([01]) ([01]) ([0-9]+)$'){
     $ui.Controls[$matches[1]]=[pscustomobject]@{X=([double]::Parse($matches[2],[Globalization.CultureInfo]::InvariantCulture)+[double]::Parse($matches[4],[Globalization.CultureInfo]::InvariantCulture))/2;Y=([double]::Parse($matches[3],[Globalization.CultureInfo]::InvariantCulture)+[double]::Parse($matches[5],[Globalization.CultureInfo]::InvariantCulture))/2;Left=[double]::Parse($matches[2],[Globalization.CultureInfo]::InvariantCulture);Right=[double]::Parse($matches[4],[Globalization.CultureInfo]::InvariantCulture);Clicks=[uint64]$matches[8];Hovered=($matches[6] -eq "1");Active=($matches[7] -eq "1")}
@@ -79,6 +84,21 @@ function Require-CleanReport {
 }
 try{
  $process=Start-Process "$app/build/$BuildVariant/PrappyPlayer.exe" -WindowStyle Hidden -PassThru -ArgumentList '--window-test',('"'+$state+'"')
+ if($MarkOnly){
+  Click 'list'
+  Click 'library-0'
+  $before=Wait-Ui {param($ui)$ui.SongPosition -gt .25 -and !$ui.SongPaused} 'song playing in player mode'
+  Send-Input 'KEY CTRL 1';Send-Input 'KEY M 1';Send-Input 'KEY M 0';Send-Input 'KEY CTRL 0'
+  $marked=Wait-Ui {param($ui)$ui.Sample.open -and !$ui.Sample.mark_pending -and $ui.Sample.capture -eq $fixture.mark_capture_id} 'cold Ctrl+M loads current song across libraries'
+  if(!$marked.SongPaused -or $marked.Sample.start -lt [Math]::Floor($before.SongPosition*48000)-100 -or $marked.Sample.start -gt [Math]::Ceiling(($before.SongPosition+1)*48000)){throw 'Mark did not capture playing song position'}
+  Capture 'marked-current-song'
+  Click 'sample-return';Click 'play'
+  $null=Wait-Ui {param($ui)$ui.SongPosition -gt ($marked.Sample.start/48000.)+.3 -and !$ui.SongPaused} 'song resumes after editor return'
+  Send-Input 'KEY CTRL 1';Send-Input 'KEY M 1';Send-Input 'KEY M 0';Send-Input 'KEY CTRL 0'
+  $null=Wait-Ui {param($ui)!$ui.Sample.mark_pending -and $ui.Sample.capture -eq $fixture.mark_capture_id -and $ui.Sample.start -gt $marked.Sample.start+4800} 'warm Ctrl+M marks new position'
+  Write-Host "PASS cold/warm Ctrl+M transfers current song and captured position across libraries, preserving prior draft. Evidence: $state"
+  return
+ }
  $null=Wait-Ui {param($ui)$ui.Sample.open} 'sampling workspace'
  if($StartupOnly){
   $null=Wait-Ui {param($ui)$ui.Sample.notice -eq 'Connected' -and $ui.Controls.ContainsKey('sample-item-0')} 'automatic backend connection'

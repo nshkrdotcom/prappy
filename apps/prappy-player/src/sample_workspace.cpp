@@ -111,10 +111,24 @@ void Workspace::restore(){
     }catch(const std::exception&){capture=nullptr;region=nullptr;pending=Json::array();}
 }
 void Workspace::mark(Audio& audio){
-    open=true;audio.setPaused(true);stopTransport();
-    if(!client){connect();notice="Connect, then mark the playing recording or choose one from Recordings.";return;}
-    if(!audio.current.empty())client->submit({"hash","GET",utf8(audio.current),nullptr,generation,{}});
-    else browse();
+    open=true;
+    if(audio.current.empty()){notice="No song is loaded in the player.";return;}
+    const auto frame=static_cast<Frame>(std::llround(audio.displayPosition()*Rate));
+    audio.setPaused(true);stopTransport();persist();++generation;
+    pendingMark=PlayingSongMark{audio.current,frame,++markTicket};markMatches=Json::array();
+    notice="Opening the playing song...";
+    if(!client||libraries.empty())connect();else submitMark();
+}
+void Workspace::submitMark(){
+    if(!pendingMark||pendingMark->submitted||pendingMark->failed||!client||libraries.empty())return;
+    pendingMark->submitted=true;notice="Finding the playing song in your libraries...";
+    client->submit({"hash","GET",utf8(pendingMark->path),{{"mark",pendingMark->ticket}},generation,{}});
+}
+void Workspace::finishMark(const Json& match){
+    if(!pendingMark)return;
+    const auto frame=pendingMark->frame;library=match.at("library_id");
+    pendingMark.reset();markMatches=Json::array();region=nullptr;transport.scope=PlaybackScope::Selection;
+    openCapture(match.at("capture"),Span{frame,frame+Rate*4});browse();notice="Marked the playing song at your position.";
 }
 void Workspace::stopTransport(){++transportEpoch;auditionPath.clear();audition.stop();transport.stop();}
 void Workspace::requestAudition(Frame origin,bool first){
@@ -159,20 +173,22 @@ void Workspace::playbackOverlay(){
     draw->AddLine({marker.x,pos.y},{marker.x,pos.y+size.y},IM_COL32(245,245,245,255),2);
     ImPlot::PopPlotClipRect();
 }
-void Workspace::process(Audio& audio){
+void Workspace::process(){
     if(!client)return;
     for(auto& reply:client->collect()){
         const auto& tag=reply.request.tag;
         if(tag!="libraries" && tag!="command" && tag!="collections" && reply.request.generation!=generation)continue;
+        if((tag=="hash"||tag=="resolve")&&(!pendingMark||reply.request.body.at("mark")!=pendingMark->ticket))continue;
         if(tag=="collections" && reply.request.path!=endpoint(library)+"/collections")continue;
         if(tag=="browse" && reply.request.path!=browsePath)continue;
         if(tag=="audition" && (reply.request.path!=auditionPath || reply.request.body.at("epoch")!=transportEpoch))continue;
-        if(!reply.error.empty()){if(tag=="audition"){auditionPath.clear();audition.stop();transport.state=PlaybackState::Error;}notice=reply.error;if(reply.status==409){notice="Conflict: local draft retained. Reload the saved sample or Fork before saving. "+notice;if(tag=="command")for(auto& row:pending)if(row.at("command").at("request_id")==reply.request.body.at("request_id"))row["conflict"]=true;persist();}continue;}
+        if(!reply.error.empty()){if(pendingMark&&(tag=="hash"||tag=="resolve"||tag=="libraries"))pendingMark->failed=true;if(tag=="audition"){auditionPath.clear();audition.stop();transport.state=PlaybackState::Error;}notice=reply.error;if(reply.status==409){notice="Conflict: local draft retained. Reload the saved sample or Fork before saving. "+notice;if(tag=="command")for(auto& row:pending)if(row.at("command").at("request_id")==reply.request.body.at("request_id"))row["conflict"]=true;persist();}continue;}
         if(tag=="libraries"){
             libraries=reply.body;notice="Connected";
             if(library.empty()&&!libraries.empty())library=libraries[0].at("id");
             browse();
-            if(!capture.is_null()){auto savedFields=fields;auto savedEdited=editedFacets;auto savedRegion=region;auto savedMeta=metadata;auto target=metadataTarget;auto targetRev=metadataTargetRevision;auto metaRev=metadataRevision;auto span=editor.span;auto item=capture;auto left=viewportStart,right=viewportEnd;openCapture(item,span);fields=savedFields;editedFacets=savedEdited;region=savedRegion;metadata=savedMeta;metadataTarget=target;metadataTargetRevision=targetRev;metadataRevision=metaRev;viewportStart=left;viewportEnd=right;fit=true;loadDetails();}
+            if(pendingMark)submitMark();
+            else if(!capture.is_null()){auto savedFields=fields;auto savedEdited=editedFacets;auto savedRegion=region;auto savedMeta=metadata;auto target=metadataTarget;auto targetRev=metadataTargetRevision;auto metaRev=metadataRevision;auto span=editor.span;auto item=capture;auto left=viewportStart,right=viewportEnd;openCapture(item,span);fields=savedFields;editedFacets=savedEdited;region=savedRegion;metadata=savedMeta;metadataTarget=target;metadataTargetRevision=targetRev;metadataRevision=metaRev;viewportStart=left;viewportEnd=right;fit=true;loadDetails();}
             for(const auto& entry:pending)client->submit({"command","POST",endpoint(entry.at("library"))+"/commands",entry.at("command"),generation,{}});
         }else if(tag=="browse"){items=reply.body.at("items");browseTotal=reply.body.at("total");}
         else if(tag=="collectionMember")items.push_back(reply.body);
@@ -212,11 +228,11 @@ void Workspace::process(Audio& audio){
             beats.clear();for(const auto& a:anchors)beats.push_back(a.at("frame").get<Frame>());
             selectedAnchor=0;
         }else if(tag=="hash"){
-            get("resolve",endpoint(library)+"/resolve?sha256="+reply.body.at("sha256").get<std::string>());
+            client->submit({"resolve","GET","/v1/resolve?sha256="+reply.body.at("sha256").get<std::string>(),{{"mark",pendingMark->ticket}},generation,{}});
         }else if(tag=="resolve"){
-            const auto& matches=reply.body.at("matches");
-            if(matches.size()==1){region=nullptr;const auto frame=static_cast<Frame>(std::llround(audio.position*Rate));openCapture(matches[0],Span{frame,frame+Rate*4});}
-            else notice=matches.empty()?"This file is not registered in the selected library. Import it in audioharvest first.":"Multiple captures match. Choose the intended recording in the browser.";
+            const auto matches=reply.body.at("matches");
+            if(matches.size()==1)finishMark(matches[0]);
+            else{pendingMark->failed=true;markMatches=matches;notice=matches.empty()?"The playing file is not registered in a connected library. Your previous draft is preserved.":"Several recordings match this file. Choose its source below.";}
         }else if(tag=="capture"){
             const auto savedRegion=region;openCapture(reply.body,savedRegion.is_null()?std::optional<Span>{}:std::optional<Span>{{savedRegion.at("span").at("start_frame"),savedRegion.at("span").at("end_frame")}});
             region=savedRegion;
@@ -262,7 +278,7 @@ void Workspace::tick(Audio& audio){
         const auto previousState=transport.state;
         if(open&&(!hadOpen||(audio.active&&!audio.paused)))audio.setPaused(true);hadOpen=open;
         if(open && !connectionAttempted)connect();
-        process(audio);
+        process();
         if(!open&&transport.engaged())stopTransport();
         if(transport.engaged() && transport.state!=PlaybackState::Loading && (transport.state!=PlaybackState::Paused||auditionPath.empty())){
             const auto state=audition.snapshot();transport.cursor=state.cursor;
@@ -393,7 +409,7 @@ void Workspace::draw(Audio& audio,const std::function<void(const char*,bool)>& o
     if(!ImGui::Begin("Sampling",&open,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoSavedSettings)){ImGui::End();return;}
     const auto button=[&](const char* label,const char* id){bool pressed=ImGui::Button(label);observe(id,pressed);return pressed;};
     try {
-        if(button("Return to song","sample-return")){stopTransport();open=false;}
+        if(button("Return to song","sample-return")){pendingMark.reset();markMatches=Json::array();stopTransport();open=false;}
         ImGui::SameLine();if(button("Mark playing song","sample-mark"))mark(audio);
         ImGui::SameLine();if(button("Connection","sample-connection"))ImGui::OpenPopup("Backend connection");
         ImGui::SameLine();ImGui::TextUnformatted(notice.c_str());
@@ -415,14 +431,26 @@ void Workspace::draw(Audio& audio,const std::function<void(const char*,bool)>& o
             if(item.contains("metadata"))label=item.at("metadata").at("effective").value("title",label);
             const bool chosen=ImGui::Selectable((label+"##"+id).c_str());observe(("sample-item-"+std::to_string(itemIndex++)).c_str(),chosen);
             if(chosen){
-                stopTransport();
+                pendingMark.reset();markMatches=Json::array();stopTransport();
                 if(tab==0){region=nullptr;transport.scope=PlaybackScope::Selection;openCapture(item);}
                 else if(tab==1){transport.scope=PlaybackScope::Selection;++generation;region=item;get("capture",endpoint(library)+"/entities/"+item.at("capture_id").get<std::string>());}
                 else{const auto members=item.at("members");items=Json::array();tab=1;for(const auto& member:members)get("collectionMember",endpoint(library)+"/entities/"+member.at("region").at("id").get<std::string>()+"?revision="+std::to_string(member.at("region").at("revision").get<int>()));break;}
             }
         }
         if(sidebar){ImGui::EndChild();ImGui::SameLine();ImGui::BeginChild("Sample editing",{0,0});}
-        if(!capture.is_null()){
+        if(pendingMark){
+            ImGui::TextWrapped("%s",notice.c_str());
+            if(pendingMark->failed){
+                for(const auto& match:markMatches){
+                    const auto id=match.at("library_id").get<std::string>();std::string name=id;
+                    for(const auto& lib:libraries)if(lib.at("id")==id)name=lib.at("name");
+                    const auto label=match.at("capture").at("recording").value("title",std::string("Recording"))+" ("+name+")##"+match.at("capture").at("id").get<std::string>();
+                    if(ImGui::Button(label.c_str())){const auto chosen=match;finishMark(chosen);break;}
+                }
+                if(ImGui::Button("Retry opening playing song")){pendingMark->failed=false;pendingMark->submitted=false;pendingMark->ticket=++markTicket;if(libraries.empty())connect();else submitMark();}
+                if(ImGui::Button("Return to previous draft")){pendingMark.reset();markMatches=Json::array();notice="Previous draft restored.";loadDetails();}
+            }
+        }else if(!capture.is_null()){
             ImGui::TextWrapped("%s",capture.at("recording").value("title","Recording").c_str());
             if(button("Play recording","sample-listen")){transport.scope=PlaybackScope::Recording;beginAudition(audio,BoundaryCheck::None,transport.cursor);}
             ImGui::SameLine();if(button("Classify / detect beats","sample-classify")){Json payload={{"capture_id",capture.at("id")},{"start_frame",std::max<Frame>(0,editor.span.start-Rate*10)},{"end_frame",std::min(editor.total,editor.span.end+Rate*10)}};if(!region.is_null()){payload["target_id"]=region.at("id");payload["target_revision"]=region.at("revision");}command("classify",payload);}
