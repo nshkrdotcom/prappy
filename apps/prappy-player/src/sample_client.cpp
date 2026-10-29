@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cmath>
 #include <atomic>
+#include <algorithm>
 namespace sampling {
 namespace {
 struct Internet {
@@ -155,11 +156,22 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
     } catch(const std::exception& e) {reply.error=e.what();if(!temporary.empty()){std::error_code ec;fs::remove(temporary,ec);}}
     return reply;
 }
-Client::Client(Connection c,std::function<void()> n) : connection(std::move(c)),notify(std::move(n)),
- worker([this](std::stop_token stop){
+size_t Client::lane(const Request& request) {
+    if(request.tag=="audition")return 0;
+    if(request.tag=="libraries"||request.tag=="hash"||request.tag=="resolve"||request.method!="GET")return 1;
+    return 2;
+}
+Client::Client(Connection c,std::function<void()> n) : connection(std::move(c)),notify(std::move(n)) {
+    for(size_t i=0;i<workers.size();++i)workers[i]=std::jthread([this,i](std::stop_token stop){run(stop,i);});
+}
+void Client::run(std::stop_token stop,size_t index){
     while(!stop.stop_requested()) {
         Request request;
-        {std::unique_lock lock(mutex);if(!wake.wait(lock,stop,[&]{return !pending.empty();}))break;request=std::move(pending.front());pending.pop_front();}
+        {std::unique_lock lock(mutex);
+            const auto find=[&]{return std::find_if(pending.begin(),pending.end(),[&](const auto& item){return lane(item)==index;});};
+            if(!wake.wait(lock,stop,[&]{return find()!=pending.end();}))break;
+            const auto next=find();request=std::move(*next);pending.erase(next);
+        }
         auto result=perform(connection,request,stop);
         if(request.tag=="libraries" && !result.error.empty() && connection.startWorkstation && !stop.stop_requested()) {
             try {
@@ -178,8 +190,8 @@ Client::Client(Connection c,std::function<void()> n) : connection(std::move(c)),
         {std::lock_guard lock(mutex);completed.push_back(std::move(result));}
         if(notify)notify();
     }
- }) {}
-Client::~Client(){worker.request_stop();wake.notify_all();}
+ }
+Client::~Client(){for(auto& worker:workers)worker.request_stop();wake.notify_all();}
 void Client::submit(Request r) {
     std::lock_guard lock(mutex);
     if(r.method=="GET" && r.tag!="download") std::erase_if(pending,[&](const auto& old){return old.tag==r.tag && (r.tag!="collectionMember" || old.path==r.path);});

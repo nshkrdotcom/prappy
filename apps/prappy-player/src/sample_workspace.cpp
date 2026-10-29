@@ -130,7 +130,7 @@ void Workspace::finishMark(const Json& match){
     pendingMark.reset();markMatches=Json::array();region=nullptr;transport.scope=PlaybackScope::Selection;
     openCapture(match.at("capture"),Span{frame,frame+Rate*4});browse();notice="Marked the playing song at your position.";
 }
-void Workspace::stopTransport(){++transportEpoch;auditionPath.clear();audition.stop();transport.stop();}
+void Workspace::stopTransport(){auditionSubmitted=0;++transportEpoch;auditionPath.clear();audition.stop();transport.stop();}
 void Workspace::requestAudition(Frame origin,bool first){
     if(capture.is_null()||!client||origin>=transport.range.end)return;
     const auto end=std::min(transport.range.end,origin+Rate*30);
@@ -281,7 +281,7 @@ void Workspace::tick(Audio& audio){
         process();
         if(!open&&transport.engaged())stopTransport();
         if(transport.engaged() && transport.state!=PlaybackState::Loading && (transport.state!=PlaybackState::Paused||auditionPath.empty())){
-            const auto state=audition.snapshot();transport.cursor=state.cursor;
+            const auto state=audition.snapshot();transport.cursor=state.cursor;auditionSubmitted=state.submitted;
             if(state.finished){transport.state=PlaybackState::Stopped;transport.cursor=transport.range.end;auditionPath.clear();audition.stop();}
             else if(transport.state!=PlaybackState::Paused)transport.state=state.buffering?PlaybackState::Buffering:PlaybackState::Playing;
             if(state.needed>=0&&auditionPath.empty()&&!state.finished)requestAudition(state.needed,false);

@@ -7,6 +7,7 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include <array>
 namespace sampling {
 using Json = nlohmann::json;
 struct Connection { std::string url = "http://127.0.0.1:8765", token; fs::path credentialFile; bool startWorkstation=false; };
@@ -33,7 +34,10 @@ class Client {
     std::condition_variable_any wake;
     std::deque<Request> pending;
     std::vector<Reply> completed;
-    std::jthread worker;
+    // Playback must never wait for catalog browsing or waveform preparation.
+    std::array<std::jthread,3> workers;
+    static size_t lane(const Request&);
+    void run(std::stop_token,size_t);
 public:
     Client(Connection, std::function<void()>);
     ~Client();

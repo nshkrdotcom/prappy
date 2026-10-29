@@ -133,3 +133,12 @@ Validation against an isolated running server:
 The manifest supplies `url`, `token_file` and `library_id`. The GUI test writes
 only isolated player state and explicit test samples in that configured library;
 use a disposable library, never an existing user's music library.
+
+
+Playback requests run independently of library browsing and waveform requests.
+An expensive browse cannot hold Play in Loading. Catalog browse/search uses one
+verified read snapshot per request; unfiltered pages only decorate visible rows.
+The Ctrl+M regression (`verify-sampling.ps1 -MarkOnly -Manifest ...`) exercises
+cold/warm connection, then presses editor Play and checks SDL-submitted audio
+frames and the advancing selection playhead within five seconds. Run it against
+an isolated server with delayed recording-list responses to verify independence.

@@ -26,6 +26,7 @@ class Workspace {
     Span auditionSelection;
     uint64_t transportEpoch=0;
     uint64_t auditionChunks=0;
+    Frame auditionSubmitted=0;
     bool boundaryHeld=false,hadOpen=false;
     uint64_t generation=0;
     std::string library,notice,libraryQuery,facet,facetValue,regionName="New sample",kind="unknown",collectionName;
@@ -85,6 +86,6 @@ public:
     void draw(Audio&,const std::function<void(const char*,bool)>&);
     bool active()const{return open;}
     bool animating()const{return open&&(transport.state==PlaybackState::Playing||transport.state==PlaybackState::Buffering);}
-    std::string diagnostics()const{return Json{{"open",open},{"capture",capture.is_null()?Json(nullptr):capture.at("id")},{"region",region},{"start",editor.span.start},{"end",editor.span.end},{"pcm_frames",pcm.size()/2},{"beats",beats.size()},{"pending",pending.size()},{"notice",notice},{"amplitude_mode",static_cast<int>(amplitude.mode)},{"amplitude_gain",amplitude.gain},{"visible_peak",envelope.peak},{"envelope_builds",envelopeBuilds},{"waveform_exact_pcm",envelopePcm},{"viewport_start",viewportStart},{"viewport_end",viewportEnd},{"pcm_start",pcmStart},{"pcm_end",pcmEnd},{"playback_state",transport.status()},{"playback_scope",static_cast<int>(transport.scope)},{"playhead",transport.cursor},{"playback_start",transport.range.start},{"playback_end",transport.range.end},{"playback_loop",transport.loop},{"playback_chunks",auditionChunks},{"mark_pending",pendingMark.has_value()},{"mark_frame",pendingMark?pendingMark->frame:Frame{-1}},{"mark_failed",pendingMark&&pendingMark->failed}}.dump();}
+    std::string diagnostics()const{return Json{{"open",open},{"capture",capture.is_null()?Json(nullptr):capture.at("id")},{"region",region},{"start",editor.span.start},{"end",editor.span.end},{"pcm_frames",pcm.size()/2},{"beats",beats.size()},{"pending",pending.size()},{"notice",notice},{"amplitude_mode",static_cast<int>(amplitude.mode)},{"amplitude_gain",amplitude.gain},{"visible_peak",envelope.peak},{"envelope_builds",envelopeBuilds},{"waveform_exact_pcm",envelopePcm},{"viewport_start",viewportStart},{"viewport_end",viewportEnd},{"pcm_start",pcmStart},{"pcm_end",pcmEnd},{"playback_state",transport.status()},{"playback_scope",static_cast<int>(transport.scope)},{"playhead",transport.cursor},{"playback_start",transport.range.start},{"playback_end",transport.range.end},{"playback_loop",transport.loop},{"playback_chunks",auditionChunks},{"audio_frames_submitted",auditionSubmitted},{"mark_pending",pendingMark.has_value()},{"mark_frame",pendingMark?pendingMark->frame:Frame{-1}},{"mark_failed",pendingMark&&pendingMark->failed}}.dump();}
 };
 }

@@ -44,7 +44,7 @@ class Audition {
         }
     }
 public:
-    struct Snapshot {Frame cursor=0,needed=-1;bool finished=false,buffering=false;};
+    struct Snapshot {Frame cursor=0,needed=-1,submitted=0;bool finished=false,buffering=false;};
     ~Audition(){if(stream)SDL_DestroyAudioStream(stream);if(audioInitialized)SDL_QuitSubSystem(SDL_INIT_AUDIO);}
     Audition()=default;Audition(const Audition&)=delete;Audition& operator=(const Audition&)=delete;
     void start(std::vector<float> pcm,Frame origin,Span span,Frame cursor,bool loop,bool startPaused=false){
@@ -72,6 +72,7 @@ public:
         SDL_LockAudioStream(stream);
         if(!current){SDL_UnlockAudioStream(stream);return result;}
         if(!repeat&&feeding>=range.end&&!done){SDL_FlushAudioStream(stream);done=true;}
+        result.submitted=submitted;
         const auto queued=SDL_GetAudioStreamQueued(stream);
         const bool drained=!paused&&queued<=0&&SDL_GetTicksNS()-lastFeed>=static_cast<Uint64>(deviceFrames)*1000000000ULL/Rate;
         result.cursor=done&&drained?range.end:at(drained?submitted:consumed());result.finished=done&&drained;result.buffering=starved&&queued<=0;

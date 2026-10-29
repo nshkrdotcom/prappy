@@ -48,8 +48,8 @@ function Read-Ui {
   return $ui
  }catch [IO.IOException]{return $null}
 }
-function Wait-Ui([scriptblock]$Condition,[string]$Description){
- $until=(Get-Date).AddSeconds(60)
+function Wait-Ui([scriptblock]$Condition,[string]$Description,[int]$TimeoutSeconds=60){
+ $until=(Get-Date).AddSeconds($TimeoutSeconds)
  while((Get-Date)-lt $until){$ui=Read-Ui;if($ui -and (& $Condition $ui)){return $ui};if($process.HasExited){throw "Player exited during $Description"};Start-Sleep -Milliseconds 20}
  throw "Timed out: $Description. State: $((Read-Ui).Sample | ConvertTo-Json -Compress -Depth 6)"
 }
@@ -91,12 +91,18 @@ try{
   Send-Input 'KEY CTRL 1';Send-Input 'KEY M 1';Send-Input 'KEY M 0';Send-Input 'KEY CTRL 0'
   $marked=Wait-Ui {param($ui)$ui.Sample.open -and !$ui.Sample.mark_pending -and $ui.Sample.capture -eq $fixture.mark_capture_id} 'cold Ctrl+M loads current song across libraries'
   if(!$marked.SongPaused -or $marked.Sample.start -lt [Math]::Floor($before.SongPosition*48000)-100 -or $marked.Sample.start -gt [Math]::Ceiling(($before.SongPosition+1)*48000)){throw 'Mark did not capture playing song position'}
+  Click 'sample-play'
+  $playing=Wait-Ui {param($ui)$ui.Sample.playback_state -eq 'Playing' -and $ui.Sample.audio_frames_submitted -gt 4800 -and $ui.Sample.playhead -gt $marked.Sample.start+2400} 'cold mark submits audio and advances selection playhead' 5
+  if($playing.Sample.playback_scope -ne 0 -or $playing.Sample.playback_start -ne $marked.Sample.start -or $playing.Sample.playback_end -ne $marked.Sample.end){throw 'Marked playback is not the selected region'}
   Capture 'marked-current-song'
+  Click 'sample-stop'
   Click 'sample-return';Click 'play'
   $null=Wait-Ui {param($ui)$ui.SongPosition -gt ($marked.Sample.start/48000.)+.3 -and !$ui.SongPaused} 'song resumes after editor return'
   Send-Input 'KEY CTRL 1';Send-Input 'KEY M 1';Send-Input 'KEY M 0';Send-Input 'KEY CTRL 0'
   $null=Wait-Ui {param($ui)!$ui.Sample.mark_pending -and $ui.Sample.capture -eq $fixture.mark_capture_id -and $ui.Sample.start -gt $marked.Sample.start+4800} 'warm Ctrl+M marks new position'
-  Write-Host "PASS cold/warm Ctrl+M transfers current song and captured position across libraries, preserving prior draft. Evidence: $state"
+  Click 'sample-play'
+  $null=Wait-Ui {param($ui)$ui.Sample.playback_state -eq 'Playing' -and $ui.Sample.audio_frames_submitted -gt 4800 -and $ui.Sample.playhead -gt $ui.Sample.start+2400} 'warm mark submits audio and advances selection playhead' 5
+  Write-Host "PASS cold/warm Ctrl+M and editor playback across libraries at the captured position, preserving prior draft. Evidence: $state"
   return
  }
  $null=Wait-Ui {param($ui)$ui.Sample.open} 'sampling workspace'
