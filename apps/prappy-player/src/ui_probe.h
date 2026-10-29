@@ -13,6 +13,7 @@
 struct UiProbe {
     bool enabled = false;
     bool pollCommands = true;
+    bool doubleClick = false;
     SDL_WindowID windowID = 0;
     bool scripted = false, mouseDown = false, rightDown = false;
     ImVec2 mousePosition{};
@@ -49,6 +50,7 @@ struct UiProbe {
                     else if (action == "DOWN") mouseDown = true;
                     else if (action == "UP") mouseDown = false;
                     else if (action == "DOUBLE_CLICK") {
+                        doubleClick = true;
                         SDL_Event event{}; event.type = SDL_EVENT_MOUSE_BUTTON_DOWN; event.button.windowID = windowID;
                         event.button.button = SDL_BUTTON_LEFT; event.button.clicks = 2; event.button.down = true;
                         event.button.x = mousePosition.x; event.button.y = mousePosition.y; SDL_PushEvent(&event);
@@ -63,7 +65,7 @@ struct UiProbe {
                         const auto key = name == "HOME" ? ImGuiKey_Home : name == "DOWN" ? ImGuiKey_DownArrow : name == "ENTER" ? ImGuiKey_Enter :
                             name == "ESC" ? ImGuiKey_Escape : name == "LEFT" ? ImGuiKey_LeftArrow : name == "RIGHT" ? ImGuiKey_RightArrow :
                             name == "END" ? ImGuiKey_End : name == "CTRL" ? ImGuiMod_Ctrl : name == "SHIFT" ? ImGuiMod_Shift :
-                            name == "A" ? ImGuiKey_A : name == "M" ? ImGuiKey_M : name == "T" ? ImGuiKey_T : ImGuiKey_None;
+                            name == "ALT" ? ImGuiMod_Alt : name == "E" ? ImGuiKey_E : name == "A" ? ImGuiKey_A : name == "M" ? ImGuiKey_M : name == "T" ? ImGuiKey_T : ImGuiKey_None;
                         if (valid && key != ImGuiKey_None) keys[key] = down != 0; else valid = false;
                     }
                     else if (action == "TEXT") valid = static_cast<bool>(command >> std::quoted(characters));
@@ -106,7 +108,7 @@ struct UiProbe {
             pendingCharacters.clear(); pendingWheel = 0;
         }
     }
-    void begin() { if (enabled) { controls.clear(); tooltip.clear(); scrollX = scrollY = scrollMaxY = 0; } }
+    void begin() { if (enabled) { if(doubleClick){auto& io=ImGui::GetIO();io.MouseClicked[0]=true;io.MouseDoubleClicked[0]=true;io.MouseClickedCount[0]=2;doubleClick=false;} controls.clear(); tooltip.clear(); scrollX = scrollY = scrollMaxY = 0; } }
     void observe(const char* name, bool activated) {
         if (!enabled || !ImGui::IsItemVisible()) return;
         if (activated) ++activations[name];

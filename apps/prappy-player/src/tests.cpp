@@ -7,6 +7,7 @@
 #include "text.h"
 #include "ui_schedule.h"
 #include "waveform_tests.h"
+#include "sample_library_tests.h"
 #include <SDL3/SDL.h>
 #include <cmath>
 #include <fstream>
@@ -87,6 +88,7 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
             "10 tracks \xc2\xb7 2 identical copies hidden \xc2\xb7 Checking duplicates: 4 / 10", "Status sections are not joined with middle dots.");
         const auto root = logPath.parent_path() / ("state-test-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
         fs::create_directories(root);
+        sampleLibraryTests(root,log);
         {
             // Public-domain test signal: 3072 stereo silent frames, 48 kHz/24-bit
             // FLAC generated with SoX, retaining STREAMINFO and its one audio frame.

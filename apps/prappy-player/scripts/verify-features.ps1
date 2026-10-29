@@ -201,8 +201,8 @@ function Capture([string]$name) {
     $layout=Read-Ui
     if (!$layout.Strip -and $layout.Controls.ContainsKey('footer')) {
         $footer=$layout.Controls['footer']; $play=$layout.Controls['play']
-        Require ([Math]::Abs(($layout.Height-$footer.Bottom)-$footer.Left) -le 1) "$name footer bottom and left margins match"
-        Require ($footer.Top-$play.Bottom -ge 3 -and $footer.Top-$play.Bottom -le 5) "$name footer sits tightly below transport"
+        Require ($footer.Top -lt $layout.Controls['seek'].Top) "$name status precedes waveform"
+        Require ([Math]::Abs(($layout.Height-$play.Bottom)-$layout.Controls['back'].Left) -le 2) "$name playback row has equal bottom and left margins"
         Require ($layout.Controls['seek'].Bottom -le $layout.Controls['transport-status'].Top -and
             $layout.Controls['transport-status'].Bottom -lt $play.Top) "$name waveform, status and transport do not overlap"
     }

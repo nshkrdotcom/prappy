@@ -10,6 +10,7 @@
 #include <cmath>
 #include <atomic>
 #include <algorithm>
+#include <map>
 namespace sampling {
 namespace {
 struct Internet {
@@ -39,13 +40,31 @@ void startWorkstationBackend() {
         throw std::runtime_error("Cannot start Workstation backend: Windows error "+std::to_string(GetLastError()));
     CloseHandle(process.hThread);CloseHandle(process.hProcess);
 }
+std::string cachedSourceHash(const fs::path& path,std::stop_token stop){
+    const auto stamp=[&]{
+        HANDLE handle=CreateFileW(path.c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,0,nullptr);
+        if(handle==INVALID_HANDLE_VALUE)throw std::runtime_error("Cannot inspect source identity.");
+        BY_HANDLE_FILE_INFORMATION info{};FILE_BASIC_INFO basic{};
+        const bool ok=GetFileInformationByHandle(handle,&info)&&GetFileInformationByHandleEx(handle,FileBasicInfo,&basic,sizeof(basic));CloseHandle(handle);
+        if(!ok)throw std::runtime_error("Cannot inspect source changes.");
+        return std::array<uint64_t,5>{info.dwVolumeSerialNumber,(static_cast<uint64_t>(info.nFileIndexHigh)<<32)|info.nFileIndexLow,
+            (static_cast<uint64_t>(info.nFileSizeHigh)<<32)|info.nFileSizeLow,static_cast<uint64_t>(basic.LastWriteTime.QuadPart),static_cast<uint64_t>(basic.ChangeTime.QuadPart)};
+    };
+    struct Entry{std::array<uint64_t,5> stamp;std::string hash;};
+    static std::mutex lock;static std::map<fs::path,Entry> cache;
+    const auto before=stamp();
+    {std::lock_guard guard(lock);const auto found=cache.find(path);if(found!=cache.end()&&found->second.stamp==before)return found->second.hash;}
+    const auto digest=fileHash(path,stop);if(stamp()!=before)throw std::runtime_error("Source changed while hashing. Retry opening it.");
+    {std::lock_guard guard(lock);if(cache.size()>=16)cache.erase(cache.begin());cache.insert_or_assign(path,Entry{before,digest});}
+    return digest;
+}
 }
 std::string uuid() {
     GUID id{}; if (FAILED(CoCreateGuid(&id))) throw std::runtime_error("Cannot generate command identity.");
     wchar_t buffer[40]{}; if(!StringFromGUID2(id,buffer,40))throw std::runtime_error("Cannot format command identity.");
     auto s=utf8(fs::path(buffer)); std::erase_if(s,[](char c){return c=='{' || c=='}' || c=='-';}); return s;
 }
-std::string fileHash(const fs::path& path) {
+std::string fileHash(const fs::path& path,std::stop_token stop) {
     BCRYPT_ALG_HANDLE algorithm=nullptr;
     if (BCryptOpenAlgorithmProvider(&algorithm,BCRYPT_SHA256_ALGORITHM,nullptr,0)<0) throw std::runtime_error("Cannot open SHA256.");
     const auto close=[](void* p){BCryptCloseAlgorithmProvider(p,0);};
@@ -56,6 +75,7 @@ std::string fileHash(const fs::path& path) {
     std::ifstream file(path,std::ios::binary); if (!file) throw std::runtime_error("Cannot read source for identity.");
     std::vector<char> buffer(65536);
     while (file.read(buffer.data(),buffer.size()) || file.gcount()) {
+        if(stop.stop_requested())throw std::runtime_error("Source hashing cancelled.");
         if (BCryptHashData(hash,reinterpret_cast<PUCHAR>(buffer.data()),static_cast<ULONG>(file.gcount()),0)<0) throw std::runtime_error("SHA256 failed.");
     }
     if (!file.eof()) throw std::runtime_error("Source read failed.");
@@ -68,7 +88,7 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
     Reply reply; reply.request=request;
     fs::path temporary;
     try {
-        if (request.tag=="hash") { reply.body={{"sha256",fileHash(fs::path(std::u8string(reinterpret_cast<const char8_t*>(request.path.data()),request.path.size())))}}; return reply; }
+        if (request.tag=="hash") { reply.body={{"sha256",cachedSourceHash(fs::path(std::u8string(reinterpret_cast<const char8_t*>(request.path.data()),request.path.size())),stop)}}; return reply; }
         auto base=wide(connection.url); URL_COMPONENTS url{};url.dwStructSize=sizeof(url);
         url.dwHostNameLength=static_cast<DWORD>(-1);url.dwUrlPathLength=static_cast<DWORD>(-1);
         if (!WinHttpCrackUrl(base.c_str(),0,0,&url)) throw std::runtime_error("Invalid backend URL.");
@@ -127,6 +147,7 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
             if(request.body.is_object() && request.body.contains("expected_sha256") && fileHash(temporary)!=request.body.at("expected_sha256").get<std::string>())throw std::runtime_error("Downloaded artifact hash differs.");
             if(!MoveFileExW(temporary.c_str(),request.download.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))throw std::runtime_error("Cannot publish downloaded audio.");reply.body={{"path",utf8(request.download)}};
         }
+        else if (status==202){reply.body=Json::parse(bytes.begin(),bytes.end());}
         else if (request.tag=="pcm" || request.tag=="audition") {
             const auto header=[&](const wchar_t* name){
                 std::array<wchar_t,256> value{};DWORD size=static_cast<DWORD>(sizeof(value));

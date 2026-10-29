@@ -1,6 +1,6 @@
 #Requires -Version 7.0
 param([Parameter(Mandatory)][string]$Manifest,[string]$BuildVariant='Release',
-    [switch]$StartupOnly,[switch]$WorkstationDefaults,[switch]$RecordingOnly,[switch]$MarkOnly)
+    [switch]$StartupOnly,[switch]$WorkstationDefaults,[switch]$RecordingOnly,[switch]$MarkOnly,[switch]$WorkflowOnly,[switch]$AudioLoopback)
 $ErrorActionPreference='Stop'
 $app=Split-Path $PSScriptRoot -Parent
 $fixture=Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json
@@ -9,11 +9,15 @@ New-Item -ItemType Directory -Force "$state/media" | Out-Null
 "directory=$state/media`nextensions=wav" | Set-Content "$state/player.ini"
 if(!$WorkstationDefaults){@{url=$fixture.url;token_file=$fixture.token_file;library=$fixture.library_id} | ConvertTo-Json | Set-Content "$state/sampling-connection.json"}
 $initialLibrary=if($WorkstationDefaults){''}else{$fixture.library_id}
-@{capture=$null;region=$null;name='UI sample';kind='unknown';fields=@{};edited_facets=@();pending=@();library=$initialLibrary;open=$true} | ConvertTo-Json -Depth 5 | Set-Content "$state/sample-draft.json"
-if($MarkOnly){
+$seed=@{workspaces=@{sources=@()};active_source=$null;commands=@();open=$true;browser_library=$initialLibrary;search='';facet='';facet_value='';tab=0;offset=0;gain=.7}
+if($MarkOnly -or $WorkflowOnly){
  Copy-Item -LiteralPath $fixture.mark_song -Destination "$state/media/current.wav"
- @{capture=$fixture.previous_capture;region=$null;name='Previous draft';kind='unknown';fields=@{};edited_facets=@();pending=@();library=$fixture.library_id;span=@{start=0;end=24000};open=$false} | ConvertTo-Json -Depth 30 | Set-Content "$state/sample-draft.json"
+ $ref=@{library_id=$fixture.library_id;capture_id=$fixture.previous_capture.id;timeline_id=$fixture.previous_capture.timeline_id}
+ $draft=@{id='previous-draft';value=@{start=0;end=24000;attributes=@{name='Previous draft';kind='unknown';fields=@{};edited_facets=@()}};region=$null;baseline=$null;saving=$null}
+ $seed.workspaces.sources=@(@{source=$ref;total=$fixture.previous_capture.timeline.frame_count;active='previous-draft';view=@{capture=$fixture.previous_capture;viewport_start=0;viewport_end=48000};drafts=@($draft)})
+ $seed.active_source=$ref;$seed.open=$false
 }
+$seed | ConvertTo-Json -Depth 60 | Set-Content "$state/sample-workspaces.json"
 Add-Type -AssemblyName System.Drawing
 Add-Type @'
 using System;
@@ -30,15 +34,17 @@ public static class SamplingWindow {
 [SamplingWindow]::SetThreadDpiAwarenessContext([IntPtr](-4))|Out-Null
 $script:sequence=0
 $process=$null
+$loopback=$null
 function Read-Ui {
  try {
   $stream=[IO.File]::Open("$state/ui-status.txt",[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
   $reader=[IO.StreamReader]::new($stream)
   try{$text=$reader.ReadToEnd()}finally{$reader.Dispose()}
   $lines=$text -split '\r?\n';if(!$lines[0].StartsWith('READY ')){return $null}
-  $ui=[pscustomobject]@{Ack=[uint64](($lines[0] -split ' ')[-1]);Controls=@{};Activations=@{};Sample=$null;SongPosition=0.;SongDuration=0.;SongPaused=([int](($lines[0] -split ' ')[7]) -ne 0)}
+  $ui=[pscustomobject]@{Ack=[uint64](($lines[0] -split ' ')[-1]);Controls=@{};Activations=@{};PlayerSelection=$null;Sample=$null;SongPosition=0.;SongDuration=0.;SongPaused=([int](($lines[0] -split ' ')[7]) -ne 0)}
   foreach($line in $lines){
-   if($line.StartsWith('SAMPLER ')){$ui.Sample=$line.Substring(8)|ConvertFrom-Json}
+   if($line.StartsWith('PLAYER_SELECTION ')){$ui.PlayerSelection=$line.Substring(17)|ConvertFrom-Json}
+   elseif($line.StartsWith('SAMPLER ')){$ui.Sample=$line.Substring(8)|ConvertFrom-Json}
    elseif($line.StartsWith('FEATURES ')){$feature=$line -split ' ';$ui.SongPosition=[double]::Parse($feature[5],[Globalization.CultureInfo]::InvariantCulture);$ui.SongDuration=[double]::Parse($feature[6],[Globalization.CultureInfo]::InvariantCulture)}
    elseif($line -match '^ACTIVATION "([^"]+)" ([0-9]+)$'){$ui.Activations[$matches[1]]=[uint64]$matches[2]}
    elseif($line -match '^CONTROL "([^"]+)" ([^ ]+) ([^ ]+) ([^ ]+) ([^ ]+) ([01]) ([01]) ([0-9]+)$'){
@@ -53,6 +59,7 @@ function Wait-Ui([scriptblock]$Condition,[string]$Description,[int]$TimeoutSecon
  while((Get-Date)-lt $until){$ui=Read-Ui;if($ui -and (& $Condition $ui)){return $ui};if($process.HasExited){throw "Player exited during $Description"};Start-Sleep -Milliseconds 20}
  throw "Timed out: $Description. State: $((Read-Ui).Sample | ConvertTo-Json -Compress -Depth 6)"
 }
+function Get-Ui { return (Wait-Ui {param($ui)$true} 'UI snapshot') }
 function Send-Input([string]$Action){
  $script:sequence++
  [IO.File]::WriteAllText("$state/ui-command.txt","$script:sequence $Action`n",[Text.UTF8Encoding]::new($false))
@@ -84,13 +91,82 @@ function Require-CleanReport {
 }
 try{
  $process=Start-Process "$app/build/$BuildVariant/PrappyPlayer.exe" -WindowStyle Hidden -PassThru -ArgumentList '--window-test',('"'+$state+'"')
+ if($WorkflowOnly){
+  Click 'list';Click 'library-0'
+  $before=Wait-Ui {param($ui)$ui.SongPosition -gt .25 -and !$ui.SongPaused} 'playing song'
+  $null=Wait-Ui {param($ui)$ui.Sample.preparation -match 'ready'} 'background source preparation'
+  Send-Input 'KEY CTRL 1';Send-Input 'KEY E 1';Send-Input 'KEY E 0';Send-Input 'KEY CTRL 0'
+  $null=Wait-Ui {param($ui)$ui.PlayerSelection.active} 'Ctrl+E enters selection mode'
+  Send-Input 'KEY ESC 1';Send-Input 'KEY ESC 0'
+  $null=Wait-Ui {param($ui)!$ui.PlayerSelection.active} 'Escape cancels selection mode'
+  $plot=(Get-Ui).Controls['seek']
+  $x={param($fraction)($plot.Left+($plot.Right-$plot.Left)*$fraction).ToString([Globalization.CultureInfo]::InvariantCulture)}
+  $y=$plot.Y.ToString([Globalization.CultureInfo]::InvariantCulture)
+  Send-Input ('MOVE '+(& $x .1)+' '+$y);Send-Input 'RIGHT_DOWN';Send-Input 'RIGHT_UP'
+  Click 'waveform-select'
+  $plot=(Get-Ui).Controls['seek'];$y=$plot.Y.ToString([Globalization.CultureInfo]::InvariantCulture)
+  Send-Input ('MOVE '+(& $x .7)+' '+$y);Send-Input 'DOWN';Send-Input ('MOVE '+(& $x .4)+' '+$y);Send-Input 'UP'
+  $song=Get-Ui
+  if($song.SongPaused -or $song.SongPosition -gt 6){throw 'Selection gesture sought or paused the song'}
+  # Edge adjustment, Escape rollback during a drag, and whole-range move.
+  $range=$song.PlayerSelection
+  Send-Input ('MOVE '+(& $x ($range.start/$song.SongDuration))+' '+$y);Send-Input 'DOWN';Send-Input ('MOVE '+(& $x .45)+' '+$y);Send-Input 'UP'
+  $edge=Get-Ui
+  if($edge.PlayerSelection.start -le $range.start -or [Math]::Abs($edge.PlayerSelection.end-$range.end)*48000 -gt 1){throw 'In handle did not adjust independently'}
+  Send-Input ('MOVE '+(& $x ($edge.PlayerSelection.end/$song.SongDuration))+' '+$y);Send-Input 'DOWN';Send-Input ('MOVE '+(& $x .8)+' '+$y)
+  Send-Input 'KEY ESC 1';Send-Input 'KEY ESC 0';Send-Input 'UP'
+  $rolled=Get-Ui
+  if(!$rolled.PlayerSelection.active -or [Math]::Abs($rolled.PlayerSelection.end-$edge.PlayerSelection.end)*48000 -gt 1){throw ('Escape rollback: before='+($edge.PlayerSelection|ConvertTo-Json -Compress)+' after='+($rolled.PlayerSelection|ConvertTo-Json -Compress))}
+  Send-Input ('MOVE '+(& $x .55)+' '+$y);Send-Input 'DOWN';Send-Input ('MOVE '+(& $x .6)+' '+$y);Send-Input 'UP'
+  $song=Get-Ui
+  if([Math]::Abs(($song.PlayerSelection.end-$song.PlayerSelection.start)-($edge.PlayerSelection.end-$edge.PlayerSelection.start)) -gt (1./48000)){throw ('Moving a range changed its duration: before='+($edge.PlayerSelection|ConvertTo-Json -Compress)+' after='+($song.PlayerSelection|ConvertTo-Json -Compress))}
+  Capture 'player-selection'
+  Click 'waveform-confirm'
+  $marked=Wait-Ui {param($ui)$ui.Sample.open -and !$ui.Sample.mark_pending -and $ui.Sample.capture -eq $fixture.mark_capture_id -and $ui.Sample.selection_defined} 'mouse range handoff'
+  if($marked.Sample.start -ne [Math]::Round(48000*$song.PlayerSelection.start) -or $marked.Sample.end -ne [Math]::Round(48000*$song.PlayerSelection.end)){throw 'Handed-off range differs from player drag'}
+  if($AudioLoopback){
+   Add-Type -Path "$PSScriptRoot/AudioLoopback.cs"
+   $loopback=[PrappyAudioLoopback]::new([double]$fixture.tone_hz)
+   Start-Sleep -Milliseconds 200
+   $baseline=$loopback.ToneAmplitude;$loopback.Clear()
+  }
+  Click 'sample-play'
+  $null=Wait-Ui {param($ui)$ui.Sample.audio_frames_submitted -gt 4800 -and $ui.Sample.playhead -gt $ui.Sample.start+2400} 'selected audio plays' 5
+  if($AudioLoopback){
+   Start-Sleep -Milliseconds 700
+   # Endpoint/session volume belongs to the user; test coherent tone presence relative to RMS, not loudness.
+   $level=$loopback.ToneAmplitude
+   if($loopback.Frames -lt 4800 -or $level -lt [Math]::Max(1e-8,$baseline*3) -or $loopback.Rms -eq 0 -or $level/$loopback.Rms -lt .75){throw "Expected selected tone absent from WASAPI output: baseline=$baseline playing=$level rms=$($loopback.Rms) frames=$($loopback.Frames)"}
+   Write-Host "PASS WASAPI loopback selected $($fixture.tone_hz) Hz tone: baseline=$baseline output=$level frames=$($loopback.Frames)"
+   $loopback.Dispose();$loopback=$null
+  }
+  Click 'sample-stop';Click 'sample-save'
+  $saved=Wait-Ui {param($ui)$ui.Sample.region -and $ui.Sample.pending -eq 0} 'canonical region saved'
+  Click 'sample-new'
+  $two=Wait-Ui {param($ui)$ui.Sample.draft_count -eq 2 -and !$ui.Sample.region} 'second independent draft'
+  $second=$two.Sample.active_draft
+  Click 'sample-workspaces';Click ('sample-workspace-'+$fixture.previous_capture.id)
+  $null=Wait-Ui {param($ui)$ui.Sample.capture -eq $fixture.previous_capture.id -and $ui.Sample.draft_count -eq 1} 'previous song draft retained'
+  Click 'sample-workspaces';Click ('sample-workspace-'+$fixture.mark_capture_id)
+  $null=Wait-Ui {param($ui)$ui.Sample.active_draft -eq $second -and $ui.Sample.draft_count -eq 2} 'same song restores both samples without duplicate source'
+  Capture 'source-samples'
+  $null=$process.CloseMainWindow();if(!$process.WaitForExit(10000)){throw 'Player did not close'}
+  Remove-Item -LiteralPath "$state/ui-status.txt","$state/ui-command.txt"
+  $script:sequence=0
+  $process=Start-Process "$app/build/$BuildVariant/PrappyPlayer.exe" -WindowStyle Hidden -PassThru -ArgumentList '--window-test',('"'+$state+'"')
+  $null=Wait-Ui {param($ui)$ui.Sample.open -and $ui.Sample.active_draft -eq $second -and $ui.Sample.draft_count -eq 2 -and $ui.Sample.workspace_count -eq 2} 'two source workspaces and many drafts survive restart'
+  Write-Host "PASS mouse context menu, reverse drag without seek, exact editor handoff/play/save, many samples, canonical source switching and restart. Evidence: $state"
+  return
+ }
  if($MarkOnly){
   Click 'list'
   Click 'library-0'
   $before=Wait-Ui {param($ui)$ui.SongPosition -gt .25 -and !$ui.SongPaused} 'song playing in player mode'
   Send-Input 'KEY CTRL 1';Send-Input 'KEY M 1';Send-Input 'KEY M 0';Send-Input 'KEY CTRL 0'
   $marked=Wait-Ui {param($ui)$ui.Sample.open -and !$ui.Sample.mark_pending -and $ui.Sample.capture -eq $fixture.mark_capture_id} 'cold Ctrl+M loads current song across libraries'
-  if(!$marked.SongPaused -or $marked.Sample.start -lt [Math]::Floor($before.SongPosition*48000)-100 -or $marked.Sample.start -gt [Math]::Ceiling(($before.SongPosition+1)*48000)){throw 'Mark did not capture playing song position'}
+  if(!$marked.SongPaused -or $marked.Sample.playhead -lt [Math]::Floor($before.SongPosition*48000)-100 -or $marked.Sample.playhead -gt [Math]::Ceiling(($before.SongPosition+1)*48000)){throw 'Mark did not capture playing song position'}
+  Click 'sample-new'
+  $marked=Wait-Ui {param($ui)$ui.Sample.selection_defined} 'new sample selected'
   Click 'sample-play'
   $playing=Wait-Ui {param($ui)$ui.Sample.playback_state -eq 'Playing' -and $ui.Sample.audio_frames_submitted -gt 4800 -and $ui.Sample.playhead -gt $marked.Sample.start+2400} 'cold mark submits audio and advances selection playhead' 5
   if($playing.Sample.playback_scope -ne 0 -or $playing.Sample.playback_start -ne $marked.Sample.start -or $playing.Sample.playback_end -ne $marked.Sample.end){throw 'Marked playback is not the selected region'}
@@ -99,7 +175,7 @@ try{
   Click 'sample-return';Click 'play'
   $null=Wait-Ui {param($ui)$ui.SongPosition -gt ($marked.Sample.start/48000.)+.3 -and !$ui.SongPaused} 'song resumes after editor return'
   Send-Input 'KEY CTRL 1';Send-Input 'KEY M 1';Send-Input 'KEY M 0';Send-Input 'KEY CTRL 0'
-  $null=Wait-Ui {param($ui)!$ui.Sample.mark_pending -and $ui.Sample.capture -eq $fixture.mark_capture_id -and $ui.Sample.start -gt $marked.Sample.start+4800} 'warm Ctrl+M marks new position'
+  $null=Wait-Ui {param($ui)!$ui.Sample.mark_pending -and $ui.Sample.capture -eq $fixture.mark_capture_id -and $ui.Sample.playhead -gt $marked.Sample.start+4800} 'warm Ctrl+M marks new position'
   Click 'sample-play'
   $null=Wait-Ui {param($ui)$ui.Sample.playback_state -eq 'Playing' -and $ui.Sample.audio_frames_submitted -gt 4800 -and $ui.Sample.playhead -gt $ui.Sample.start+2400} 'warm mark submits audio and advances selection playhead' 5
   Write-Host "PASS cold/warm Ctrl+M and editor playback across libraries at the captured position, preserving prior draft. Evidence: $state"
@@ -112,6 +188,7 @@ try{
   return
  }
  Click 'sample-item-0'
+ Click 'sample-new'
  $selected=Wait-Ui {param($ui)$ui.Sample.waveform_exact_pcm} 'canonical PCM detail'
  if($RecordingOnly){
   Click 'sample-scope-recording';Click 'sample-loop';Click 'sample-follow';Click 'sample-play'
@@ -124,7 +201,7 @@ try{
   $null=Wait-Ui {param($ui)$ui.Sample.playback_state -eq 'Playing'} 'recording restart'
   Send-Input 'NATIVE_KEY SPACE 1';Send-Input 'NATIVE_KEY SPACE 0'
   $paused=Wait-Ui {param($ui)$ui.Sample.playback_state -eq 'Paused'} 'Space pauses editor transport'
-  $plot=(Read-Ui).Controls['sample-waveform-detail']
+  $plot=(Get-Ui).Controls['sample-waveform-detail']
   Send-Input ('MOVE '+($plot.Left+($plot.Right-$plot.Left)*.8).ToString([Globalization.CultureInfo]::InvariantCulture)+' '+$plot.Y.ToString([Globalization.CultureInfo]::InvariantCulture))
   Send-Input 'DOWN';Send-Input 'UP'
   $null=Wait-Ui {param($ui)$ui.Sample.playback_state -eq 'Paused' -and $ui.Sample.playhead -gt $paused.Sample.playhead+48000} 'waveform click seeks paused recording'
@@ -138,9 +215,9 @@ try{
  $start=$selected.Sample.start
  Click 'sample-amplitude-fit'
  $initialFit=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 1 -and $ui.Sample.amplitude_gain -gt 1} 'visible amplitude fit'
- $overview=(Read-Ui).Controls['sample-waveform-overview']
+ $overview=(Get-Ui).Controls['sample-waveform-overview']
  Send-Input ('MOVE '+($overview.Left+($overview.Right-$overview.Left)*.8).ToString([Globalization.CultureInfo]::InvariantCulture)+' '+$overview.Y.ToString([Globalization.CultureInfo]::InvariantCulture))
- Send-Input 'DOWN';Send-Input 'UP';Send-Input 'DOWN';Send-Input 'UP'
+ Send-Input 'DOUBLE_CLICK'
  $null=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 1 -and $ui.Sample.amplitude_gain -gt $initialFit.Sample.amplitude_gain*1.1} 'fit follows quieter visible passage'
  $null=Wait-Ui {param($ui)$ui.Sample.waveform_exact_pcm -and $ui.Sample.pcm_start -le [Math]::Floor($ui.Sample.viewport_start) -and $ui.Sample.pcm_end -ge [Math]::Ceiling($ui.Sample.viewport_end)} 'fractional navigation retains exact PCM detail'
  Click 'sample-amplitude-actual'
@@ -153,7 +230,7 @@ try{
  Send-Input ('MOVE '+$ruler.X.ToString([Globalization.CultureInfo]::InvariantCulture)+' '+($ruler.Y-40).ToString([Globalization.CultureInfo]::InvariantCulture))
  Send-Input 'UP'
  $null=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 2 -and $ui.Sample.amplitude_gain -gt 1} 'manual amplitude drag'
- Send-Input 'DOWN';Send-Input 'UP';Send-Input 'DOWN';Send-Input 'UP'
+ Send-Input 'DOUBLE_CLICK'
  $null=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 0 -and $ui.Sample.amplitude_gain -eq 1} 'ruler double-click resets actual scale'
  Click 'sample-amplitude-fit-now'
  $amplitude=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 2 -and $ui.Sample.amplitude_gain -gt 1} 'one-shot visible fit'
@@ -204,7 +281,10 @@ try{
  $null=Wait-Ui {param($ui)$ui.Sample.notice.StartsWith('Exported: ')} 'verified export'
  $null=$process.CloseMainWindow();if(!$process.WaitForExit(10000)){throw 'Player did not close'}
  Require-CleanReport
- $draft=Get-Content "$state/sample-draft.json" -Raw | ConvertFrom-Json
+ $store=Get-Content "$state/sample-workspaces.json" -Raw | ConvertFrom-Json
+ $ws=@($store.workspaces.sources | Where-Object {$_.source.capture_id -eq $store.active_source.capture_id})[0]
+ $local=@($ws.drafts | Where-Object {$_.id -eq $ws.active})[0]
+ $draft=[pscustomobject]@{region=$local.region;span=@{start=$local.value.start};amplitude_mode=$ws.view.amplitude_mode;amplitude_gain=$ws.view.amplitude_gain;gain=$store.gain;transport_loop=$ws.view.loop;transport_scope=$ws.view.scope;transport_follow=$ws.view.follow}
  if($draft.region.id -ne $regionId -or $draft.span.start -ne $start+1){throw 'Saved draft mismatch'}
  if($draft.amplitude_mode -ne 2 -or [Math]::Abs($draft.amplitude_gain-$amplitude.Sample.amplitude_gain) -gt .000001 -or [Math]::Abs($draft.gain-.7) -gt .000001){throw 'Amplitude persistence or independent audio gain failed'}
  if(!$draft.transport_loop -or $draft.transport_scope -ne 0 -or $draft.transport_follow){throw 'Editor transport preferences were not saved'}
@@ -216,6 +296,7 @@ try{
  $null=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 2 -and [Math]::Abs($ui.Sample.amplitude_gain-$amplitude.Sample.amplitude_gain) -lt .000001} 'amplitude restored'
  Write-Host "PASS sampling UI: browse, PCM, exact nudge, undo/redo, save, audition, background analysis, export and reopen. Evidence: $state"
 }finally{
+ if($loopback){$loopback.Dispose()}
  if($process -and !$process.HasExited){$null=$process.CloseMainWindow();if(!$process.WaitForExit(10000)){throw "Test player did not close: $($process.Id)"}}
  if($process -and $process.HasExited){Require-CleanReport}
 }

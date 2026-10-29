@@ -13,6 +13,7 @@
 #include "directory_ui.h"
 #include "presentation.h"
 #include "sample_workspace.h"
+#include "player_sample_ui.h"
 #include "sample_tests.h"
 #include "implot.h"
 #include <windowsx.h>
@@ -353,6 +354,7 @@ int runPlayer(HINSTANCE instance) {
         WaveformView waveformImage(renderer);
         text::Painter textPainter(renderer); text::active = &textPainter;
         sampling::Workspace sampleWorkspace(stateDirectory,notify);
+        PlayerSampleSelection waveformSelection;
         platform = ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
         graphics = ImGui_ImplSDLRenderer3_Init(renderer);
         if (!platform || !graphics) throw std::runtime_error("Cannot initialize UI renderer.");
@@ -435,7 +437,7 @@ int runPlayer(HINSTANCE instance) {
         };
         const auto moreMenu = [&] {
             if (ImGui::BeginPopup("Options")) {
-                if (menuItem("Sampling workspace (Ctrl+M)", "sampling")) { sampleWorkspace.open=true; ImGui::CloseCurrentPopup(); }
+                if (menuItem("Open current song in sample editor (Ctrl+M)", "sampling",audio.loaded)) { sampleWorkspace.mark(audio); ImGui::CloseCurrentPopup(); }
                 if (ImGui::Checkbox("Always on top", &preferences.topmost)) {
                     SDL_SetWindowAlwaysOnTop(window, preferences.topmost); ++preferenceRevision;
                 }
@@ -632,7 +634,16 @@ int runPlayer(HINSTANCE instance) {
             ImGui::NewFrame();
             uiProbe.begin();
             nextControls.clear();
-            if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_M, ImGuiInputFlags_RouteGlobal)) sampleWorkspace.mark(audio);
+            waveformSelection.sync(utf8(audio.current),audio.loadedSerial);
+            if (!ImGui::GetIO().WantTextInput&&ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_M, ImGuiInputFlags_RouteGlobal)) sampleWorkspace.mark(audio);
+            if(!sampleWorkspace.active()&&audio.loaded&&!ImGui::GetIO().WantTextInput){
+                if(ImGui::Shortcut(ImGuiMod_Ctrl|ImGuiKey_E,ImGuiInputFlags_RouteGlobal)){waveformSelection.begin(audio.displayPosition(),audio.duration);if(preferences.strip)setStrip(false);}
+                if(ImGui::Shortcut(ImGuiMod_Ctrl|ImGuiMod_Alt|ImGuiKey_M,ImGuiInputFlags_RouteGlobal))sampleWorkspace.mark(audio,{},sampling::OpenSource::Samples);
+                if(waveformSelection.active&&!ImGui::GetIO().WantTextInput){
+                    if(ImGui::Shortcut(ImGuiKey_Escape,ImGuiInputFlags_RouteGlobal))waveformSelection.cancel();
+                    if(ImGui::Shortcut(ImGuiKey_Enter,ImGuiInputFlags_RouteGlobal)){sampleWorkspace.mark(audio,sampling::SecondsSpan{waveformSelection.start,waveformSelection.end});waveformSelection.active=false;}
+                }
+            }
             if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_M, ImGuiInputFlags_RouteGlobal)) setStrip(!preferences.strip);
             if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_T, ImGuiInputFlags_RouteGlobal)) {
                 preferences.topmost = !preferences.topmost; ++preferenceRevision; SDL_SetWindowAlwaysOnTop(window, preferences.topmost);
@@ -640,6 +651,15 @@ int runPlayer(HINSTANCE instance) {
             int width, height; SDL_GetWindowSize(window, &width, &height);
             ImGui::SetNextWindowPos({0, 0}); ImGui::SetNextWindowSize({static_cast<float>(width), static_cast<float>(height)});
             ImGui::Begin("Player", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+            const auto drawPlayerWaveform=[&](ImVec2 size){
+                double seek=audio.displayPosition();
+                if(waveformSeek(waveformImage,waveformId==currentAnalysisId?waveform:nullptr,seek,audio.duration,size,!waveformSelection.active))audio.seek(seek);
+                const auto min=ImGui::GetItemRectMin(),max=ImGui::GetItemRectMax();uiProbe.observe("seek",ImGui::IsItemActivated());rememberControl();
+                waveformSelection.draw(min,max,audio.displayPosition(),audio.duration,preferences.strip,
+                    [&](std::optional<sampling::SecondsSpan> span,sampling::OpenSource action){sampleWorkspace.mark(audio,span,action);waveformSelection.active=false;},
+                    [&](const char* id,bool hit){uiProbe.observe(id,hit);rememberControl();});
+                if(preferences.strip&&waveformSelection.active)setStrip(false);
+            };
             if (preferences.strip) {
                 transportGrip.reset();
                 transportResetRequested = false;
@@ -658,10 +678,8 @@ int runPlayer(HINSTANCE instance) {
                 if (ImGui::BeginPopupContextItem("strip-track")) { if (!contextPath.empty()) pathMenu(contextPath); ImGui::EndPopup(); }
                 moreMenu();
                 ImGui::SetCursorPos({10, 37});
-                double seek = audio.displayPosition();
                 ImGui::BeginDisabled(!audio.loaded || audio.duration <= 0);
-                if (waveformSeek(waveformImage, waveformId == currentAnalysisId ? waveform : nullptr, seek, audio.duration, {static_cast<float>(width) - 20, 26})) audio.seek(seek);
-                uiProbe.observe("seek", ImGui::IsItemActivated()); rememberControl(); ImGui::EndDisabled();
+                drawPlayerWaveform({static_cast<float>(width)-20,26});ImGui::EndDisabled();
                 ImGui::SetCursorPos({10, 69}); peakMeter(displayedPeak, {static_cast<float>(width) - 20, 4});
                 tooltip("Decoded sample peak before volume/gain; not a true-peak meter");
             } else {
@@ -924,7 +942,14 @@ int runPlayer(HINSTANCE instance) {
             auto draw = ImGui::GetWindowDrawList();
             draw->AddRectFilled({0, transportY}, {static_cast<float>(width), static_cast<float>(height)}, IM_COL32(49, 53, 56, 255));
             ImGui::SetCursorPos({u(8), transportY + u(2)});
-            filenameText(audio.current.empty() ? "Choose a track from List" : library.pathLabel(audio.current));
+            const auto message = !historyFile.notice.empty() ? historyFile.notice : (!playback.notice.empty() ? playback.notice :
+                (!audio.error.empty() ? audio.error : (scan.running() ? statusText(library.notice, scan.status()) : library.notice)));
+            const auto displayMessage = statusText(message, playback.folder.empty() ? "" : "Folder: " + library.pathLabel(playback.folder));
+            if(!displayMessage.empty()){
+                ImGui::PushStyleColor(ImGuiCol_Text,audio.error.empty()?ImVec4(.68f,.72f,.72f,1):ImVec4(1,.63f,.5f,1));
+                filenameText(displayMessage,static_cast<float>(width)*.45f);ImGui::PopStyleColor();tooltip(displayMessage);uiProbe.observe("footer",false);ImGui::SameLine();
+            }
+            filenameText(audio.current.empty() ? "Choose a track from List" : library.pathLabel(audio.current),std::max(10.f,static_cast<float>(width)-ImGui::GetCursorPosX()-u(8)));
             uiProbe.observe("audio-info", false);
             if (!audio.current.empty()) rememberControl();
             if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) contextPath = audio.current;
@@ -948,16 +973,13 @@ int runPlayer(HINSTANCE instance) {
                 } else details += "\nStereo analysis pending";
             }
             tooltip(details);
-            double seek = audio.displayPosition();
-            const float footerY = static_cast<float>(height) - std::round(uiStyle.WindowPadding.x) - ImGui::GetTextLineHeight();
             constexpr float buttonHeight = 34, arrowWidth = 46, playWidth = 80, repeatWidth = 34, refreshWidth = 92;
-            const float waveformHeight = footerY - buttonHeight - ImGui::GetTextLineHeight() -
-                uiStyle.ItemSpacing.y * 3 - ImGui::GetCursorPosY();
+            const float transportRowY=static_cast<float>(height)-std::round(uiStyle.WindowPadding.x)-buttonHeight;
+            const float selectionHeight=waveformSelection.active?ImGui::GetTextLineHeight()*2+ImGui::GetFrameHeight()+uiStyle.ItemSpacing.y*3:ImGui::GetFrameHeight()+uiStyle.ItemSpacing.y;
+            const float waveformHeight=transportRowY-ImGui::GetCursorPosY()-selectionHeight-ImGui::GetTextLineHeight()-uiStyle.ItemSpacing.y*2;
             ImGui::BeginDisabled(!audio.loaded || audio.duration <= 0);
-            if (waveformSeek(waveformImage, waveformId == currentAnalysisId ? waveform : nullptr, seek, audio.duration,
-                {static_cast<float>(width) - u(16), waveformHeight})) audio.seek(seek);
-            uiProbe.observe("seek", ImGui::IsItemActivated());
-            rememberControl();
+            drawPlayerWaveform({static_cast<float>(width)-u(16),std::max(8.f,waveformHeight)});
+            if(!waveformSelection.active){const bool edit=ImGui::Button("Edit samples (Ctrl+M)");uiProbe.observe("edit-samples",edit);rememberControl();if(edit)sampleWorkspace.mark(audio);if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",sampleWorkspace.preparationStatus().c_str());}
             ImGui::EndDisabled();
             tooltip(waveform ? "Stereo waveform scaled to the track peak. Drag to seek; focus and use Left/Right (5s), Home or End." : "Waveform analysis pending. Drag to seek.");
             ImGui::TextDisabled("%s / %s", timeText(audio.displayPosition()).c_str(), timeText(audio.duration).c_str());
@@ -965,7 +987,6 @@ int runPlayer(HINSTANCE instance) {
             uiProbe.observe("transport-status", false);
             ImGui::SameLine(); peakMeter(displayedPeak, {std::max(30.0f, static_cast<float>(width) - ImGui::GetCursorPosX() - 12), 6}, ImGui::GetTextLineHeight());
             uiProbe.observe("peak-meter", false); tooltip("Decoded sample peak before volume/gain; not a true-peak meter");
-            const float transportRowY = std::round(ImGui::GetCursorPosY());
             const float transportLeft = std::round(uiStyle.WindowPadding.x);
             const float transportRight = static_cast<float>(width) - transportLeft;
             const float playX = transportLeft + arrowWidth + gap, nextX = playX + playWidth + gap;
@@ -1022,13 +1043,6 @@ int runPlayer(HINSTANCE instance) {
             rememberControl();
             ImGui::EndDisabled();
             tooltip("Refresh the catalog. Hold Shift to reverify duplicate contents and rebuild audio analysis.");
-            ImGui::SetCursorPos({transportLeft, footerY});
-            ImGui::PushStyleColor(ImGuiCol_Text, audio.error.empty() ? ImVec4(.68f, .72f, .72f, 1) : ImVec4(1, .63f, .5f, 1));
-            const auto message = !historyFile.notice.empty() ? historyFile.notice : (!playback.notice.empty() ? playback.notice :
-                (!audio.error.empty() ? audio.error : (scan.running() ? statusText(library.notice, scan.status()) : library.notice)));
-            const auto displayMessage = statusText(message, playback.folder.empty() ? "" : "Folder: " + library.pathLabel(playback.folder));
-            ImGui::TextUnformatted(displayMessage.c_str()); tooltip(displayMessage); ImGui::PopStyleColor();
-            uiProbe.observe("footer", false);
             draw->AddRect({0, 0}, {static_cast<float>(width - 1), static_cast<float>(height - 1)}, IM_COL32(90, 99, 99, 255));
             }
             ImGui::End();
@@ -1096,6 +1110,7 @@ int runPlayer(HINSTANCE instance) {
                 uiProbe.telemetry += "\nTEXT " + std::to_string(textStats.shaped) + " " + std::to_string(textStats.rasterized) + " " + std::to_string(textStats.bytes);
                 uiProbe.telemetry += "\nPLAYBACK_ERROR " + (audio.error.empty() ? playback.notice : audio.error);
                 uiProbe.telemetry += "\nSAMPLER " + sampleWorkspace.diagnostics();
+                uiProbe.telemetry += "\nPLAYER_SELECTION " + sampling::Json{{"active",waveformSelection.active},{"start",waveformSelection.start},{"end",waveformSelection.end}}.dump();
                 std::ostringstream status;
                 status << "READY " << width << ' ' << height << ' ' << static_cast<int>(history.repeat) << ' '
                     << (history.current() ? history.current()->id : 0) << ' ' << history.playedCount << ' '

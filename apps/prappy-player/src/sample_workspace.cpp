@@ -22,7 +22,7 @@ std::string show(const Json& j){if(j.is_string())return j.get<std::string>();if(
 int timeLabel(double x,char* buffer,int size,void*){return std::snprintf(buffer,static_cast<size_t>(size),"%.4fs",x/48000.);}
 }
 Workspace::Workspace(fs::path d,std::function<void()> n):directory(std::move(d)),notify(std::move(n)){
-    tokenFile=utf8(fs::path(L"\\\\wsl.localhost\\ubuntu26-dev\\home\\home\\.config\\audioharvest\\server.token"));restore();
+    tokenFile=utf8(fs::path(L"\\\\wsl.localhost\\ubuntu26-dev\\home\\home\\.config\\audioharvest\\server.token"));try{restore();}catch(const std::exception& e){storageBlocked=true;storageError=e.what();}
 }
 Workspace::~Workspace(){try{persist();}catch(const std::exception& e){OutputDebugStringA(e.what());}}
 void Workspace::get(std::string tag,std::string path){if(client){Json context=tag=="sampleMetadata"?draftSnapshot():Json();client->submit({std::move(tag),"GET",std::move(path),context,generation,{}});}}
@@ -44,17 +44,25 @@ void Workspace::browse(){
     get("collections",endpoint(library)+"/collections");
 }
 void Workspace::openCapture(Json item,std::optional<Span> selected){
-    stopTransport();++generation;++waveformRevision;overviewBins.clear();envelopePcm=false;envelope.clear();displayEnvelope.clear();projectedGain=-1;analysisJob.clear();capture=std::move(item);pcm.clear();pcmStart=pcmEnd=0;beats.clear();onsets.clear();anchors.clear();overview=nullptr;timing=nullptr;gridId.clear();gridRevision=0;
+    stash();stopTransport();++generation;++waveformRevision;overviewBins.clear();envelopePcm=false;envelope.clear();displayEnvelope.clear();projectedGain=-1;analysisJob.clear();
+    capture=std::move(item);sourceLibrary=library;activeDraft.clear();region=nullptr;selectionDefined=false;sourceRegions=Json::array();
+    pcm.clear();pcmStart=pcmEnd=0;beats.clear();onsets.clear();anchors.clear();overview=nullptr;timing=nullptr;gridId.clear();gridRevision=0;
     const Frame total=capture.at("timeline").at("frame_count").get<Frame>();
-    editor.reset(total,selected.value_or(Span{0,std::min<Frame>(total,Rate*4)}));
-    transport.range=transport.bounds(editor.span,total);transport.cursor=transport.range.start;
-    viewportStart=static_cast<double>(std::max<Frame>(0,editor.span.start-Rate));
-    viewportEnd=static_cast<double>(std::min<Frame>(total,editor.span.end+Rate));
-    fit=true;metadata=capture.value("metadata",Json::object());
-    metadataTarget.clear();metadataTargetRevision=1;
-    metadataRevision=0;metadataFields(metadata.value("effective",Json::object()));
-    if(region.is_null()){regionName=capture.at("recording").value("title","Sample")+" sample";kind="unknown";}
-    loadDetails();draftDirty=true;persistDue=std::chrono::steady_clock::now();
+    auto& ws=sampleLibrary.open(sourceRef(),total);const auto active=ws.active;const auto view=ws.view;
+    editor.reset(total,{0,std::min<Frame>(total,Rate*4)});metadata=capture.value("metadata",Json::object());metadataTarget.clear();metadataRevision=0;metadataTargetRevision=1;
+    metadataFields(metadata.value("effective",Json::object()));regionName=capture.at("recording").value("title","Sample")+" sample";kind="unknown";
+    if(!active.empty())activateDraft(active);
+    transport.scope=static_cast<PlaybackScope>(view.value("scope",0));transport.loop=view.value("loop",true);transport.follow=view.value("follow",false);
+    snapMode=view.value("snap",0);amplitude.mode=static_cast<AmplitudeMode>(view.value("amplitude_mode",0));amplitude.gain=AmplitudeScale::bounded(view.value("amplitude_gain",1.));
+    viewportStart=view.value("viewport_start",0.);viewportEnd=view.value("viewport_end",static_cast<double>(std::min<Frame>(total,Rate*6)));
+    if(selected)newDraft(*selected);
+    transport.range=transport.bounds(editor.span,total);transport.cursor=transport.range.start;fit=true;
+    if(!preparation.match.is_null()&&preparation.match.at("library_id")==sourceLibrary&&preparation.match.at("capture").at("id")==capture.at("id")){
+        if(!preparation.pcm.empty()){pcm=preparation.pcm;pcmStart=preparation.pcmStart;pcmEnd=pcmStart+static_cast<Frame>(pcm.size()/2);++waveformRevision;}
+        if(!preparation.regions.is_null()){sourceRegions=preparation.regions.at("items");sourceRegionTotal=preparation.regions.at("total");}
+        // Overview processing goes through the same reply handler when fetched; PCM is the latency-critical cache.
+    }
+    loadDetails();fetchSourceRegions();draftDirty=true;persistDue=std::chrono::steady_clock::now();
 }
 void Workspace::loadDetails(bool refresh){
     if(capture.is_null())return;
@@ -84,38 +92,100 @@ Json Workspace::humanFacts(bool forSample)const{
 void Workspace::command(std::string operation,Json payload){
     if(!client||library.empty()){notice="Connect and select a library first.";return;}
     Json body={{"request_id",uuid()},{"operation",operation},{"payload",std::move(payload)}};
-    if(operation=="region.save")for(const auto& row:pending)if(row.at("library")==library && row.at("command").at("operation")==operation){notice="A sample save is pending. Retry it, or resolve its conflict before saving again.";return;}
-    pending.push_back({{"library",library},{"command",body},{"draft",draftSnapshot()}});
+    Json entry={{"library",library},{"command",body},{"draft",draftSnapshot()}};
+    if(operation=="region.save"){
+        if(activeDraft.empty())newDraft(editor.span);
+        stash();body=sampleLibrary.beginSave(sourceRef(),activeDraft,body);
+        entry={{"library",sourceLibrary},{"command",body},{"draft",draftSnapshot()},{"source",sourceRef().json()},{"draft_id",activeDraft}};
+    }
+    const auto duplicate=std::find_if(pending.begin(),pending.end(),[&](const auto& row){return row.at("command").at("request_id")==body.at("request_id");});
+    if(duplicate==pending.end())pending.push_back(entry);
     persist();
-    client->submit({"command","POST",endpoint(library)+"/commands",body,generation,{}});
+    client->submit({"command","POST",endpoint(entry.at("library"))+"/commands",body,generation,{}});
     notice="Saving command...";
 }
 Json Workspace::draftSnapshot()const{
     return {{"span",{editor.span.start,editor.span.end}},{"name",regionName},{"kind",kind},{"fields",fields},{"edited_facets",editedFacets},{"metadata_target",metadataTarget}};
 }
 void Workspace::discardConflicts(){
-    pending.erase(std::remove_if(pending.begin(),pending.end(),[&](const auto& row){return row.at("library")==library && row.value("conflict",false);}),pending.end());
+    pending.erase(std::remove_if(pending.begin(),pending.end(),[&](const auto& row){return row.at("library")==library&&row.value("conflict",false)&&(!row.contains("draft_id")||row.at("draft_id")==activeDraft);}),pending.end());
+}
+SourceRef Workspace::sourceRef()const{return {sourceLibrary,capture.at("id"),capture.at("timeline_id")};}
+DraftValue Workspace::draftValue()const{
+    return {editor.span,{{"name",regionName},{"kind",kind},{"fields",fields},{"edited_facets",editedFacets},
+        {"metadata",metadata},{"metadata_target",metadataTarget},{"metadata_target_revision",metadataTargetRevision},{"metadata_revision",metadataRevision}}};
+}
+void Workspace::stash(){
+    if(capture.is_null()||sourceLibrary.empty())return;
+    auto& ws=sampleLibrary.open(sourceRef(),editor.total);
+    if(!activeDraft.empty())sampleLibrary.edit(sourceRef(),activeDraft,draftValue());
+    ws.active=activeDraft;
+    ws.view={{"capture",capture},{"viewport_start",viewportStart},{"viewport_end",viewportEnd},{"snap",snapMode},
+        {"loop",transport.loop},{"scope",static_cast<int>(transport.scope)},{"follow",transport.follow},
+        {"amplitude_mode",static_cast<int>(amplitude.mode)},{"amplitude_gain",amplitude.gain}};
+}
+void Workspace::activateDraft(const std::string& id){
+    stopTransport();activeDraft=id;auto& ws=sampleLibrary.at(sourceRef());ws.active=id;
+    const auto& d=ws.drafts.at(id);const auto& a=d.value.attributes;
+    editor.reset(ws.total,d.value.span);editor.dirty=d.dirty();selectionDefined=true;
+    regionName=a.value("name",std::string("Sample"));kind=a.value("kind",std::string("unknown"));
+    fields=a.value("fields",Json::object());editedFacets=a.value("edited_facets",Json::array()).get<std::set<std::string>>();
+    metadata=a.value("metadata",Json::object());metadataTarget=a.value("metadata_target",std::string{});
+    metadataTargetRevision=a.value("metadata_target_revision",1);metadataRevision=a.value("metadata_revision",0);
+    region=d.region?Json{{"id",d.region->id},{"revision",d.region->revision},{"capture_id",sourceRef().capture},{"timeline_id",sourceRef().timeline},
+        {"name",regionName},{"kind",kind},{"span",{{"start_frame",d.value.span.start},{"end_frame",d.value.span.end}}}}:Json();
+    viewportStart=static_cast<double>(std::max<Frame>(0,editor.span.start-Rate));viewportEnd=static_cast<double>(std::min(editor.total,editor.span.end+Rate));
+    fit=true;transport.range=transport.bounds(editor.span,editor.total);transport.cursor=transport.range.start;loadDetails();draftDirty=true;
+    if(d.region&&!d.dirty()&&!d.saving)get("sampleMetadata",endpoint(sourceLibrary)+"/metadata/"+d.region->id+"?revision="+std::to_string(d.region->revision));
+}
+void Workspace::newDraft(Span span,bool variant){
+    stash();auto value=draftValue();value.span=span;
+    value.attributes["metadata_target"]="";value.attributes["metadata_revision"]=0;
+    const auto id=sampleLibrary.select(sourceRef(),value,uuid(),variant);activateDraft(id);
+    transport.scope=PlaybackScope::Selection;transport.loop=true;transport.range=span;transport.cursor=span.start;
+}
+void Workspace::fetchSourceRegions(size_t offset){
+    if(capture.is_null()||!client)return;sourceRegionOffset=offset;
+    get("sourceRegions",endpoint(sourceLibrary)+"/captures/"+capture.at("id").get<std::string>()+"/regions?timeline="+capture.at("timeline_id").get<std::string>()+"&limit=100&offset="+std::to_string(offset));
+}
+void Workspace::chooseRegion(const Json& item){
+    stash();DraftValue value{{item.at("span").at("start_frame"),item.at("span").at("end_frame")},
+        {{"name",item.at("name")},{"kind",item.at("kind")},{"fields",Json::object()},{"edited_facets",Json::array()},
+         {"metadata",item.value("metadata",Json::object())},{"metadata_target",item.at("id")},
+         {"metadata_target_revision",item.at("revision")},{"metadata_revision",item.value("metadata",Json::object()).value("revision",0)}}};
+    const auto id=sampleLibrary.selectSaved(sourceRef(),item,value,uuid());transport.scope=PlaybackScope::Selection;activateDraft(id);
+    if(fields.empty())metadataFields(metadata.value("effective",Json::object()));
 }
 void Workspace::persist(){
-    Json draft={{"capture",capture},{"region",region},{"span",{{"start",editor.span.start},{"end",editor.span.end}}},{"name",regionName},{"kind",kind},
-                {"fields",fields},{"edited_facets",editedFacets},{"pending",pending},{"library",library},{"open",open},{"metadata",metadata},{"metadata_target",metadataTarget},{"metadata_target_revision",metadataTargetRevision},{"metadata_revision",metadataRevision},
-                {"search",libraryQuery},{"facet",facet},{"facet_value",facetValue},{"tab",tab},{"offset",browseOffset},{"viewport_start",viewportStart},{"viewport_end",viewportEnd},{"snap",snapMode},{"transport_loop",transport.loop},{"transport_scope",static_cast<int>(transport.scope)},{"transport_follow",transport.follow},{"gain",previewGain},{"amplitude_mode",static_cast<int>(amplitude.mode)},{"amplitude_gain",amplitude.gain}};
-    stateio::write(directory/"sample-draft.json",draft.dump(2));draftDirty=false;persistedSpan=editor.span;
+    if(storageBlocked)return;
+    stash();
+    Json data={{"workspaces",sampleLibrary.json()},{"active_source",capture.is_null()?Json():sourceRef().json()},
+        {"open",open},{"commands",pending},{"browser_library",library},{"search",libraryQuery},{"facet",facet},{"facet_value",facetValue},
+        {"tab",tab},{"offset",browseOffset},{"gain",previewGain}};
+    stateio::write(directory/"sample-workspaces.json",data.dump(2));draftDirty=false;persistedSpan=editor.span;
 }
 void Workspace::restore(){
     try{auto config=Json::parse(stateio::read(directory/"sampling-connection.json"));serverUrl=config.at("url");tokenFile=config.at("token_file");library=config.value("library","");}catch(const std::exception&){}
-    try{auto d=Json::parse(stateio::read(directory/"sample-draft.json"));capture=d.at("capture");region=d.at("region");regionName=d.at("name");kind=d.at("kind");fields=d.at("fields");editedFacets=d.at("edited_facets").get<std::set<std::string>>();pending=d.at("pending");library=d.at("library");open=d.value("open",false);metadata=d.value("metadata",Json::object());metadataTarget=d.value("metadata_target","");metadataTargetRevision=d.value("metadata_target_revision",1);metadataRevision=d.value("metadata_revision",0);
-        libraryQuery=d.value("search","");facet=d.value("facet","");facetValue=d.value("facet_value","");tab=std::clamp(d.value("tab",0),0,2);browseOffset=d.value("offset",size_t{0});viewportStart=d.value("viewport_start",0.);viewportEnd=d.value("viewport_end",48000.);snapMode=std::clamp(d.value("snap",0),0,4);transport.loop=d.value("transport_loop",true);transport.scope=static_cast<PlaybackScope>(std::clamp(d.value("transport_scope",0),0,2));transport.follow=d.value("transport_follow",false);previewGain=std::clamp(d.value("gain",.7f),0.f,1.f);
-        amplitude.mode=static_cast<AmplitudeMode>(std::clamp(d.value("amplitude_mode",0),0,2));amplitude.gain=AmplitudeScale::bounded(d.value("amplitude_gain",1.));if(amplitude.mode==AmplitudeMode::Actual)amplitude.actual();
-        if(!capture.is_null())editor.reset(capture.at("timeline").at("frame_count"),{d.at("span").at("start"),d.at("span").at("end")});
-    }catch(const std::exception&){capture=nullptr;region=nullptr;pending=Json::array();}
+    const auto path=directory/"sample-workspaces.json";if(!fs::exists(path))return;
+    // Invalid state must be visible, never silently replaced by an empty library.
+    auto data=Json::parse(stateio::read(path));sampleLibrary=SampleLibrary::parse(data.at("workspaces"));pending=data.at("commands");open=data.at("open");
+    library=data.at("browser_library");libraryQuery=data.at("search");facet=data.at("facet");facetValue=data.at("facet_value");tab=data.at("tab");browseOffset=data.at("offset");previewGain=data.at("gain");
+    if(data.at("active_source").is_null())return;
+    const auto source=SourceRef::parse(data.at("active_source"));auto& ws=sampleLibrary.at(source);sourceLibrary=source.library;
+    capture=ws.view.at("capture");
+    if(capture.at("id")!=source.capture||capture.at("timeline_id")!=source.timeline||capture.at("timeline").at("frame_count")!=ws.total)throw std::runtime_error("Workspace capture does not match its canonical source.");
+    editor.reset(ws.total,{0,std::min<Frame>(Rate*4,ws.total)});
+    transport.scope=static_cast<PlaybackScope>(ws.view.value("scope",0));transport.loop=ws.view.value("loop",true);transport.follow=ws.view.value("follow",false);
+    snapMode=ws.view.value("snap",0);amplitude.mode=static_cast<AmplitudeMode>(ws.view.value("amplitude_mode",0));amplitude.gain=AmplitudeScale::bounded(ws.view.value("amplitude_gain",1.));
+    if(!ws.active.empty())activateDraft(ws.active);
+    viewportStart=ws.view.value("viewport_start",0.);viewportEnd=ws.view.value("viewport_end",static_cast<double>(Rate*4));fit=true;
 }
-void Workspace::mark(Audio& audio){
-    open=true;
-    if(audio.current.empty()){notice="No song is loaded in the player.";return;}
-    const auto frame=static_cast<Frame>(std::llround(audio.displayPosition()*Rate));
-    audio.setPaused(true);stopTransport();persist();++generation;
-    pendingMark=PlayingSongMark{audio.current,frame,++markTicket};markMatches=Json::array();
+void Workspace::mark(Audio& audio,std::optional<SecondsSpan> selection,OpenSource action){
+    if(storageBlocked){open=true;return;}
+    if(audio.current.empty()||audio.duration<=0){notice="No song is loaded in the player.";return;}
+    const auto intent=handoff.begin(utf8(audio.current),selection?OpenSource::Selection:action,audio.displayPosition(),audio.duration,selection);
+    persist();open=true;audio.setPaused(true);stopTransport();++generation;
+    pendingMark=PlayingSongMark{audio.current,static_cast<Frame>(std::llround(intent.cue*Rate)),intent.ticket,false,false,selection,intent.duration,intent.action};markMatches=Json::array();
     notice="Opening the playing song...";
     if(!client||libraries.empty())connect();else submitMark();
 }
@@ -126,19 +196,33 @@ void Workspace::submitMark(){
 }
 void Workspace::finishMark(const Json& match){
     if(!pendingMark)return;
-    const auto frame=pendingMark->frame;library=match.at("library_id");
-    pendingMark.reset();markMatches=Json::array();region=nullptr;transport.scope=PlaybackScope::Selection;
-    openCapture(match.at("capture"),Span{frame,frame+Rate*4});browse();notice="Marked the playing song at your position.";
+    const SourceRef source{match.at("library_id"),match.at("capture").at("id"),match.at("capture").at("timeline_id")};
+    std::optional<ResolvedIntent> resolved;
+    try{resolved=handoff.resolve(pendingMark->ticket,source,match.at("capture").at("timeline").at("frame_count"));}
+    catch(const std::exception& e){pendingMark->failed=true;notice=e.what();return;}
+    if(!resolved)return;
+    pendingMark.reset();markMatches=Json::array();library=source.library;
+    openCapture(match.at("capture"),resolved->selection);
+    if(!resolved->selection&&resolved->intent.action==OpenSource::Cue){transport.cursor=resolved->cue;const auto cue=static_cast<double>(resolved->cue);viewportStart=std::max(0.,cue-Rate*3);viewportEnd=std::min(static_cast<double>(editor.total),cue+Rate*3);fit=true;loadDetails();}
+    notice=resolved->selection?"Selection opened in sample editor.":"Song opened in sample editor.";
 }
 void Workspace::stopTransport(){auditionSubmitted=0;++transportEpoch;auditionPath.clear();audition.stop();transport.stop();}
 void Workspace::requestAudition(Frame origin,bool first){
     if(capture.is_null()||!client||origin>=transport.range.end)return;
     const auto end=std::min(transport.range.end,origin+Rate*30);
     auditionPath=endpoint(library)+"/captures/"+capture.at("id").get<std::string>()+"/pcm?start="+std::to_string(origin)+"&end="+std::to_string(end)+"&timeline="+capture.at("timeline_id").get<std::string>();
+    if(first&&!preparation.match.is_null()&&preparation.match.at("library_id")==sourceLibrary&&preparation.match.at("capture").at("id")==capture.at("id")&&
+       origin>=preparation.pcmStart&&end<=preparation.pcmStart+static_cast<Frame>(preparation.pcm.size()/2)){
+        const auto from=static_cast<size_t>(origin-preparation.pcmStart)*2,to=from+static_cast<size_t>(end-origin)*2;
+        std::vector<float> samples(preparation.pcm.begin()+static_cast<ptrdiff_t>(from),preparation.pcm.begin()+static_cast<ptrdiff_t>(to));
+        audition.start(std::move(samples),origin,transport.range,transport.cursor,transport.effectiveLoop(),transport.state==PlaybackState::Paused);audition.gain(previewGain);
+        transport.state=transport.state==PlaybackState::Paused?PlaybackState::Paused:PlaybackState::Playing;auditionPath.clear();++auditionChunks;return;
+    }
     client->submit({"audition","GET",auditionPath,{{"epoch",transportEpoch},{"first",first}},generation,{}});
 }
 void Workspace::beginAudition(Audio& audio,BoundaryCheck check,std::optional<Frame> cue,bool paused){
     if(capture.is_null()||!client)return;
+    if(!selectionDefined&&transport.scope!=PlaybackScope::Recording){notice="Choose or create a sample first.";return;}
     audio.setPaused(true);stopTransport();auditionChunks=0;transport.boundary=check;auditionSelection=editor.span;
     transport.range=transport.bounds(editor.span,editor.total);
     transport.cursor=std::clamp(cue.value_or(transport.range.start),transport.range.start,transport.range.end-1);
@@ -146,7 +230,7 @@ void Workspace::beginAudition(Audio& audio,BoundaryCheck check,std::optional<Fra
     requestAudition(transport.cursor,true);
 }
 void Workspace::toggleTransport(Audio& audio){
-    if(transport.state==PlaybackState::Playing||transport.state==PlaybackState::Buffering){audition.pause(true);transport.state=PlaybackState::Paused;}
+    if(transport.state==PlaybackState::Playing||transport.state==PlaybackState::Buffering){audition.pause(true);transport.cursor=audition.snapshot().cursor;transport.state=PlaybackState::Paused;}
     else if(transport.state==PlaybackState::Paused){audio.setPaused(true);audition.pause(false);transport.state=auditionPath.empty()?PlaybackState::Playing:PlaybackState::Loading;}
     else if(transport.state!=PlaybackState::Loading){
         const auto span=transport.bounds(editor.span,editor.total);
@@ -167,7 +251,7 @@ void Workspace::playbackOverlay(){
         draw->AddRectFilled(ImPlot::PlotToPixels(static_cast<double>(transport.range.start),bounds.Y.Max),ImPlot::PlotToPixels(static_cast<double>(transport.range.end),bounds.Y.Min),IM_COL32(100,155,235,18));
     }
     const auto first=ImPlot::PlotToPixels(static_cast<double>(editor.span.start),bounds.Y.Max),last=ImPlot::PlotToPixels(static_cast<double>(editor.span.end),bounds.Y.Min);
-    draw->AddRectFilled(first,last,IM_COL32(70,210,158,28));
+    if(selectionDefined)draw->AddRectFilled(first,last,IM_COL32(70,210,158,28));
     const auto marker=ImPlot::PlotToPixels(static_cast<double>(transport.cursor),0);
     const auto pos=ImPlot::GetPlotPos(),size=ImPlot::GetPlotSize();
     draw->AddLine({marker.x,pos.y},{marker.x,pos.y+size.y},IM_COL32(245,245,245,255),2);
@@ -182,17 +266,25 @@ void Workspace::process(){
         if(tag=="collections" && reply.request.path!=endpoint(library)+"/collections")continue;
         if(tag=="browse" && reply.request.path!=browsePath)continue;
         if(tag=="audition" && (reply.request.path!=auditionPath || reply.request.body.at("epoch")!=transportEpoch))continue;
-        if(!reply.error.empty()){if(pendingMark&&(tag=="hash"||tag=="resolve"||tag=="libraries"))pendingMark->failed=true;if(tag=="audition"){auditionPath.clear();audition.stop();transport.state=PlaybackState::Error;}notice=reply.error;if(reply.status==409){notice="Conflict: local draft retained. Reload the saved sample or Fork before saving. "+notice;if(tag=="command")for(auto& row:pending)if(row.at("command").at("request_id")==reply.request.body.at("request_id"))row["conflict"]=true;persist();}continue;}
+        if(!reply.error.empty()){if(pendingMark&&(tag=="hash"||tag=="resolve"||tag=="libraries"))pendingMark->failed=true;if(tag=="audition"){auditionPath.clear();audition.stop();transport.state=PlaybackState::Error;}notice=reply.error;if(reply.status==409){notice="Conflict: local draft retained. Reload the saved sample or Fork before saving. "+notice;if(tag=="command")for(auto& row:pending)if(row.at("command").at("request_id")==reply.request.body.at("request_id")){row["conflict"]=true;if(row.contains("source"))sampleLibrary.conflict(SourceRef::parse(row.at("source")),row.at("draft_id"),row.at("command").at("request_id"));}persist();}continue;}
         if(tag=="libraries"){
             libraries=reply.body;notice="Connected";
             if(library.empty()&&!libraries.empty())library=libraries[0].at("id");
             browse();
             if(pendingMark)submitMark();
-            else if(!capture.is_null()){auto savedFields=fields;auto savedEdited=editedFacets;auto savedRegion=region;auto savedMeta=metadata;auto target=metadataTarget;auto targetRev=metadataTargetRevision;auto metaRev=metadataRevision;auto span=editor.span;auto item=capture;auto left=viewportStart,right=viewportEnd;openCapture(item,span);fields=savedFields;editedFacets=savedEdited;region=savedRegion;metadata=savedMeta;metadataTarget=target;metadataTargetRevision=targetRev;metadataRevision=metaRev;viewportStart=left;viewportEnd=right;fit=true;loadDetails();}
-            for(const auto& entry:pending)client->submit({"command","POST",endpoint(entry.at("library"))+"/commands",entry.at("command"),generation,{}});
+            else if(!capture.is_null()){loadDetails();fetchSourceRegions();}
+            for(const auto& entry:pending)if(!entry.value("conflict",false))client->submit({"command","POST",endpoint(entry.at("library"))+"/commands",entry.at("command"),generation,{}});
         }else if(tag=="browse"){items=reply.body.at("items");browseTotal=reply.body.at("total");}
+        else if(tag=="sourceRegions"){
+            if(reply.body.at("source")!=sourceRef().json()||reply.body.at("offset")!=sourceRegionOffset)continue;
+            sourceRegions=reply.body.at("items");sourceRegionTotal=reply.body.at("total");
+        }
         else if(tag=="collectionMember")items.push_back(reply.body);
-        else if(tag=="reloadRegion"){region=reply.body;get("capture",endpoint(library)+"/entities/"+region.at("capture_id").get<std::string>());}
+        else if(tag=="reloadRegion"){
+            if(activeDraft.empty())continue;
+            const auto& r=reply.body;auto value=draftValue();value.span={r.at("span").at("start_frame"),r.at("span").at("end_frame")};value.attributes["name"]=r.at("name");value.attributes["kind"]=r.at("kind");
+            sampleLibrary.reloadSaved(sourceRef(),activeDraft,r,value);activateDraft(activeDraft);fetchSourceRegions();persist();
+        }
         else if(tag=="collections")collections=reply.body.at("items");
         else if(tag=="overview"){
             overview=reply.body;overviewBins.clear();Frame at=overview.value("origin_frame",Frame{0});const Frame step=overview.at("frames_per_bin");
@@ -228,18 +320,23 @@ void Workspace::process(){
             beats.clear();for(const auto& a:anchors)beats.push_back(a.at("frame").get<Frame>());
             selectedAnchor=0;
         }else if(tag=="hash"){
+            if(preparation.path==utf8(pendingMark->path)&&!preparation.digest.empty()&&preparation.digest!=reply.body.at("sha256").get<std::string>()){
+                pendingMark->failed=true;notice="This file changed after listening started. Reload the song before selecting a sample.";continue;
+            }
+            if(!preparation.match.is_null()&&preparation.digest==reply.body.at("sha256").get<std::string>()){finishMark(preparation.match);continue;}
             client->submit({"resolve","GET","/v1/resolve?sha256="+reply.body.at("sha256").get<std::string>(),{{"mark",pendingMark->ticket}},generation,{}});
         }else if(tag=="resolve"){
             const auto matches=reply.body.at("matches");
             if(matches.size()==1)finishMark(matches[0]);
             else{pendingMark->failed=true;markMatches=matches;notice=matches.empty()?"The playing file is not registered in a connected library. Your previous draft is preserved.":"Several recordings match this file. Choose its source below.";}
         }else if(tag=="capture"){
-            const auto savedRegion=region;openCapture(reply.body,savedRegion.is_null()?std::optional<Span>{}:std::optional<Span>{{savedRegion.at("span").at("start_frame"),savedRegion.at("span").at("end_frame")}});
-            region=savedRegion;
-            if(!region.is_null()){regionName=region.at("name");kind=region.at("kind");get("sampleMetadata",endpoint(library)+"/metadata/"+region.at("id").get<std::string>()+"?revision="+std::to_string(region.at("revision").get<int>()));}
+            const auto savedRegion=region;openCapture(reply.body);
+            if(!savedRegion.is_null())chooseRegion(savedRegion);
         }else if(tag=="sampleMetadata"){
             if(reply.request.body!=draftSnapshot()){notice="Metadata response retained on server; newer local edits preserved.";continue;}
+            const bool clean=!activeDraft.empty()&&!sampleLibrary.draft(sourceRef(),activeDraft).dirty();
             metadata=reply.body;metadataTarget=metadata.at("target_id");metadataTargetRevision=metadata.at("target_revision");metadataRevision=metadata.at("revision");metadataFields(metadata.at("effective"));
+            stash();if(clean){auto& d=sampleLibrary.draft(sourceRef(),activeDraft);d.baseline=d.value;}
         }else if(tag=="export"){
             const auto& v=reply.body.at("variant");const auto filename=v.at("id").get<std::string>()+fs::path(v.at("location").get<std::string>()).extension().string();
             client->submit({"artifact","GET",reply.body.at("download_url"),{{"expected_sha256",v.at("audio_sha256")}},generation,directory/"exports"/filename});
@@ -250,6 +347,25 @@ void Workspace::process(){
             else jobDue=std::chrono::steady_clock::now()+std::chrono::seconds(1);
         }else if(tag=="artifact")notice="Exported: "+reply.body.at("path").get<std::string>();
         else if(tag=="command"){
+            if(reply.request.body.at("operation")=="region.save"){
+                const auto request=reply.request.body.at("request_id").get<std::string>();
+                auto row=std::find_if(pending.begin(),pending.end(),[&](const auto& p){return p.at("command").at("request_id")==request;});
+                if(row==pending.end())continue;
+                stash();const auto source=SourceRef::parse(row->at("source"));const auto id=row->at("draft_id").get<std::string>();
+                if(sampleLibrary.acknowledge(source,id,request,reply.body.at("region"))){
+                    auto& d=sampleLibrary.draft(source,id);
+                    const bool current=!capture.is_null()&&sourceRef()==source&&activeDraft==id;
+                    if(current){
+                        region=reply.body.at("region");editor.dirty=d.dirty();
+                        if(reply.body.contains("metadata")&&!d.dirty()){
+                            metadata=reply.body.at("metadata").at("metadata");metadataTarget=region.at("id");metadataTargetRevision=region.at("revision");metadataRevision=metadata.at("revision");
+                            stash();d.baseline=d.value;
+                        }
+                        notice=d.dirty()?"Saved submitted revision; newer edits retained.":"Sample saved.";fetchSourceRegions();
+                    }
+                }
+                pending.erase(row);persist();continue;
+            }
             const auto id=reply.request.body.at("request_id");
             bool unchanged=false;for(const auto& row:pending)if(row.at("command").at("request_id")==id)unchanged=row.value("draft",Json())==draftSnapshot();
             pending.erase(std::remove_if(pending.begin(),pending.end(),[&](const auto& row){return row.at("command").at("request_id")==id;}),pending.end());
@@ -275,6 +391,11 @@ void Workspace::process(){
 }
 void Workspace::tick(Audio& audio){
     try{
+        if(storageBlocked)return;
+        if(!open&&audio.loaded){
+            Connection warm;warm.url=serverUrl;warm.credentialFile=stateio::pathFromText(tokenFile);warm.startWorkstation=serverUrl=="http://127.0.0.1:8765";
+            preparation.tick(warm,notify,utf8(audio.current),audio.displayPosition(),audio.duration,audio.loadedSerial);
+        }
         const auto previousState=transport.state;
         if(open&&(!hadOpen||(audio.active&&!audio.paused)))audio.setPaused(true);hadOpen=open;
         if(open && !connectionAttempted)connect();
@@ -310,8 +431,8 @@ void Workspace::waveform(Audio& audio,const std::function<void(const char*,bool)
             ImPlot::PlotShaded("Recording",x.data(),lo.data(),hi.data(),static_cast<int>(x.size()));
         }
         double a=static_cast<double>(editor.span.start),b=static_cast<double>(editor.span.end);
-        if(ImPlot::DragLineX(91,&a,ImVec4(.2f,.9f,.6f,1),2)){editor.beginGesture();editor.change({static_cast<Frame>(std::llround(a)),editor.span.end});}
-        if(ImPlot::DragLineX(92,&b,ImVec4(1,.7f,.2f,1),2)){editor.beginGesture();editor.change({editor.span.start,static_cast<Frame>(std::llround(b))});}
+        if(selectionDefined&&ImPlot::DragLineX(91,&a,ImVec4(.2f,.9f,.6f,1),2)){editor.beginGesture();editor.change({static_cast<Frame>(std::llround(a)),editor.span.end});}
+        if(selectionDefined&&ImPlot::DragLineX(92,&b,ImVec4(1,.7f,.2f,1),2)){editor.beginGesture();editor.change({editor.span.start,static_cast<Frame>(std::llround(b))});}
         if(ImPlot::IsPlotHovered()&&ImGui::IsMouseDoubleClicked(0)){const auto frame=ImPlot::GetPlotMousePos().x;viewportStart=std::max(0.,frame-Rate*2);viewportEnd=std::min(static_cast<double>(editor.total),frame+Rate*2);fit=true;detailDue=std::chrono::steady_clock::now();}
         playbackOverlay();
         ImPlot::EndPlot();
@@ -390,8 +511,8 @@ void Workspace::waveform(Audio& audio,const std::function<void(const char*,bool)
             return editor.snap(f,snapMode==1?onsets:beats,static_cast<Frame>((right-left)*.02));
         };
         bool heldIn=false,heldOut=false,hoverIn=false,hoverOut=false;
-        if(ImPlot::DragLineX(1,&a,ImVec4(.2f,1,.6f,1),3,0,nullptr,&hoverIn,&heldIn)){editor.beginGesture();editor.change({snapped(a),editor.span.end});}
-        if(ImPlot::DragLineX(2,&b,ImVec4(1,.7f,.2f,1),3,0,nullptr,&hoverOut,&heldOut)){editor.beginGesture();editor.change({editor.span.start,snapped(b)});}
+        if(selectionDefined&&ImPlot::DragLineX(1,&a,ImVec4(.2f,1,.6f,1),3,0,nullptr,&hoverIn,&heldIn)){editor.beginGesture();editor.change({snapped(a),editor.span.end});}
+        if(selectionDefined&&ImPlot::DragLineX(2,&b,ImVec4(1,.7f,.2f,1),3,0,nullptr,&hoverOut,&heldOut)){editor.beginGesture();editor.change({editor.span.start,snapped(b)});}
         if(heldIn||heldOut)boundaryHeld=true;
         const auto drag=ImGui::GetMouseDragDelta(0);
         if(ImPlot::IsPlotHovered()&&ImGui::IsMouseReleased(0)&&!boundaryHeld&&!hoverIn&&!hoverOut&&drag.x*drag.x+drag.y*drag.y<9)seekTransport(audio,static_cast<Frame>(std::llround(ImPlot::GetPlotMousePos().x)));
@@ -408,17 +529,61 @@ void Workspace::draw(Audio& audio,const std::function<void(const char*,bool)>& o
     ImGui::SetNextWindowPos({0,0});ImGui::SetNextWindowSize(size);
     if(!ImGui::Begin("Sampling",&open,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoSavedSettings)){ImGui::End();return;}
     const auto button=[&](const char* label,const char* id){bool pressed=ImGui::Button(label);observe(id,pressed);return pressed;};
+    if(storageBlocked){
+        ImGui::TextWrapped("Sample workspace state could not be read: %s. The file has been preserved. Restore sample-workspaces.json from its .bak copy or repair it, then Retry.",storageError.c_str());
+        if(ImGui::Button("Retry reading workspace")){try{restore();storageBlocked=false;storageError.clear();}catch(const std::exception& e){storageError=e.what();}}
+        if(ImGui::Button("Return to player"))open=false;
+        ImGui::End();return;
+    }
     try {
-        if(button("Return to song","sample-return")){pendingMark.reset();markMatches=Json::array();stopTransport();open=false;}
+        if(button("Return to song","sample-return")){handoff.cancel();pendingMark.reset();markMatches=Json::array();persist();stopTransport();open=false;}
         ImGui::SameLine();if(button("Mark playing song","sample-mark"))mark(audio);
         ImGui::SameLine();if(button("Connection","sample-connection"))ImGui::OpenPopup("Backend connection");
         ImGui::SameLine();ImGui::TextUnformatted(notice.c_str());
         if(ImGui::BeginPopup("Backend connection")){input("Server URL",serverUrl);input("Token file",tokenFile);if(ImGui::Button("Connect")){connect();ImGui::CloseCurrentPopup();}ImGui::EndPopup();}
         if(!client || libraries.empty()){ImGui::TextWrapped("Prappy starts the local Workstation backend automatically. If startup failed, retry or inspect Connection.");if(button("Retry connection","sample-connect"))connect();}
+        if(button("Songs in editor","sample-workspaces"))ImGui::OpenPopup("Editor songs");
+        if(ImGui::BeginPopup("Editor songs")){
+            for(const auto& [source,ws]:sampleLibrary.all()){
+                if(!ws.view.contains("capture"))continue;
+                const auto item=ws.view.at("capture");
+                const auto label=item.at("recording").value("title",source.capture)+"##"+source.library+source.capture+source.timeline;
+                const bool hit=ImGui::Selectable(label.c_str(),!capture.is_null()&&sourceRef()==source);observe(("sample-workspace-"+source.capture).c_str(),hit);
+                if(hit){persist();library=source.library;openCapture(item);ImGui::CloseCurrentPopup();break;}
+            }
+            ImGui::EndPopup();
+        }
         std::string libraryLabel="Choose library";for(const auto& lib:libraries)if(lib.at("id")==library)libraryLabel=lib.at("name");
-        if(ImGui::BeginCombo("Library",libraryLabel.c_str())){for(const auto& lib:libraries){auto id=lib.at("id").get<std::string>();if(ImGui::Selectable((lib.at("name").get<std::string>()+"##"+id).c_str(),id==library)){library=id;++generation;capture=nullptr;region=nullptr;items=Json::array();browse();}}ImGui::EndCombo();}
+        if(ImGui::BeginCombo("Library",libraryLabel.c_str())){for(const auto& lib:libraries){auto id=lib.at("id").get<std::string>();if(ImGui::Selectable((lib.at("name").get<std::string>()+"##"+id).c_str(),id==library)){persist();library=id;++generation;activeDraft.clear();capture=nullptr;region=nullptr;items=Json::array();browse();}}ImGui::EndCombo();}
         const bool sidebar=size.x>=780;
         if(sidebar){ImGui::BeginChild("Sample browser",{250,0},ImGuiChildFlags_Borders);}
+        if(!capture.is_null()){
+            ImGui::TextWrapped("Samples from this song");
+            ImGui::BeginChild("Source samples",{0,190},ImGuiChildFlags_Borders);
+            Json rows=sourceRegions;const auto& ws=sampleLibrary.at(sourceRef());
+            for(const auto& [id,d]:ws.drafts){
+                if(d.region)rows.erase(std::remove_if(rows.begin(),rows.end(),[&](const auto& r){return r.at("id")==d.region->id;}),rows.end());
+                rows.push_back({{"id",id},{"local",id},{"name",d.value.attributes.value("name",std::string("Sample"))},
+                    {"span",{{"start_frame",d.value.span.start},{"end_frame",d.value.span.end}}},
+                    {"state",d.saving?(d.saving->conflict?"Conflict":"Saving / pending"):d.dirty()?"Draft saved locally":"Saved"}});
+            }
+            std::sort(rows.begin(),rows.end(),[](const auto& a,const auto& b){return std::make_tuple(a.at("span").at("start_frame").template get<Frame>(),a.at("id").template get<std::string>())<std::make_tuple(b.at("span").at("start_frame").template get<Frame>(),b.at("id").template get<std::string>());});
+            size_t i=0;
+            for(const auto& row:rows){
+                const auto label=row.at("name").get<std::string>()+" ("+row.value("state",std::string("Saved"))+")##source-"+row.at("id").get<std::string>();
+                const bool hit=ImGui::Selectable(label.c_str(),row.value("local",std::string{})==activeDraft);observe(("sample-source-item-"+std::to_string(i++)).c_str(),hit);
+                if(hit){stash();if(row.contains("local")){transport.scope=PlaybackScope::Selection;activateDraft(row.at("local"));}else chooseRegion(row);break;}
+            }
+            if(rows.empty())ImGui::TextWrapped("No samples yet. Select a passage or create a sample at the cue.");
+            ImGui::EndChild();
+            if(sourceRegionOffset&&ImGui::Button("Earlier samples"))fetchSourceRegions(sourceRegionOffset>=100?sourceRegionOffset-100:0);
+            if(sourceRegionOffset+sourceRegions.size()<sourceRegionTotal&&ImGui::Button("More samples"))fetchSourceRegions(sourceRegionOffset+100);
+            if(button("New sample at cue","sample-new")){const auto start=std::clamp<Frame>(transport.cursor,0,std::max<Frame>(0,editor.total-std::min<Frame>(Rate*4,editor.total)));newDraft({start,std::min(editor.total,start+Rate*4)},true);}
+            if(!activeDraft.empty()&&!sampleLibrary.draft(sourceRef(),activeDraft).region&&!sampleLibrary.draft(sourceRef(),activeDraft).saving){
+                if(button("Discard this draft","sample-discard")){sampleLibrary.discard(sourceRef(),activeDraft);activeDraft.clear();selectionDefined=false;region=nullptr;persist();}
+            }
+            ImGui::Separator();
+        }
         const char* tabs[]={"Recordings","Samples","Collections"};
         if(ImGui::Combo("Browse",&tab,tabs,3)){browseOffset=0;browse();draftDirty=true;}
         if(input("Search",libraryQuery)){browseOffset=0;browse();draftDirty=true;}
@@ -431,8 +596,8 @@ void Workspace::draw(Audio& audio,const std::function<void(const char*,bool)>& o
             if(item.contains("metadata"))label=item.at("metadata").at("effective").value("title",label);
             const bool chosen=ImGui::Selectable((label+"##"+id).c_str());observe(("sample-item-"+std::to_string(itemIndex++)).c_str(),chosen);
             if(chosen){
-                pendingMark.reset();markMatches=Json::array();stopTransport();
-                if(tab==0){region=nullptr;transport.scope=PlaybackScope::Selection;openCapture(item);}
+                handoff.cancel();pendingMark.reset();markMatches=Json::array();persist();stopTransport();
+                if(tab==0){openCapture(item);}
                 else if(tab==1){transport.scope=PlaybackScope::Selection;++generation;region=item;get("capture",endpoint(library)+"/entities/"+item.at("capture_id").get<std::string>());}
                 else{const auto members=item.at("members");items=Json::array();tab=1;for(const auto& member:members)get("collectionMember",endpoint(library)+"/entities/"+member.at("region").at("id").get<std::string>()+"?revision="+std::to_string(member.at("region").at("revision").get<int>()));break;}
             }
@@ -444,17 +609,19 @@ void Workspace::draw(Audio& audio,const std::function<void(const char*,bool)>& o
                 for(const auto& match:markMatches){
                     const auto id=match.at("library_id").get<std::string>();std::string name=id;
                     for(const auto& lib:libraries)if(lib.at("id")==id)name=lib.at("name");
-                    const auto label=match.at("capture").at("recording").value("title",std::string("Recording"))+" ("+name+")##"+match.at("capture").at("id").get<std::string>();
+                    const auto label=match.at("capture").at("recording").value("title",std::string("Recording"))+" ("+name+" / "+match.at("capture").at("id").get<std::string>().substr(0,12)+")##"+match.at("capture").at("id").get<std::string>();
                     if(ImGui::Button(label.c_str())){const auto chosen=match;finishMark(chosen);break;}
                 }
-                if(ImGui::Button("Retry opening playing song")){pendingMark->failed=false;pendingMark->submitted=false;pendingMark->ticket=++markTicket;if(libraries.empty())connect();else submitMark();}
-                if(ImGui::Button("Return to previous draft")){pendingMark.reset();markMatches=Json::array();notice="Previous draft restored.";loadDetails();}
+                if(ImGui::Button("Retry opening playing song")){pendingMark->failed=false;pendingMark->submitted=false;if(libraries.empty())connect();else submitMark();}
+                if(ImGui::Button("Return to previous draft")){handoff.cancel();pendingMark.reset();markMatches=Json::array();notice="Previous draft restored.";loadDetails();}
             }
         }else if(!capture.is_null()){
             ImGui::TextWrapped("%s",capture.at("recording").value("title","Recording").c_str());
             if(button("Play recording","sample-listen")){transport.scope=PlaybackScope::Recording;beginAudition(audio,BoundaryCheck::None,transport.cursor);}
             ImGui::SameLine();if(button("Classify / detect beats","sample-classify")){Json payload={{"capture_id",capture.at("id")},{"start_frame",std::max<Frame>(0,editor.span.start-Rate*10)},{"end_frame",std::min(editor.total,editor.span.end+Rate*10)}};if(!region.is_null()){payload["target_id"]=region.at("id");payload["target_revision"]=region.at("revision");}command("classify",payload);}
+            if(!selectionDefined)ImGui::TextWrapped("No sample selected. Create a sample at the cue or select a passage on the player waveform.");
             waveform(audio,observe);if(!ImGui::IsMouseDown(0))editor.endGesture();
+            ImGui::BeginDisabled(!selectionDefined);
             Span edited=editor.span;ImGui::SetNextItemWidth(150);ImGui::InputScalar("In",ImGuiDataType_S64,&edited.start);ImGui::SameLine();ImGui::SetNextItemWidth(150);ImGui::InputScalar("Out (exclusive)",ImGuiDataType_S64,&edited.end);editor.change(edited);
             ImGui::Text("Length: %lld frames / %.6f seconds",static_cast<long long>(editor.span.end-editor.span.start),static_cast<double>(editor.span.end-editor.span.start)/Rate);
             if(button("In -1","sample-in-minus"))editor.change({editor.span.start-1,editor.span.end});ImGui::SameLine();if(button("In +1","sample-in-plus"))editor.change({editor.span.start+1,editor.span.end});ImGui::SameLine();
@@ -497,7 +664,7 @@ void Workspace::draw(Audio& audio,const std::function<void(const char*,bool)>& o
                 if(!region.is_null()){payload["id"]=region.at("id");payload["expected"]=region.at("revision");}
                 command("region.save",payload);
             }
-            ImGui::SameLine();if(button("Fork","sample-fork")){discardConflicts();region=nullptr;++generation;metadataTarget.clear();metadataRevision=0;notice="Independent sample draft";draftDirty=true;}
+            ImGui::SameLine();if(button("Save as new sample","sample-fork")){newDraft(editor.span,true);notice="Independent sample draft";}
             ImGui::SameLine();if(button("Reload saved","sample-reload")&&!region.is_null()){discardConflicts();get("reloadRegion",endpoint(library)+"/entities/"+region.at("id").get<std::string>());}
             ImGui::SameLine();if(button("Export sample","sample-export")&&!region.is_null())client->submit({"export","POST",endpoint(library)+"/regions/"+region.at("id").get<std::string>()+"/exports/"+std::to_string(region.at("revision").get<int>()),Json::object(),generation,{}});
             if(!region.is_null()){
@@ -531,10 +698,11 @@ void Workspace::draw(Audio& audio,const std::function<void(const char*,bool)>& o
                 }
                 ImGui::TextWrapped("%s",timing.is_null()?"Timing not loaded":timing.value("coverage",Json::object()).dump().c_str());ImGui::TreePop();
             }
-            if(editor.span!=persistedSpan){draftDirty=true;persistDue=std::chrono::steady_clock::now();}
+            ImGui::EndDisabled();
+            if(editor.span!=persistedSpan){draftDirty=true;persistDue=std::chrono::steady_clock::now()+(ImGui::IsMouseDown(0)?std::chrono::milliseconds(250):std::chrono::milliseconds(0));}
         }else ImGui::TextWrapped("Choose a recording, reopen a sample, or mark the song currently playing.");
         if(sidebar)ImGui::EndChild();
-        if(!pending.empty()){ImGui::Separator();ImGui::Text("%zu pending command(s) retained locally",pending.size());if(ImGui::Button("Retry pending"))for(const auto& entry:pending)client->submit({"command","POST",endpoint(entry.at("library"))+"/commands",entry.at("command"),generation,{}});ImGui::SameLine();if(ImGui::Button("Discard pending commands")){pending=Json::array();persist();}}
+        if(!pending.empty()){ImGui::Separator();ImGui::Text("%zu pending command(s) retained locally",pending.size());if(ImGui::Button("Retry pending"))for(const auto& entry:pending)if(!entry.value("conflict",false))client->submit({"command","POST",endpoint(entry.at("library"))+"/commands",entry.at("command"),generation,{}});ImGui::SameLine();if(ImGui::Button("Discard unsaved metadata commands")){pending.erase(std::remove_if(pending.begin(),pending.end(),[](const auto& row){return !row.contains("source");}),pending.end());persist();}}
     }catch(const std::exception& e){notice=e.what();}
     ImGui::End();
 }

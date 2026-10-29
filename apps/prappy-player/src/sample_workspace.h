@@ -5,14 +5,23 @@
 #include "audio.h"
 #include "waveform_amplitude.h"
 #include "waveform_viewport.h"
+#include "sample_handoff.h"
+#include "sample_preparation.h"
 #include <array>
 #include <set>
 namespace sampling {
 class Workspace {
-    struct PlayingSongMark {fs::path path;Frame frame;uint64_t ticket;bool submitted=false,failed=false;};
+    struct PlayingSongMark {fs::path path;Frame frame;uint64_t ticket;bool submitted=false,failed=false;std::optional<SecondsSpan> selection;double duration=0;OpenSource action=OpenSource::Cue;};
     std::optional<PlayingSongMark> pendingMark;
-    uint64_t markTicket=0;
     Json markMatches=Json::array();
+    SampleLibrary sampleLibrary;
+    SourceHandoff handoff;
+    std::string sourceLibrary,activeDraft;
+    Json sourceRegions=Json::array();
+    size_t sourceRegionOffset=0,sourceRegionTotal=0;
+    bool selectionDefined=false,storageBlocked=false;
+    std::string storageError;
+    SourcePreparation preparation;
     fs::path directory;
     std::function<void()> notify;
     std::unique_ptr<Client> client;
@@ -58,6 +67,13 @@ class Workspace {
     void get(std::string tag,std::string path);
     void command(std::string operation,Json payload);
     void browse();
+    SourceRef sourceRef()const;
+    DraftValue draftValue()const;
+    void stash();
+    void activateDraft(const std::string&);
+    void newDraft(Span,bool variant=false);
+    void fetchSourceRegions(size_t offset=0);
+    void chooseRegion(const Json&);
     void submitMark();
     void finishMark(const Json&);
     void openCapture(Json, std::optional<Span> = {});
@@ -80,12 +96,13 @@ public:
     Workspace(fs::path,std::function<void()>);
     ~Workspace();
     void connect();
-    void mark(Audio&);
+    void mark(Audio&,std::optional<SecondsSpan> selection={},OpenSource action=OpenSource::Cue);
     void toggleTransport(Audio&);
     void tick(Audio&);
     void draw(Audio&,const std::function<void(const char*,bool)>&);
     bool active()const{return open;}
     bool animating()const{return open&&(transport.state==PlaybackState::Playing||transport.state==PlaybackState::Buffering);}
-    std::string diagnostics()const{return Json{{"open",open},{"capture",capture.is_null()?Json(nullptr):capture.at("id")},{"region",region},{"start",editor.span.start},{"end",editor.span.end},{"pcm_frames",pcm.size()/2},{"beats",beats.size()},{"pending",pending.size()},{"notice",notice},{"amplitude_mode",static_cast<int>(amplitude.mode)},{"amplitude_gain",amplitude.gain},{"visible_peak",envelope.peak},{"envelope_builds",envelopeBuilds},{"waveform_exact_pcm",envelopePcm},{"viewport_start",viewportStart},{"viewport_end",viewportEnd},{"pcm_start",pcmStart},{"pcm_end",pcmEnd},{"playback_state",transport.status()},{"playback_scope",static_cast<int>(transport.scope)},{"playhead",transport.cursor},{"playback_start",transport.range.start},{"playback_end",transport.range.end},{"playback_loop",transport.loop},{"playback_chunks",auditionChunks},{"audio_frames_submitted",auditionSubmitted},{"mark_pending",pendingMark.has_value()},{"mark_frame",pendingMark?pendingMark->frame:Frame{-1}},{"mark_failed",pendingMark&&pendingMark->failed}}.dump();}
+    const std::string& preparationStatus()const{return preparation.status;}
+    std::string diagnostics()const{return Json{{"open",open},{"capture",capture.is_null()?Json(nullptr):capture.at("id")},{"region",region},{"start",editor.span.start},{"end",editor.span.end},{"pcm_frames",pcm.size()/2},{"beats",beats.size()},{"pending",pending.size()},{"notice",notice},{"amplitude_mode",static_cast<int>(amplitude.mode)},{"amplitude_gain",amplitude.gain},{"visible_peak",envelope.peak},{"envelope_builds",envelopeBuilds},{"waveform_exact_pcm",envelopePcm},{"viewport_start",viewportStart},{"viewport_end",viewportEnd},{"pcm_start",pcmStart},{"pcm_end",pcmEnd},{"playback_state",transport.status()},{"playback_scope",static_cast<int>(transport.scope)},{"playhead",transport.cursor},{"playback_start",transport.range.start},{"playback_end",transport.range.end},{"playback_loop",transport.loop},{"playback_chunks",auditionChunks},{"audio_frames_submitted",auditionSubmitted},{"selection_defined",selectionDefined},{"source_library",sourceLibrary},{"active_draft",activeDraft},{"workspace_count",sampleLibrary.all().size()},{"draft_count",capture.is_null()?size_t{0}:sampleLibrary.at(sourceRef()).drafts.size()},{"source_region_total",sourceRegionTotal},{"preparation",preparation.status},{"mark_pending",pendingMark.has_value()},{"mark_frame",pendingMark?pendingMark->frame:Frame{-1}},{"mark_failed",pendingMark&&pendingMark->failed}}.dump();}
 };
 }

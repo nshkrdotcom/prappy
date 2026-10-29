@@ -17,18 +17,18 @@ inline bool revealFile(HWND window, const fs::path& path) {
     return SUCCEEDED(opened);
 }
 
-inline bool waveformSeek(WaveformView& image, const std::shared_ptr<const analysis::Result>& waveform, double& position, double duration, ImVec2 size) {
+inline bool waveformSeek(WaveformView& image, const std::shared_ptr<const analysis::Result>& waveform, double& position, double duration, ImVec2 size,bool seeking=true) {
     ImGui::InvisibleButton("##waveform", size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_EnableNav);
     const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
     auto draw = ImGui::GetWindowDrawList();
     draw->AddRectFilled(min, max, IM_COL32(24, 29, 31, 255), 3);
     bool changed = false;
-    if (duration > 0 && ImGui::IsItemActive() && ImGui::IsMouseDown(0)) {
+    if (seeking && duration > 0 && ImGui::IsItemActive() && ImGui::IsMouseDown(0)) {
         const auto target = duration * std::clamp(static_cast<double>((ImGui::GetIO().MousePos.x - min.x) / size.x), 0.0, 1.0);
         changed = ImGui::IsItemActivated() || (ImGui::GetIO().MouseDelta.x != 0 && std::abs(target-position) > .0001);
         position = target;
     }
-    if (duration > 0 && ImGui::IsItemFocused()) {
+    if (seeking && duration > 0 && ImGui::IsItemFocused()) {
         for (const auto key : {ImGuiKey_LeftArrow, ImGuiKey_RightArrow, ImGuiKey_Home, ImGuiKey_End})
             ImGui::SetKeyOwner(key, ImGui::GetItemID(), ImGuiInputFlags_LockThisFrame);
         const auto before = position;

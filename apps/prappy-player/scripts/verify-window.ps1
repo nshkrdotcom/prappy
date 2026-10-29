@@ -151,9 +151,9 @@ try {
         @{X=250;Y=190;Hit=2;Name='Empty transport space is draggable'},
         @{X=250;Y=17;Hit=2;Name='Empty header space is draggable'},
         @{X=465;Y=17;Hit=1;Name='List button retains mouse input'},
-        @{X=100;Y=150;Hit=1;Name='Play button retains mouse input'},
+        @{X=100;Y=220;Hit=1;Name='Play button retains mouse input'},
         @{X=250;Y=90;Hit=1;Name='Seek slider retains mouse input'},
-        @{X=300;Y=150;Hit=1;Name='Volume slider retains mouse input'}
+        @{X=300;Y=220;Hit=1;Name='Volume slider retains mouse input'}
     )) {
         $packed = [IntPtr]((($origin.Y+$check.Y) -shl 16) -bor ($origin.X+$check.X))
         Require ([PlayerNative]::SendMessage($hwnd,0x84,[IntPtr]::Zero,$packed).ToInt32() -eq $check.Hit) $check.Name

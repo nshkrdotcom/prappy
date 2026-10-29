@@ -447,7 +447,7 @@ See [THIRD_PARTY.md](THIRD_PARTY.md) for versions, licenses and provenance.
 
 ## Sampling workspace
 
-Open **More → Sampling workspace**, or press **Ctrl+M** to mark the playing song.
+Right-click the main waveform to **Open song in sample editor** or **Select sample on waveform**. Drag a range, adjust its edges and click **Open selection in editor**. The visible **Edit samples** button and Ctrl+M also open the current song.
 The native editor browses audioharvest recordings, exact sample revisions and
 collections. It provides stereo waveform zoom, frame-accurate boundaries,
 undo/redo, beat/onset snapping, loop audition, metadata corrections and verified

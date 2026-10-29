@@ -6,7 +6,28 @@ No library registry, original audio or collection process is changed by connecti
 
 ## Start using it
 
-Open Prappy from your existing pin, then **More > Sampling workspace** (or **Ctrl+M**).
+While listening, **right-click the main waveform**:
+
+- **Open song in sample editor (Ctrl+M)** opens this song and reveals the listening position.
+- **Select sample on waveform (Ctrl+E)** shows two edges. Drag a range, adjust either
+  edge, or move the band. Click **Open selection in editor (Enter)** when ready.
+- **Samples from this song (Ctrl+Alt+M)** opens its existing samples.
+- **Cancel selection (Esc)** returns to ordinary seeking. Escape during a drag first
+  restores the range from before that drag.
+
+Selecting a passage leaves the song playing. Confirming the handoff pauses it;
+editor Play loops that exact range initially. **Edit samples** beside the waveform
+and **More > Open current song in sample editor** provide the direct route too.
+Compact mode offers the same menu and expands for range selection.
+Opening a song alone does not create a saved sample: choose **New sample at cue**
+for an explicit four-second draft, or use an existing sample.
+
+**Songs in editor** contains one workspace per canonical source. Its **Samples from
+this song** pane combines saved regions and local drafts; overlapping cuts are allowed.
+New selections create independent drafts; the same range reopens existing work.
+**Save sample** creates or updates one versioned region; **Save as new sample** is an
+explicit independent variant. Switching songs and restarting retain each song's
+active sample, other drafts, viewport and editing preferences.
 Prappy starts the local WSL backend if needed and connects automatically.
 **You do not need a terminal, server options, or connection settings.**
 The server and token-file fields are prefilled for Workstation.
@@ -108,7 +129,7 @@ pin exact revisions. **Export sample** downloads a SHA-256-verified lossless Wav
 artifact preserving float PCM; the backend retains its source map and preparation.
 Export uses the saved revision. Save local edits before exporting those edits.
 
-Drafts and pending command UUIDs persist in `sample-draft.json`, together with
+Drafts and pending command UUIDs persist in `sample-workspaces.json`, together with
 metadata context, browser filters/page, viewport, snap, gain and loop. Retrying a
 request returns its original committed revision. Conflicts preserve local edits:
 reload the saved sample or fork an independent cut. A pending save must be resolved
@@ -142,3 +163,18 @@ The Ctrl+M regression (`verify-sampling.ps1 -MarkOnly -Manifest ...`) exercises
 cold/warm connection, then presses editor Play and checks SDL-submitted audio
 frames and the advancing selection playhead within five seconds. Run it against
 an isolated server with delayed recording-list responses to verify independence.
+
+
+After initial playback starts, background preparation resolves source identity,
+loads its sample summaries and warms a bounded eight-second window of verified
+cached PCM. Its state is shown in the Edit samples tooltip. It never launches
+classification or a speculative whole-song decode; unavailable/busy PCM is labeled
+“audio prepared on demand.” Explicit editor requests prepare cold audio normally.
+File hash reuse checks Windows file identity, size, write and change times. Warm
+requests are fenced on loaded-song generation and do not open or modify drafts.
+
+Source workspaces use library/capture/timeline IDs, not filenames or playlist rows.
+Pending sample saves retain their original payload and request ID across source
+switches and restart. Late acknowledgments advance the right region while retaining
+newer edits. A conflict stays local until explicitly resolved. Corrupt workspace
+state is preserved and shown as a recovery error instead of overwritten.
