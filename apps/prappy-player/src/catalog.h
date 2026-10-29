@@ -51,7 +51,7 @@ inline Library parseCatalog(const std::string& bytes, const Config& config) {
     for (const auto& root : library.roots) oldRoots.push_back(key(root));
     for (const auto& root : config.roots) newRoots.push_back(key(root));
     if (oldRoots != newRoots || library.extensions != config.extensions) throw std::runtime_error("Catalog configuration changed; rebuilding.");
-    library.historyLimit = config.historyLimit;
+    library.historyLimit = config.historyLimit; library.addNewListeningHistoryEntryWhenReplayingHistoryItem = config.addNewListeningHistoryEntryWhenReplayingHistoryItem;
     const auto count = input.count(); std::set<std::wstring> seen;
     for (size_t i = 0; i < count; ++i) {
         const auto path = stateio::pathFromText(input.text()); const auto id = key(path);

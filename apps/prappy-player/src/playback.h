@@ -5,7 +5,7 @@
 #include <functional>
 // Playback intents are committed by matching successful mpv playlist entry IDs.
 struct Playback {
-    enum class Kind { NewVisit, Traverse, Restore, Restart, Rollback };
+    enum class Kind { NewVisit, HistoryVisit, Traverse, Restore, Restart, Rollback };
     struct Pending { Kind kind; uint64_t serial; uint64_t targetId; bool oldPaused; double position; bool paused; };
     Audio& audio;
     Library& library;
@@ -34,6 +34,12 @@ struct Playback {
         if (!audio.play(path, true, kind == Kind::Restore ? 0 : position)) { notice = audio.error; return false; }
         pending = Pending{kind, audio.serial, targetId, oldPaused, position, paused};
         notice.clear(); ++generation; return true;
+    }
+    bool selectHistory(uint64_t id,bool addNewEntry=false) {
+        const auto entry=history.find(id);if(!entry||entry->queued)return false;
+        if(addNewEntry)return request(entry->path);
+        if(!request(entry->path,Kind::HistoryVisit))return false;
+        pending->targetId=id;return true;
     }
     void restore() {
         if (const auto entry = history.current()) request(entry->path, Kind::Restore, history.cursor, true, entry->position);
@@ -111,7 +117,8 @@ struct Playback {
             const auto completed = *pending; pending.reset();
             unavailable.erase(key(audio.current));
             const auto destination = std::find(history.trail.begin(), history.trail.end(), completed.targetId);
-            if (completed.kind == Kind::NewVisit || destination == history.trail.end()) history.add(audio.current);
+            if(completed.kind==Kind::HistoryVisit&&history.find(completed.targetId))history.revisit(completed.targetId);
+            else if (completed.kind == Kind::NewVisit || destination == history.trail.end()) history.add(audio.current);
             else history.visit(static_cast<size_t>(destination - history.trail.begin()));
             if (completed.kind == Kind::Restore) {
                 const double position = audio.duration > .25 && completed.position < audio.duration - .1 ? completed.position : 0;

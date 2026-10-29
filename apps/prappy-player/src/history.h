@@ -119,6 +119,13 @@ struct History {
         cursor = target; ++revision;
         if (scheduled && playedCount > limit) prune();
     }
+    void revisit(uint64_t id) {
+        const auto entry=find(id);
+        if(!entry||entry->queued)throw std::runtime_error("Invalid listening history visit.");
+        auto found=std::find(trail.begin(),trail.end(),id);
+        if(found==trail.end())found=trail.insert(trail.begin()+static_cast<ptrdiff_t>(current()?cursor+1:trail.size()),id);
+        visit(static_cast<size_t>(found-trail.begin()));
+    }
     void position(double value) {
         if (!std::isfinite(value) || value < 0 || !current()) return;
         auto& entry = entries[index.at(current()->id)];

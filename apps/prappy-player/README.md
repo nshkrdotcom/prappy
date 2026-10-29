@@ -76,10 +76,11 @@ history_limit=10000
 ```
 
 **History** in the compact header opens a searchable list of visits, newest
-first, with paths and played times. Library and History buttons switch views.
-Repeated deliberate selections create separate visits; pause, seeking and
-Back/Forward traversal do not. Clicking an old history row starts it from the
-beginning as a new visit. Unavailable paths are marked after a failed attempt;
+at the bottom, with paths and played times. Library and History buttons switch views.
+Library selections create separate visits; pause, seeking and Back/Forward traversal
+do not. Clicking a history row starts it from the beginning using that existing
+visit by default. Set `add_new_listening_history_entry_when_replaying_history_item=true`
+in `player.ini` to record history-row replays as new visits. Unavailable paths are marked after a failed attempt;
 history remains available even while the catalog is scanning or a root is offline.
 
 The library's view selector offers **Unplayed**, **Most played** and **Last played**.
@@ -455,3 +456,15 @@ lossless export. Drafts and pending commands survive closing and reopening.
 
 See [sampling setup and workflow](docs/sampling.md) for the WSL server command,
 connection, metadata scope, revision/conflict behavior and test instructions.
+
+
+Listening history is chronological, with the newest entry at the bottom. Clicking
+an existing history row replays that visit without adding another entry by default.
+To log history-row replays as fresh listening visits, set this in `player.ini`
+and click Refresh (or restart):
+
+```ini
+add_new_listening_history_entry_when_replaying_history_item=true
+```
+
+The default is `false`. Back/Forward navigation continues to revisit existing entries.

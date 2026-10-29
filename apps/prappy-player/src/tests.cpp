@@ -22,6 +22,17 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
     try {
         waveformRenderTests(log);
         {
+            History h;const auto path=fs::absolute(L"history-test.wav");
+            const auto old=h.add(path);h.add(path);h.visit(0);h.add(path);
+            const auto retained=h.entries[1].id;const auto count=h.playedCount,next=h.nextId;
+            h.revisit(retained);
+            require(h.current()->id==retained&&h.playedCount==count&&h.nextId==next,"Retained branch replay duplicated a visit.");
+            h.revisit(old);require(h.cursor==0&&h.playedCount==count,"Existing trail replay duplicated a visit.");
+            auto reopened=History::parse(h.serialize(),10000);require(reopened.current()->id==old,"Revisited cursor did not persist.");
+            log<<"PASS existing and retained-branch history replay preserves entry identities/counts and cursor persistence\n";
+        }
+
+        {
             text::Painter painter(nullptr);
             const auto trimmed = painter.inspect("Long folder 中文 👩🏽‍🔬 with combining café and more", {},18,85);
             require(trimmed.trimmed && trimmed.width <= 85 && !trimmed.missingGlyph, "Native ellipsis failed to bound a shaped Unicode label.");
@@ -184,9 +195,22 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
         fs::copy_file(fixture.tracks[0].path, first, fs::copy_options::overwrite_existing);
         fs::copy_file(fixture.tracks[0].path, copy, fs::copy_options::overwrite_existing);
         fs::copy_file(fixture.tracks[1].path, other, fs::copy_options::overwrite_existing);
+        {
+            Audio source;source.open(true);Library empty;History visits;HistoryFile storage(root/"history-selection.txt");Playback session(source,empty,visits,storage);
+            const auto loaded=[&]{for(int i=0;i<1000;++i){session.tick();if(!session.pending&&source.loaded)return;SDL_Delay(5);}throw std::runtime_error("History replay load timed out.");};
+            require(session.request(first),"History fixture failed.");loaded();const auto id=visits.current()->id;
+            require(session.request(other),"Second history fixture failed.");loaded();
+            require(session.selectHistory(id),"Default replay failed.");loaded();
+            require(visits.playedCount==2&&visits.current()->id==id,"Default history selection added a new visit.");
+            require(session.selectHistory(id,true),"Opt-in replay failed.");loaded();
+            require(visits.playedCount==3&&visits.current()->id!=id,"Opt-in history selection did not add a visit.");
+            log<<"PASS playback history selection: default reuse and opt-in new visit\n";
+        }
         const auto localConfig = root / "player.ini";
         { std::ofstream config(localConfig); config << "directory=" << utf8(media) << "\nextensions=wav\nhistory_limit=23\n"; }
-        auto settings = readConfig(localConfig); require(settings.historyLimit == 23, "Configured history limit failed.");
+        auto settings = readConfig(localConfig); require(settings.historyLimit == 23 && !settings.addNewListeningHistoryEntryWhenReplayingHistoryItem, "Configured history defaults failed.");
+        {std::ofstream out(localConfig,std::ios::app);out<<"add_new_listening_history_entry_when_replaying_history_item=true\n";}
+        settings=readConfig(localConfig);require(settings.addNewListeningHistoryEntryWhenReplayingHistoryItem,"History replay option failed.");
         const auto badConfig = root / "invalid.ini";
         { std::ofstream config(badConfig); config << "directory=" << utf8(media) << "\nextensions=wav\nhistory_limit=-1\n"; }
         rejects([&] { readConfig(badConfig); }, "Invalid history limit accepted.");

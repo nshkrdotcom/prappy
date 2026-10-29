@@ -1,5 +1,5 @@
 #Requires -Version 7.0
-param([string]$BuildVariant='Release')
+param([string]$BuildVariant='Release',[switch]$HistoryOnly)
 $ErrorActionPreference='Stop'
 $app = Split-Path $PSScriptRoot -Parent
 $fixture = Join-Path $app 'build/dedup-test/scraper/library'
@@ -10,6 +10,7 @@ Copy-Item -LiteralPath "$fixture/b/same.wav" -Destination "$stateDirectory/media
 # Force the restored beta path to be a hidden duplicate, exercising canonical analysis identity.
 Copy-Item -LiteralPath "$fixture/b/same.wav" -Destination "$stateDirectory/media/a-beta-copy.wav"
 @("directory=$stateDirectory/media",'extensions=wav,au','history_limit=10000') | Set-Content "$stateDirectory/player.ini" -Encoding utf8
+if(!$HistoryOnly){Add-Content "$stateDirectory/player.ini" 'add_new_listening_history_entry_when_replaying_history_item=true'}
 $alpha = ('"{0}"' -f ("$stateDirectory/media/alpha.wav".Replace('\','\\')))
 $beta = ('"{0}"' -f ("$stateDirectory/media/beta.wav".Replace('\','\\')))
 @('PRAPPY_HISTORY 1','NEXT_ID 3','REPEAT 0',"ENTRY 1 1700000000 0 $alpha", "ENTRY 2 1700000010 1 $beta",'TRAIL 1 2','CURSOR 2') | Set-Content "$stateDirectory/player-history.txt" -Encoding utf8NoBOM
@@ -337,6 +338,15 @@ try {
     Click 'play'
     $null=Wait-Ui {param($s) $s.Paused} 'paused after Forward'
     Require (([regex]::Matches((StateText),'(?m)^ENTRY ')).Count -eq 2) 'Back/Forward do not append visits'
+    if($HistoryOnly){
+        $rows=Read-Ui
+        Require ($rows.Controls['history-1'].Top -lt $rows.Controls['history-2'].Top) 'History displays oldest to newest'
+        Click 'history-1'
+        $null=Wait-Ui {param($s)!$s.Pending -and $s.Cursor -eq 1} 'Default history selection revisits existing entry'
+        Require (([regex]::Matches((StateText),'(?m)^ENTRY ')).Count -eq 2) 'Default history replay adds no entry'
+        Write-Host 'PASS chronological history and default replay without duplicate visits'
+        return
+    }
     Click 'history-1'
     Wait-State '(?m)^NEXT_ID 4\r?$'
     Wait-State '(?m)^CURSOR 3\r?$'

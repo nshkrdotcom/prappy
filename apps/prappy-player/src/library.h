@@ -181,6 +181,7 @@ struct Library {
     std::vector<fs::path> roots;
     std::set<std::string> extensions;
     size_t historyLimit = 10000;
+    bool addNewListeningHistoryEntryWhenReplayingHistoryItem = false;
     bool catalogBackup = true;
     bool forceVerification = false;
     int order = 0;
@@ -308,7 +309,7 @@ struct Library {
             }
             forceVerification = false;
             roots = config.roots; extensions = config.extensions;
-            historyLimit = config.historyLimit; rebuildSearch(); sort();
+            historyLimit = config.historyLimit; addNewListeningHistoryEntryWhenReplayingHistoryItem = config.addNewListeningHistoryEntryWhenReplayingHistoryItem; rebuildSearch(); sort();
             notice = std::to_string(tracks.size()) + " tracks";
             if (duplicates) notice += " | " + std::to_string(duplicates) + " identical copies hidden";
             if (!warnings.empty()) notice += " | " + warnings.front() + (warnings.size() > 1 ? " (+more)" : "");

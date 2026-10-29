@@ -760,7 +760,7 @@ int runPlayer(HINSTANCE instance) {
                 if (ImGui::Combo("##order", &library.order, choices, 4)) { library.sort(); filterDirty = resetListScroll = true; }
                 uiProbe.observe("order", ImGui::IsItemClicked());
                 rememberControl(); ImGui::EndDisabled();
-                if (historyView) { ImGui::SameLine(); ImGui::TextDisabled("Newest first"); }
+                if (historyView) { ImGui::SameLine(); ImGui::TextDisabled("Newest at bottom"); }
                 else {
                     ImGui::SameLine();
                     if (centeredButton("Filters", {}, "filters")) ImGui::OpenPopup("Filters"); rememberControl();
@@ -830,7 +830,7 @@ int runPlayer(HINSTANCE instance) {
                         }
                         std::stable_sort(visible.begin(), visible.end(), [&](size_t a, size_t b) {
                             const auto& entries = std::as_const(history.entries);
-                            return entries[a].time != entries[b].time ? entries[a].time > entries[b].time : entries[a].id > entries[b].id;
+                            return entries[a].time != entries[b].time ? entries[a].time < entries[b].time : entries[a].id < entries[b].id;
                         });
                     }
                     if (!historyView && (library.order == 1 || library.order == 2)) grouped.rebuild(library, visible, [&](const Track& track) {
@@ -866,7 +866,7 @@ int runPlayer(HINSTANCE instance) {
                                 {std::max(ImGui::GetContentRegionAvail().x, textPainter.width(label, filenameFontSize()) + 4), 0});
                             highlightedLabel(label, highlightTerms, origin);
                             uiProbe.observe(("history-" + std::to_string(entry.id)).c_str(), selected);
-                            if (selected) playback.request(entry.path);
+                            if (selected) playback.selectHistory(entry.id,library.addNewListeningHistoryEntryWhenReplayingHistoryItem);
                             rememberControl(); tooltip(utf8(entry.path) + "\nPlayed: " + historyTime(entry.time));
                             if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) contextPath = entry.path;
                             if (ImGui::BeginPopupContextItem("history-actions")) { pathMenu(contextPath); ImGui::EndPopup(); }

@@ -8,7 +8,7 @@
 #include <sstream>
 #include <vector>
 #include <memory>
-struct Config { std::vector<fs::path> roots; std::set<std::string> extensions; size_t historyLimit = 10000; };
+struct Config { std::vector<fs::path> roots; std::set<std::string> extensions; size_t historyLimit = 10000; bool addNewListeningHistoryEntryWhenReplayingHistoryItem = false; };
 inline Config readConfig(const fs::path& file) {
     std::ifstream input(file);
     if (!input) throw std::runtime_error("Cannot read player.ini beside the executable.");
@@ -37,6 +37,10 @@ inline Config readConfig(const fs::path& file) {
                     throw std::runtime_error("Config: invalid extension.");
                 config.extensions.insert('.' + ext);
             }
+        } else if (name == "add_new_listening_history_entry_when_replaying_history_item") {
+            value=lower(value);
+            if(value!="true"&&value!="false")throw std::runtime_error("Config: add_new_listening_history_entry_when_replaying_history_item must be true or false.");
+            config.addNewListeningHistoryEntryWhenReplayingHistoryItem=value=="true";
         } else if (name == "history_limit") {
             size_t limit = 0;
             const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), limit);
@@ -56,6 +60,6 @@ inline void createDefaultConfig(const fs::path& file) {
     const auto root = utf8(fs::path(music));
     std::ofstream out(file);
     out << "# UTF-8. Repeat directory= for more roots. Relative roots resolve beside this file.\n"
-        << "directory=" << root << "\nextensions=flac,wav,mp3,opus,m4a,wv,mka,webm,ogg,aac,aiff,wma\nhistory_limit=10000\n";
+        << "directory=" << root << "\nextensions=flac,wav,mp3,opus,m4a,wv,mka,webm,ogg,aac,aiff,wma\nhistory_limit=10000\nadd_new_listening_history_entry_when_replaying_history_item=false\n";
     if (!out) throw std::runtime_error("Cannot create player.ini. Put the player in a writable folder.");
 }
