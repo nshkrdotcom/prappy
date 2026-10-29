@@ -65,7 +65,7 @@ struct UiProbe {
                         const auto key = name == "HOME" ? ImGuiKey_Home : name == "DOWN" ? ImGuiKey_DownArrow : name == "ENTER" ? ImGuiKey_Enter :
                             name == "ESC" ? ImGuiKey_Escape : name == "LEFT" ? ImGuiKey_LeftArrow : name == "RIGHT" ? ImGuiKey_RightArrow :
                             name == "END" ? ImGuiKey_End : name == "CTRL" ? ImGuiMod_Ctrl : name == "SHIFT" ? ImGuiMod_Shift :
-                            name == "ALT" ? ImGuiMod_Alt : name == "E" ? ImGuiKey_E : name == "A" ? ImGuiKey_A : name == "M" ? ImGuiKey_M : name == "T" ? ImGuiKey_T : ImGuiKey_None;
+                            name == "F" ? ImGuiKey_F : name == "ALT" ? ImGuiMod_Alt : name == "E" ? ImGuiKey_E : name == "A" ? ImGuiKey_A : name == "M" ? ImGuiKey_M : name == "T" ? ImGuiKey_T : ImGuiKey_None;
                         if (valid && key != ImGuiKey_None) keys[key] = down != 0; else valid = false;
                     }
                     else if (action == "TEXT") valid = static_cast<bool>(command >> std::quoted(characters));

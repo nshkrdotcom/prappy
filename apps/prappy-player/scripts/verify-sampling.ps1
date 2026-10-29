@@ -235,7 +235,13 @@ try{
  Click 'sample-amplitude-fit-now'
  $amplitude=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 2 -and $ui.Sample.amplitude_gain -gt 1} 'one-shot visible fit'
  Click 'sample-fit'
- $null=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 2 -and [Math]::Abs($ui.Sample.amplitude_gain-$amplitude.Sample.amplitude_gain) -lt .000001} 'manual amplitude holds across time zoom'
+ $zoomed=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 2 -and [Math]::Abs($ui.Sample.amplitude_gain-$amplitude.Sample.amplitude_gain) -lt .000001 -and [Math]::Abs($ui.Sample.viewport_start-[Math]::Max(0,$ui.Sample.start-[Math]::Max(100,[Math]::Floor(($ui.Sample.end-$ui.Sample.start)/10)))) -lt 1} 'selection time zoom with unchanged amplitude'
+ if($zoomed.Sample.start -ne $start -or $zoomed.Sample.end -ne $selected.Sample.end){throw 'Time zoom changed splice boundaries'}
+ Send-Input ('MOVE '+($overview.Left+($overview.Right-$overview.Left)*.8).ToString([Globalization.CultureInfo]::InvariantCulture)+' '+$overview.Y.ToString([Globalization.CultureInfo]::InvariantCulture))
+ Send-Input 'DOUBLE_CLICK'
+ $null=Wait-Ui {param($ui)[Math]::Abs($ui.Sample.viewport_start-$zoomed.Sample.viewport_start) -gt 100} 'navigate away from selection'
+ Send-Input 'KEY F 1';Send-Input 'KEY F 0'
+ $null=Wait-Ui {param($ui)[Math]::Abs($ui.Sample.viewport_start-$zoomed.Sample.viewport_start) -lt 1 -and [Math]::Abs($ui.Sample.viewport_end-$zoomed.Sample.viewport_end) -lt 1} 'F restores padded selection zoom'
  if($amplitude.Sample.start -ne $start -or $amplitude.Sample.end -ne $selected.Sample.end){throw 'Display amplitude changed splice boundaries'}
  Click 'sample-in-plus'
  $null=Wait-Ui {param($ui)$ui.Sample.start -eq $start+1} 'one-frame nudge'

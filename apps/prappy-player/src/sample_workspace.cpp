@@ -620,6 +620,16 @@ void Workspace::draw(Audio& audio,const std::function<void(const char*,bool)>& o
             if(button("Play recording","sample-listen")){transport.scope=PlaybackScope::Recording;beginAudition(audio,BoundaryCheck::None,transport.cursor);}
             ImGui::SameLine();if(button("Classify / detect beats","sample-classify")){Json payload={{"capture_id",capture.at("id")},{"start_frame",std::max<Frame>(0,editor.span.start-Rate*10)},{"end_frame",std::min(editor.total,editor.span.end+Rate*10)}};if(!region.is_null()){payload["target_id"]=region.at("id");payload["target_revision"]=region.at("revision");}command("classify",payload);}
             if(!selectionDefined)ImGui::TextWrapped("No sample selected. Create a sample at the cue or select a passage on the player waveform.");
+            ImGui::BeginDisabled(!selectionDefined);
+            const bool zoomSelection=button("Zoom to selection (F)","sample-fit");
+            if(ImGui::IsItemHovered())ImGui::SetTooltip("Fill the time view with the selected sample and 10%% padding on each side. Display only.");
+            if(zoomSelection||(ImGui::Shortcut(ImGuiKey_F)&&!ImGui::GetIO().WantTextInput)){
+                const auto margin=std::max<Frame>(100,(editor.span.end-editor.span.start)/10);
+                viewportStart=static_cast<double>(std::max<Frame>(0,editor.span.start-margin));
+                viewportEnd=static_cast<double>(std::min(editor.total,editor.span.end+margin));
+                fit=true;detailDue=std::chrono::steady_clock::now();
+            }
+            ImGui::EndDisabled();
             waveform(audio,observe);if(!ImGui::IsMouseDown(0))editor.endGesture();
             ImGui::BeginDisabled(!selectionDefined);
             Span edited=editor.span;ImGui::SetNextItemWidth(150);ImGui::InputScalar("In",ImGuiDataType_S64,&edited.start);ImGui::SameLine();ImGui::SetNextItemWidth(150);ImGui::InputScalar("Out (exclusive)",ImGuiDataType_S64,&edited.end);editor.change(edited);
@@ -627,7 +637,6 @@ void Workspace::draw(Audio& audio,const std::function<void(const char*,bool)>& o
             if(button("In -1","sample-in-minus"))editor.change({editor.span.start-1,editor.span.end});ImGui::SameLine();if(button("In +1","sample-in-plus"))editor.change({editor.span.start+1,editor.span.end});ImGui::SameLine();
             if(button("Out -1","sample-out-minus"))editor.change({editor.span.start,editor.span.end-1});ImGui::SameLine();if(button("Out +1","sample-out-plus"))editor.change({editor.span.start,editor.span.end+1});ImGui::SameLine();
             if(button("Undo","sample-undo"))editor.undo();ImGui::SameLine();if(button("Redo","sample-redo"))editor.redo();ImGui::SameLine();
-            if(button("Fit selection","sample-fit")){const auto margin=std::max<Frame>(100,(editor.span.end-editor.span.start)/10);viewportStart=static_cast<double>(std::max<Frame>(0,editor.span.start-margin));viewportEnd=static_cast<double>(std::min(editor.total,editor.span.end+margin));fit=true;detailDue=std::chrono::steady_clock::now();}
             if(ImGui::Shortcut(ImGuiMod_Ctrl|ImGuiKey_Z))editor.undo();if(ImGui::Shortcut(ImGuiMod_Ctrl|ImGuiKey_Y))editor.redo();
             ImGui::SetNextItemWidth(160);const char* modes[]={"Snap off","Onsets","Beats","Sixteenth notes","Zero crossing"};ImGui::Combo("Snap",&snapMode,modes,5);ImGui::SameLine();ImGui::TextDisabled("Alt bypasses snap");
             const auto chooseScope=[&](const char* label,const char* id,PlaybackScope value){

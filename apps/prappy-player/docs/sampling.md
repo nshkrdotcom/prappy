@@ -60,6 +60,9 @@ source selection/import; the player never silently invents provenance.
 The green In and gold Out handles select canonical 48,000 Hz stereo frames. Out
 is exclusive. Zoom and pan the detail plot, double-click the overview to focus,
 type exact frame coordinates, or nudge by one frame. One drag is one undo step.
+**Zoom to selection (F)** above the waveform fills the horizontal view with the
+selected sample and 10% padding on each side (clipped at the recording edges).
+It changes only the time view; typing F in a text field does not trigger it.
 Snap supports onsets, beats, sixteenth notes and zero crossings; Alt bypasses it.
 Audition a selection, its boundaries, or a loop using the canonical float PCM also
 used by preparation. Preview gain affects audition independently of song gain.
