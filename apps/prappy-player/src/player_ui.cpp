@@ -230,6 +230,7 @@ int runPlayer(HINSTANCE instance) {
     std::vector<std::wstring> args; for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
     if (args.size() == 3 && args[0] == L"--self-test") return selfTest(args[1], args[2]);
     if (args.size() == 3 && args[0] == L"--state-test") return stateTests(args[1], args[2]);
+    if (args.size() == 3 && args[0] == L"--meter-test") return outputMeterTests(args[1], args[2]);
     if (args.size() == 3 && args[0] == L"--sampling-test") return sampling::integrationTest(args[1],args[2]);
     SDL_Window* window = nullptr; SDL_Renderer* renderer = nullptr;
     Presentation presentation;
@@ -681,7 +682,7 @@ int runPlayer(HINSTANCE instance) {
                 ImGui::BeginDisabled(!audio.loaded || audio.duration <= 0);
                 drawPlayerWaveform({static_cast<float>(width)-20,26});ImGui::EndDisabled();
                 ImGui::SetCursorPos({10, 69}); peakMeter(displayedPeak, {static_cast<float>(width) - 20, 4});
-                tooltip("Decoded sample peak before volume/gain; not a true-peak meter");
+                tooltip(audio.loaded && !audio.paused && !audio.meterAvailable ? "Waiting for Windows audio-session meter" : "Prappy Windows audio-session peak after volume/gain; not a true-peak meter");
             } else {
             const auto& uiStyle = ImGui::GetStyle();
             const float headerY = std::round(uiStyle.WindowPadding.y);
@@ -986,7 +987,7 @@ int runPlayer(HINSTANCE instance) {
             ImGui::SameLine(u(248)); ImGui::TextDisabled("%s", audio.active ? (audio.paused ? "PAUSED" : "PLAYING") : "READY");
             uiProbe.observe("transport-status", false);
             ImGui::SameLine(); peakMeter(displayedPeak, {std::max(30.0f, static_cast<float>(width) - ImGui::GetCursorPosX() - 12), 6}, ImGui::GetTextLineHeight());
-            uiProbe.observe("peak-meter", false); tooltip("Decoded sample peak before volume/gain; not a true-peak meter");
+            uiProbe.observe("peak-meter", false); tooltip(audio.loaded && !audio.paused && !audio.meterAvailable ? "Waiting for Windows audio-session meter" : "Prappy Windows audio-session peak after volume/gain; not a true-peak meter");
             const float transportLeft = std::round(uiStyle.WindowPadding.x);
             const float transportRight = static_cast<float>(width) - transportLeft;
             const float playX = transportLeft + arrowWidth + gap, nextX = playX + playWidth + gap;

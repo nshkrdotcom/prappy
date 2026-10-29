@@ -40,7 +40,7 @@ The marker follows clicks immediately and interpolates between playback updates;
 input redraws immediately while playback animation targets 60fps. The thin stereo
 waveform uses ImPlot with cached envelopes bounded by horizontal resolution.
 The sampling editor shares the stereo plot primitive and adds exact PCM detail. Decoder position, duration,
-pause and meter updates arrive through mpv events without per-frame property reads.
+pause updates arrive through mpv events. A worker reads Windows audio-session peaks without blocking UI.
 
 NVIDIA's overlay can mistake a GPU-rendered desktop app for a game. The optional
 `scripts/set-nvidia-profile.ps1 -Apply` writes the undocumented per-executable
@@ -312,8 +312,8 @@ operate the scraper, change its recordings or interfere with collection jobs.
   playback buttons stay in place. Double-click the divider to restore compact
   height. A focused divider also supports Up/Down and Home. The preferred height
   is saved, clamped to fit smaller windows, and restored when there is room.
-- A small meter shows live decoded sample peaks before volume/normalization,
-  with a release decay. It is not a hardware-output or true-peak meter.
+- A small meter shows Prappy's Windows audio-session sample peaks after volume/normalization,
+  with a release decay. It follows output timing; it is not a true-peak or acoustic loudness meter.
 - Right-click a track to **Copy full path**, **Copy WSL Linux path**, or
   **Reveal in Explorer**. WSL conversion supports `\\wsl.localhost\distro\...`,
   `\\wsl$\distro\...`, and extended UNC paths, preserving Unicode and spaces.
@@ -372,8 +372,19 @@ while a track loads paused, before it becomes audible. The volume slider stays
 independent. This preserves dynamics and does not promise true-peak limiting or
 an exact target when the boost/headroom bounds apply.
 
-The live meter uses a lightweight `astats` filter on the playback decoder; it
-does not open the source a second time. Playback gain uses mpv's separate
+The live meter reads `IAudioMeterInformation` for Windows audio sessions belonging
+to this process, across active render devices. A worker samples every 10 ms,
+retains transients until the next UI read, and rediscovers sessions every 500 ms
+while playing (including output-device changes). It sleeps while idle. Other
+applications are excluded; no source is decoded twice and no audio is captured.
+Windows reports the preceding device period, avoiding decoder read-ahead.
+Session peaks reflect application gain; downstream device volume, Bluetooth or
+external hardware latency can still differ from what reaches your ears.
+Run `./scripts/test-output-meter.ps1` for the real-device timing regression
+(it plays test tones). It checks one-second decode buffering, unrelated-process
+audio isolation, gain, volume, pause and seek, with WASAPI loopback confirmation.
+
+Playback gain uses mpv's separate
 `volume-gain` property. Playback and analysis disable automatic ReplayGain
 adjustments so measured gain has one authority.
 

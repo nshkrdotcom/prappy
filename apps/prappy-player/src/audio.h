@@ -1,5 +1,6 @@
 #pragma once
 #include "paths.h"
+#include "output_meter.h"
 #include <mpv/client.h>
 #include <array>
 #include <vector>
@@ -49,7 +50,8 @@ struct Audio {
     double position = 0, duration = 0, volume = 70;
     AudioInfo info;
     double gain = 0, meterPeak = 0;
-    bool metering = false;
+    std::unique_ptr<OutputMeter> outputMeter;
+    bool meterAvailable = false;
     bool sequentialRetry = false;
     using Clock = std::chrono::steady_clock;
     Clock::time_point positionTime = Clock::now();
@@ -84,16 +86,12 @@ struct Audio {
         if (silent) check(set_option_string(handle, "ao", "null"));
         check(set_option_string(handle, "audio-channels", "stereo"));
         check(set_option_string(handle, "audio-samplerate", "48000"));
-        if (meter) {
-            check(set_option_string(handle, "af", "@prappy-meter:lavfi=[astats=metadata=1:reset=1:measure_overall=Peak_level:measure_perchannel=none]"));
-            metering = true;
-        }
         for (const auto& [name, value] : options) check(set_option_string(handle, name, value));
         check(initialize(handle)); check(set_property(handle, "volume", MPV_FORMAT_DOUBLE, &volume));
         check(observe_property(handle, 1, "time-pos", MPV_FORMAT_DOUBLE));
         check(observe_property(handle, 2, "duration", MPV_FORMAT_DOUBLE));
         check(observe_property(handle, 3, "pause", MPV_FORMAT_FLAG));
-        if (metering) check(observe_property(handle, 4, "af-metadata/prappy-meter/lavfi.astats.Overall.Peak_level", MPV_FORMAT_STRING));
+        if (meter && !silent) outputMeter = std::make_unique<OutputMeter>();
     }
     void check(int result) { if (result < 0) throw std::runtime_error(error_string(result)); }
     bool run(std::initializer_list<const char*> args) {
@@ -203,15 +201,7 @@ struct Audio {
                 }
                 if (event->reply_userdata == 2 && property->format == MPV_FORMAT_DOUBLE) duration = *static_cast<double*>(property->data);
                 if (event->reply_userdata == 3 && property->format == MPV_FORMAT_FLAG) paused = *static_cast<int*>(property->data) != 0;
-                if (event->reply_userdata == 4) {
-                    meterPeak = 0;
-                    if (property->format == MPV_FORMAT_STRING) {
-                        const auto value = *static_cast<char**>(property->data);
-                        const std::string_view text = value ? value : "";
-                        double db = 0; const auto [end,ec] = std::from_chars(text.data(),text.data()+text.size(),db);
-                        if (ec == std::errc{} && end == text.data()+text.size() && std::isfinite(db) && db < 36) meterPeak = std::pow(10.0,db/20);
-                    }
-                }
+
             }
             if (event->event_id == MPV_EVENT_START_FILE) {
                 eventEntry = static_cast<mpv_event_start_file*>(event->data)->playlist_entry_id;
@@ -237,7 +227,13 @@ struct Audio {
             if (info.codec.empty() || info.sampleFormat.empty() || info.sampleRate <= 0 || info.channels <= 0) readInfo();
             submitSeek();
         }
-        if (!active || paused) meterPeak = 0;
+        if (outputMeter) {
+            const bool audible = loaded && active && !paused;
+            outputMeter->enable(audible);
+            const auto peak = outputMeter->read();
+            meterPeak = audible ? peak : 0;
+            meterAvailable = audible && outputMeter->available();
+        } else { meterPeak = 0; meterAvailable = false; }
         return eof;
     }
 };

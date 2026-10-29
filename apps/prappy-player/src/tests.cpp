@@ -11,6 +11,53 @@
 #include <SDL3/SDL.h>
 #include <cmath>
 #include <fstream>
+// An explicitly invoked real-device test; the fixture alternates one second of
+// silence/tone for six seconds, then stays on. Never used by silent state tests.
+int outputMeterTests(const fs::path& signal, const fs::path& logPath) {
+    std::ofstream log(logPath);
+    const auto require = [](bool value,const char* message) { if (!value) throw std::runtime_error(message); };
+    try {
+        Audio audio; audio.volume = 70;
+        audio.open(false,{{"audio-buffer","1"},{"ao","wasapi"},{"audio-exclusive","no"}});
+        require(audio.play(signal),"Cannot play meter timing fixture.");
+        int tone = 0, silence = 0, wrong = 0;
+        const auto start = Audio::Clock::now();
+        while (std::chrono::duration<double>(Audio::Clock::now()-start).count() < 9) {
+            audio.poll();
+            double position = 0;
+            if (audio.loaded && audio.get_property(audio.handle,"audio-pts",MPV_FORMAT_DOUBLE,&position) >= 0 &&
+                position >= 1 && position < 6) {
+                const double fraction = position - std::floor(position);
+                if (fraction > .2 && fraction < .8) {
+                    const bool audible = static_cast<int>(position)%2 != 0;
+                    if (audible) ++tone; else ++silence;
+                    if ((audio.meterPeak > .001) != audible) ++wrong;
+                }
+            }
+            if (position >= 6.3) break;
+            SDL_Delay(10);
+        }
+        log << "timing samples tone=" << tone << " silence=" << silence << " wrong=" << wrong << '\n' << std::flush;
+        require(tone > 100 && silence > 60 && wrong < (tone+silence)/20,"Output meter does not follow audible timestamps with one-second decode buffering.");
+        const auto settle = [&] {
+            double maximum = 0;
+            for (int i = 0; i < 50; ++i) { audio.poll(); if (i > 25) maximum = std::max(maximum,audio.meterPeak); SDL_Delay(10); }
+            return maximum;
+        };
+        const auto normal = settle(); require(normal > .001,"Real device produced no session peak.");
+        audio.setGain(-6); const auto reduced = settle();
+        log << "gain ratio=" << reduced/normal << '\n';
+        require(reduced/normal > .4 && reduced/normal < .6,"Output meter ignores application gain.");
+        audio.setVolume(0); require(settle() < .00001,"Zero volume still shows output signal.");
+        audio.setVolume(70); audio.setGain(0); require(settle() > .001,"Restored volume lost meter.");
+        audio.setPaused(true); require(settle() == 0,"Paused output meter remains active.");
+        audio.seek(.3); settle(); audio.setPaused(false);
+        require(settle() < .00001,"Seek into silence retained pre-seek peaks.");
+        audio.seek(7); require(settle() > .001,"Seek into tone lost output meter.");
+        log << "PASS real WASAPI output timing, gain, zero volume, pause, resume and exact seek\nALL PASS\n";
+        return 0;
+    } catch (const std::exception& e) { log << "FAIL " << e.what() << '\n'; return 1; }
+}
 // Integration checks run only in explicit --state-test fixture directories.
 int stateTests(const fs::path& configPath, const fs::path& logPath) {
     std::ofstream log(logPath);

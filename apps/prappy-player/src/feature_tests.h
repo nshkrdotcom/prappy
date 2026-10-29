@@ -202,8 +202,7 @@ inline void featureTests(const fs::path& root, const Library& fixture, std::ostr
     player.enqueue(a, false); player.enqueue(b, false);
     require(player.navigate(1) && player.navigate(1), "Idle queued playback failed."); wait();
     require(history.playedCount == 1 && key(audio.current) == key(a), "Rapid Next skipped an uncommitted queued track.");
-    for (int i = 0; i < 40 && audio.meterPeak <= 0; ++i) { SDL_Delay(5); player.tick(); }
-    require(audio.meterPeak > .01 && audio.meterPeak < .1, "Live decoded PCM peak meter returned no signal.");
+    require(!audio.outputMeter && audio.meterPeak == 0, "Silent decoder started a hardware-output meter.");
     const auto volume = audio.volume; audio.setGain(-6);
     double applied = 0; audio.get_property(audio.handle, "volume-gain", MPV_FORMAT_DOUBLE, &applied);
     require(std::abs(applied + 6) < .001 && audio.volume == volume, "Measured gain changed user volume or was not applied.");
@@ -226,5 +225,5 @@ inline void featureTests(const fs::path& root, const Library& fixture, std::ostr
     require(audio.current == root / "alias.wav" && player.libraryNext(true) == audio.current,
         "Folder progression lost the folder's duplicate-copy path.");
     player.toggle(); player.tick(); require(audio.paused && audio.meterPeak == 0, "Paused peak meter did not clear.");
-    player.finish(); log << "PASS features playback: idle/rapid queue, successful consumption, failed-load rollback, live PCM meter, independent gain, folder scope/repeat\n";
+    player.finish(); log << "PASS features playback: idle/rapid queue, successful consumption, failed-load rollback, silent-output meter isolation, independent gain, folder scope/repeat\n";
 }
