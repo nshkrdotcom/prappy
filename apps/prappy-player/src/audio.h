@@ -13,6 +13,10 @@
 #include <optional>
 #include <chrono>
 #include <memory>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <deque>
 struct AudioInfo {
     std::string codec, sampleFormat, channelLayout;
     int64_t sampleRate = 0, channels = 0;
@@ -41,6 +45,17 @@ struct Audio {
     MPV_API(command); MPV_API(set_property); MPV_API(get_property); MPV_API(wait_event); MPV_API(error_string); MPV_API(free);
     MPV_API(set_wakeup_callback); MPV_API(command_async); MPV_API(observe_property); MPV_API(free_node_contents);
 #undef MPV_API
+    struct Async;
+    std::shared_ptr<Async> worker;
+    std::vector<std::pair<std::string,std::string>> cachedTags;
+    static void checkWorkerCapacity();
+    void startWorker();
+    void stopWorker();
+    void setWorkerNotify();
+    void enqueue(int kind, std::function<void(Audio&)> action, bool replace = false);
+    bool collectWorker();
+    // Explicit inspection barrier for native tests; never called by UI code.
+    void waitIdle();
     std::string error;
     fs::path current;
     bool loaded = false, paused = false, active = false, waitingStart = false;
@@ -63,13 +78,15 @@ struct Audio {
         return std::clamp(position+std::max(0.0,elapsed),0.0,std::max(0.0,duration));
     }
     std::function<void()> notify;
-    ~Audio() { if (handle) { set_wakeup_callback(handle, nullptr, nullptr); terminate_destroy(handle); } if (dll) FreeLibrary(dll); }
+    ~Audio() { stopWorker(); if (handle) { set_wakeup_callback(handle, nullptr, nullptr); terminate_destroy(handle); } if (dll) FreeLibrary(dll); }
     void setNotify(std::function<void()> callback) {
         notify = std::move(callback);
+        if (worker) { setWorkerNotify(); return; }
         set_wakeup_callback(handle, [](void* context) { auto& audio = *static_cast<Audio*>(context); if (audio.notify) audio.notify(); }, this);
     }
     void open(bool silent = false, std::initializer_list<std::pair<const char*, const char*>> options = {}, bool meter = true) {
-        if (dll) throw std::logic_error("Audio is already open.");
+        if (handle || dll) throw std::logic_error("Audio is already open.");
+        if (meter) checkWorkerCapacity();
         auto path = executableDir() / "libmpv-2.dll";
         dll = LoadLibraryExW(path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
         if (!dll) throw std::runtime_error("Cannot load libmpv-2.dll (Windows error " + std::to_string(GetLastError()) + ").");
@@ -93,9 +110,15 @@ struct Audio {
         check(observe_property(handle, 2, "duration", MPV_FORMAT_DOUBLE));
         check(observe_property(handle, 3, "pause", MPV_FORMAT_FLAG));
         if (meter && !silent) outputMeter = std::make_unique<OutputMeter>();
+        if (meter) startWorker();
     }
     void check(int result) { if (result < 0) throw std::runtime_error(error_string(result)); }
     bool run(std::initializer_list<const char*> args) {
+        if (worker) {
+            std::vector<std::string> owned; for (const auto* arg : args) owned.emplace_back(arg);
+            enqueue(5,[owned=std::move(owned)](Audio& core){ std::vector<const char*> values; for(const auto& arg:owned)values.push_back(arg.c_str()); values.push_back(nullptr); const auto result=core.command(core.handle,values.data());if(result<0)core.error=core.error_string(result);else if(!owned.empty()&&owned[0]=="stop"){core.loaded=core.active=false;core.loadedSerial=0;core.desiredEntry=core.eventEntry=-1;core.current.clear();core.queuedSeek.reset();core.seekPreview.reset();core.pendingSeek=0;} });
+            return true;
+        }
         std::vector<const char*> list(args); list.push_back(nullptr);
         int result = command(handle, list.data());
         if (result < 0) { error = error_string(result); return false; } return true;
@@ -107,6 +130,14 @@ struct Audio {
         return utf8(nativePath.is_absolute() ? extendedPath(nativePath) : nativePath);
     }
     bool play(const fs::path& path, bool startPaused = false, double startPosition = 0) {
+        if (worker) {
+            ++serial; const auto epoch=serial; const auto level=volume;
+            current=path; loaded=false; loadedSerial=0; active=true; waitingStart=true; info={}; cachedTags.clear();
+            queuedSeek.reset();seekPreview.reset();pendingSeek=0; gain=0;meterPeak=0;
+            position=startPosition;positionTime=Clock::now();duration=0;paused=pauseRequested=startPaused;error.clear();
+            enqueue(0,[path,startPaused,startPosition,epoch,level](Audio& core){core.serial=epoch-1;core.setVolume(level); if(!core.play(path,startPaused,startPosition)){core.serial=epoch;core.current=path;core.active=core.loaded=false;core.loadedSerial=0;core.waitingStart=false;}},true);
+            return true;
+        }
         poll(); // Consume the previous track's events before replacing its identity.
         const auto file = decoderFile(path);
         int pauseValue = startPaused ? 1 : 0;
@@ -142,6 +173,7 @@ struct Audio {
         positionTime = Clock::now(); error.clear(); return true;
     }
     void setPaused(bool value) {
+        if(worker){position=displayPosition();positionTime=Clock::now();paused=pauseRequested=value;if(!value)seekPreview.reset();enqueue(1,[value](Audio& core){core.setPaused(value);});return;}
         if (!active) { paused = pauseRequested = value; return; }
         int flag = value ? 1 : 0;
         int result = set_property(handle, "pause", MPV_FORMAT_FLAG, &flag);
@@ -162,16 +194,19 @@ struct Audio {
         const auto value = std::to_string(*queuedSeek);
         const char* args[] = {"seek",value.c_str(),"absolute+exact",nullptr};
         pendingSeek = ++seekSequence; queuedSeek.reset();
+        if(worker){const auto target=std::stod(value);const auto sequence=pendingSeek;enqueue(4,[target,sequence](Audio& core){core.seekSequence=sequence-1;core.pendingSeek=0;core.queuedSeek=core.seekPreview=target;core.submitSeek();});return;}
         const auto result = command_async(handle,pendingSeek,args);
         if (result < 0) { error = error_string(result); pendingSeek = 0; seekPreview.reset(); }
     }
     void setVolume(double value) {
+        if(worker){volume=value;enqueue(2,[value](Audio& core){core.setVolume(value);});return;}
         int result = set_property(handle, "volume", MPV_FORMAT_DOUBLE, &value);
         if (result < 0) error = error_string(result); else volume = value;
     }
     void setGain(double value) {
         if (!std::isfinite(value)) return;
         value = std::clamp(value, -96.0, 12.0);
+        if(worker){gain=value;enqueue(3,[value](Audio& core){core.setGain(value);});return;}
         const auto result = set_property(handle, "volume-gain", MPV_FORMAT_DOUBLE, &value);
         if (result < 0) error = error_string(result); else gain = value;
     }
@@ -182,6 +217,7 @@ struct Audio {
         return value ? value : "";
     }
     std::vector<std::pair<std::string, std::string>> loadedTags() const {
+        if(worker)return cachedTags;
         std::vector<std::pair<std::string, std::string>> result;
         if (!handle || !loaded || !free_node_contents) return result;
         mpv_node metadata{};
@@ -217,6 +253,7 @@ struct Audio {
         get_property(handle, "current-tracks/audio/demux-bitrate", MPV_FORMAT_DOUBLE, &info.bitrate);
     }
     bool poll() {
+        if(worker)return collectWorker();
         bool eof = false;
         for (;;) {
             auto event = wait_event(handle, 0);
@@ -273,3 +310,5 @@ struct Audio {
         return eof;
     }
 };
+
+#include "audio_worker.h"

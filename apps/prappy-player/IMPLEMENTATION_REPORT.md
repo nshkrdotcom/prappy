@@ -1,4 +1,94 @@
-# Windows implementation review, 2026-10-29
+# Windows implementation review, 2026-10-30
+
+## Cold startup and editor restoration follow-up
+
+The reported blank editor and delayed return to the player exposed multiple
+blocking paths. Playback now owns libmpv on a serial worker; the window thread
+submits bounded/coalesced controls and reads snapshots. Loaded metadata is
+copied before readiness is published, and gain still precedes unpause. Source
+scans and sampling clients retire without joining provider IO on the window
+thread. Shared task state, notification fences, bounded executors and joined
+process-lifetime workers prevent callbacks into destroyed owners. An OS provider
+that ignores cancellation can still delay final process teardown after the
+window and instance lock have been released; this is not a guarantee that every
+network provider can be forcibly interrupted.
+
+The editor immediately restores its saved source, drafts, selection, viewport
+and cursor. A checksummed, source-bound local preview restores up to 30 seconds
+of PCM and an overview while the backend is unavailable. Preview IO runs off
+the window thread; stale generations and mismatched source/blob/decode identities
+are rejected. Returning to the player persists player mode before saving, and
+stopping editor transport preserves the saved cursor. Foreground PCM precedes
+speculative overview work, and successful credentials are reused per connection.
+
+Opening the real 7,186-track catalog also exposed saved offline flags preventing
+the selected local waveform from loading until source scanning finished. Saved
+alias-specific identities can now locate display previews independently; they
+do not authorize playback gain. A failing regression reproduced this lookup
+bug, and native service coverage checks cached waveform recovery with every
+catalog entry offline, without opening a decoder or authorizing stale gain.
+
+The scraper follow-up `8cb70bd` reuses one verified catalog read view per audio
+request and memoizes FFmpeg version by executable identity. Source hashing,
+cache validation and mutation checks remain intact. Its 341 offline consumer
+tests passed, including barrier-controlled concurrent metadata/speculative
+requests during blocked decoding. Disposable warm PCM requests improved from
+10.9 to 4.2 ms; this does not attribute the reported historical 15/38-second
+delays to one backend operation.
+
+Executed Windows validation includes strict Release, Release static analysis,
+Debug and Debug ASan builds; the full health scripts with CRT leak reporting;
+native and portable CTest; and full editor browse/PCM/edit/save/audition/export/
+reopen workflows against an isolated real service. Deterministic barrier tests
+cover blocked playback ownership, coalescing, gain ordering, cancellation,
+executor bounds and destruction before IO completion. ASan is not a race
+detector. The expanded Debug test translation unit requires `/bigobj`; `/W4
+/WX` and assertions remain enabled.
+
+`verify-sampling.ps1 -WorkflowOnly -ColdRestart -AudioLoopback` held backend
+responses until the restarted editor restored drafts/PCM and played, switched
+to the player, and closed. A subsequent restart restored player mode and
+responsive transport before release of the backend gate. Release editor/player
+readiness was 307/318 ms, Debug 383/318 ms, Debug ASan 1,031/848 ms. These are
+controlled restart measurements on this PC, not measurements of a fresh OS or
+WSL boot. `test-output-meter.ps1` also passed actual WASAPI gain, mute,
+pause/resume and seek checks.
+
+Final strict builds succeeded for all four configurations. The latest complete
+`scripts/verify-health.ps1 -SkipBuild -Repetitions 1` passed Release, Debug and
+Debug ASan state/dedup/features/window/relaunch checks and Debug CRT reports
+(`build/cold-start-health-pdb-all.log`). Earlier launch attempts were rejected
+by Application Control despite valid Authenticode signatures. Local CMake linker
+settings were rebuilt with full symbols, nonincremental Debug linking and
+`/PDBALTPATH:%_PDB%`; subsequent launches passed without changing policy. This
+sequence does not establish that a particular linker flag fixes reputation
+decisions or guarantees acceptance of future builds.
+
+Final `ctest --test-dir build/<variant> --output-on-failure` passed **2/2** in
+Release, Debug and Debug-Asan. The final gated Release workflow measured
+346 ms editor / 289 ms player readiness and passed selected-source loopback.
+`test-output-meter.ps1` passed with gain ratio 0.501158, muted peak zero and
+isolated WASAPI capture (`build/cold-start-final-validation.log`). The complete
+editor workflow also passed (`build/cold-start-full-editor.log`).
+
+After `scripts/build.ps1`, the exact pinned Release executable was reopened
+normally as **PID 17688**, version **0.1.3**, Authenticode **Valid**, SHA-256
+`BF97D3A778F31D77C68F8D10934D08DB38A8B20A8EAE55C16528D130377A4B5E`.
+It restored player mode and the selected Mark Guiliana source. The saved waveform
+was already visible while the real catalog scan was still at 3,067 files.
+Actual source playback produced WASAPI RMS 0.0431226 over 4,800 captured frames
+from a zero baseline; the player was then paused and left open. All **576 history
+entries, 8 source workspaces and 25 drafts** were retained. Workspace identities,
+draft IDs/ranges and saved-region bindings were compared before/after playback.
+Evidence: `editor-final-reopen.json`, `editor-final-live-playback.json` and
+`editor-final-pinned-release.png` under `build/`. Only the two owned disposable
+cold-start servers were gracefully stopped; production service/collectors remain.
+
+Previously documented Sound Check/reference calibration, full memory/phase
+accounting and network-provider/race validation limitations remain open. No
+old analysis cache, recordings, history, source identities, regions, drafts or
+sample workspaces were removed. Windows security, manifest and DLL policy
+remain unchanged; the existing free local development signing setup is used.
 
 The existing user commit `7456762` was reviewed in place. This report and
 `DELETIONS_AND_RENAMES.md` were missing from that checkout. New fixes are

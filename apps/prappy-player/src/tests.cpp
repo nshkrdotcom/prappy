@@ -9,6 +9,10 @@
 #include "waveform_tests.h"
 #include "sample_library_tests.h"
 #include "sample_handoff_tests.h"
+#include "sample_preview_tests.h"
+#include "audio_async_tests.h"
+#include "sample_client_cancel_tests.h"
+#include "scan_async_tests.h"
 #include <SDL3/SDL.h>
 #include <cmath>
 #include <fstream>
@@ -76,6 +80,7 @@ static void playbackStateTests(const fs::path& root, Library& fixture, std::ostr
                 {availableLufs, 0.1});
         };
         const auto actualGain = [&] {
+            audio.waitIdle();
             double value = 0;
             require(audio.get_property(audio.handle, "volume-gain", MPV_FORMAT_DOUBLE, &value) >= 0,
                 "Pinned libmpv volume-gain property unavailable.");
@@ -145,7 +150,7 @@ static void playbackStateTests(const fs::path& root, Library& fixture, std::ostr
         require(audio.seekSequence == requestsBefore+1 && audio.queuedSeek == .8 && audio.displayPosition() == .8,
             "Live rapid seeking blocked coalescing or optimistic feedback.");
         log << "Seek submission: 10001 targets coalesced in " << std::chrono::duration<double,std::milli>(Audio::Clock::now()-seekStart).count() << " ms\n";
-        for (int i = 0; i < 200 && std::abs(audio.position - .8) > .25; ++i) { player.tick(); SDL_Delay(5); }
+        for (int i = 0; i < 200 && (audio.pendingSeek||audio.queuedSeek||std::abs(audio.position - .8) > .25); ++i) { player.tick(); SDL_Delay(5); }
         require(audio.paused && audio.position > .5, "Cannot checkpoint paused position.");
         double decoded = 0;
         require(audio.get_property(audio.handle,"time-pos",MPV_FORMAT_DOUBLE,&decoded) >= 0 && std::abs(decoded-.8) < .25,
@@ -155,7 +160,7 @@ static void playbackStateTests(const fs::path& root, Library& fixture, std::ostr
         Audio restoredAudio; restoredAudio.open(true); Playback restored(restoredAudio, fixture, restoredHistory, restoredFile);
         restored.restore(); wait(restored, restoredAudio);
         require(restoredAudio.paused && restoredHistory.entries.size() == visits.entries.size() && restoredAudio.position > .5 && restoredHistory.repeat == RepeatMode::One, "Session did not restore paused without adding visits.");
-        int paused = 0; restoredAudio.get_property(restoredAudio.handle, "pause", MPV_FORMAT_FLAG, &paused);
+        restoredAudio.waitIdle();int paused = 0; restoredAudio.get_property(restoredAudio.handle, "pause", MPV_FORMAT_FLAG, &paused);
         require(paused != 0, "Restored mpv was not paused.");
         log << "PASS playback: branch/Back/Forward, rapid requests, locked gain vs late results/seek/pause, "
                "next-play gain, independent volume, failed-load gain rollback, paused restore/repeat\n";
@@ -299,7 +304,11 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
             "10 tracks \xc2\xb7 2 identical copies hidden \xc2\xb7 Checking duplicates: 4 / 10", "Status sections are not joined with middle dots.");
         const auto root = logPath.parent_path() / ("state-test-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
         fs::create_directories(root);
+        audio_async_tests::run(log);
+        sampleClientCancellationTests(log);
+        scanAsyncTests(log);
         sampleLibraryTests(root,log);
+        samplePreviewTests(root,log);
         pendingSampleHandoffTests(root,log);
         {
             // Public-domain test signal: 3072 stereo silent frames, 48 kHz/24-bit
@@ -523,7 +532,7 @@ int selfTest(const fs::path& config, const fs::path& logFile) {
             };
             waitLoaded(); SDL_Delay(120); audio.poll();
             if (audio.duration <= 0) throw std::runtime_error("No duration: " + track.name);
-            audio.pause(); audio.poll();
+            audio.pause(); audio.waitIdle(); audio.poll();
             int paused = 0; audio.get_property(audio.handle, "pause", MPV_FORMAT_FLAG, &paused);
             if (!paused) throw std::runtime_error("Pause failed.");
             double seek = std::min(1.0, audio.duration / 2); audio.seek(seek);
@@ -533,7 +542,7 @@ int selfTest(const fs::path& config, const fs::path& logFile) {
             }
             // mpv reports audible position, including the paused audio output buffer.
             if (std::abs(audio.position - seek) > .25) throw std::runtime_error("Seek failed: wanted " + std::to_string(seek) + ", got " + std::to_string(audio.position) + ": " + audio.error);
-            audio.setVolume(37); double volume = 0; audio.get_property(audio.handle, "volume", MPV_FORMAT_DOUBLE, &volume);
+            audio.setVolume(37); audio.waitIdle(); double volume = 0; audio.get_property(audio.handle, "volume", MPV_FORMAT_DOUBLE, &volume);
             if (std::abs(volume - 37) > .1) throw std::runtime_error("Volume failed.");
             auto id = key(audio.current);
             for (int order = 0; order < 3; ++order) { library.order = order; library.sort(); if (key(audio.current) != id) throw std::runtime_error("Sort changed current track."); }
@@ -618,7 +627,7 @@ int selfTest(const fs::path& config, const fs::path& logFile) {
             if (!repeated.loaded) throw std::runtime_error("Repeated playback load timeout.");
             if (!library.refresh(config)) throw std::runtime_error("Repeated refresh failed.");
             Scan cancelled; cancelled.begin(config, cycle % 3);
-            // Destruction requests cancellation and joins even while a scan is active.
+            // Destruction retires a cancelled scan; provider IO never joins here.
         }
         log << "PASS 12 playback create/load/destroy, refresh and scan cancellation cycles\nALL PASS\n";
         return 0;

@@ -3,6 +3,9 @@ param([switch]$Interactive, [string]$BuildVariant='Release')
 $ErrorActionPreference='Stop'
 $app = Split-Path $PSScriptRoot -Parent
 $out = Join-Path $app 'build'
+$state=Join-Path $out ('window-ui/'+$BuildVariant+'-'+[Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force "$state/media" | Out-Null
+@("directory=$state/media",'extensions=wav') | Set-Content "$state/player.ini" -Encoding utf8NoBOM
 Add-Type -AssemblyName System.Drawing
 Add-Type @'
 using System;
@@ -33,7 +36,7 @@ public static class PlayerNative {
 }
 '@
 [PlayerNative]::SetThreadDpiAwarenessContext([IntPtr](-4)) | Out-Null
-$p = Start-Process -FilePath "$app\build\$BuildVariant\PrappyPlayer.exe" -ArgumentList '--window-test' -WorkingDirectory $env:TEMP -WindowStyle Hidden -PassThru
+$p = Start-Process -FilePath "$app\build\$BuildVariant\PrappyPlayer.exe" -ArgumentList '--window-test',('"'+$state+'"') -WorkingDirectory $env:TEMP -WindowStyle Hidden -PassThru
 for ($i=0; $i -lt 450; $i++) {
     $p.Refresh()
     if ($p.MainWindowHandle -ne [IntPtr]::Zero) { break }
@@ -51,6 +54,18 @@ function Rect {
     return $r
 }
 function Require($condition, $message) { if (!$condition) { throw $message }; Write-Host "PASS $message" }
+function Wait-RenderedLayout([int]$Width,[int]$Height) {
+    $status=Join-Path $state 'ui-status.txt'
+    $timer=[Diagnostics.Stopwatch]::StartNew()
+    do {
+        try {
+            $text=if(Test-Path -LiteralPath $status){Get-Content -LiteralPath $status -Raw}else{''}
+            if($text -match ("(?m)^READY "+$Width+' '+$Height+' ') -and $text -match '(?m)^CONTROL "list" '){return}
+        }catch [IO.IOException]{}
+        Start-Sleep -Milliseconds 10
+    }while($timer.Elapsed.TotalSeconds -lt 5)
+    throw "Window controls did not render at ${Width}x${Height} after resize."
+}
 function Click($x, $y) {
     [PlayerNative]::SetForegroundWindow($hwnd) | Out-Null
     $origin = [PlayerNative+Point]::new()
@@ -103,7 +118,13 @@ try {
     $r = Rect
     Require (($r.Right-$r.Left) -eq 900 -and ($r.Bottom-$r.Top) -eq 520) 'Width and height resize freely'
     [PlayerNative]::SendMessage($hwnd,0x112,[IntPtr](0xf030),[IntPtr]::Zero) | Out-Null
-    $r = Rect
+    # Windows can set WS_MAXIMIZE before its asynchronous native resize lands.
+    $maximizeTimer=[Diagnostics.Stopwatch]::StartNew()
+    do {
+        $r=Rect
+        if([PlayerNative]::IsZoomed($hwnd) -and ($r.Right-$r.Left) -gt 900){break}
+        Start-Sleep -Milliseconds 10
+    }while($maximizeTimer.Elapsed.TotalSeconds -lt 5)
     Require ([PlayerNative]::IsZoomed($hwnd)) 'Native maximize works'
     Require (($r.Right-$r.Left) -gt 900) 'Maximize uses screen width'
     Capture 'player-maximized'
@@ -128,7 +149,7 @@ try {
     Require (($r.Bottom-$r.Top) -eq (250+$frameHeight)) 'List collapses'
     }
     [PlayerNative]::SetWindowPos($hwnd,[IntPtr]::Zero,0,0,(500+$frameWidth),(250+$frameHeight),0x6) | Out-Null
-    Start-Sleep -Milliseconds 100
+    Wait-RenderedLayout 500 250
     $r = Rect
     $packed = [IntPtr]((($r.Top+1) -shl 16) -bor ($r.Left+250))
     Require ([PlayerNative]::SendMessage($hwnd,0x84,[IntPtr]::Zero,$packed).ToInt32() -eq 12) 'Top edge offers native height resizing'

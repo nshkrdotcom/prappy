@@ -128,6 +128,7 @@ int wmain(int argc, wchar_t** argv) {
                                            {result.loudness, samplePeak});
             if (tags.selected) require(std::abs(warm.appliedDb - (opus ? 3 : 6)) < .001, "Wrong warm tag gain");
             audio.setGain(warm.appliedDb);
+            audio.waitIdle(); // Inspect the acknowledged actor command, still before unpause.
             double actual = 0;
             require(audio.get_property(audio.handle, "volume-gain", MPV_FORMAT_DOUBLE, &actual) >= 0 &&
                     std::abs(actual - warm.appliedDb) < .001, "Pinned mpv did not apply volume-gain while paused");

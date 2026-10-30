@@ -27,6 +27,35 @@ std::wstring wide(const std::string& s) {
     MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,s.data(),static_cast<int>(s.size()),result.data(),count);
     return result;
 }
+struct SourceHashCache {
+    struct Entry{std::array<uint64_t,5> stamp;std::string hash;};
+    std::mutex mutex;
+    std::map<fs::path,Entry> entries;
+};
+SourceHashCache& sourceHashCache(){static SourceHashCache cache;return cache;}
+struct SourceFile {
+    HANDLE handle=INVALID_HANDLE_VALUE;
+    SourceFile(const fs::path& path,std::stop_token stop) {
+        if(stop.stop_requested())throw std::runtime_error("File read cancelled.");
+        handle=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_FLAG_SEQUENTIAL_SCAN,nullptr);
+        if(handle==INVALID_HANDLE_VALUE)throw std::runtime_error("Cannot open source file.");
+    }
+    ~SourceFile(){if(handle!=INVALID_HANDLE_VALUE)CloseHandle(handle);}
+    DWORD read(void* buffer,DWORD count,std::stop_token stop) {
+        if(stop.stop_requested())throw std::runtime_error("File read cancelled.");
+        DWORD received=0;
+        if(!ReadFile(handle,buffer,count,&received,nullptr))throw std::runtime_error("Source read failed or was cancelled.");
+        return received;
+    }
+};
+std::string readCredential(const fs::path& path,std::stop_token stop) {
+    SourceFile file(path,stop);std::string token;std::array<char,4096> buffer{};
+    while(const auto count=file.read(buffer.data(),static_cast<DWORD>(buffer.size()),stop)) {
+        if(token.size()+count>65536)throw std::runtime_error("Token file exceeds the size limit.");
+        token.append(buffer.data(),count);
+    }
+    return token;
+}
 void startWorkstationBackend() {
     std::array<wchar_t,MAX_PATH> system{};
     const auto length=GetSystemDirectoryW(system.data(),static_cast<UINT>(system.size()));
@@ -42,6 +71,7 @@ void startWorkstationBackend() {
 }
 std::string cachedSourceHash(const fs::path& path,std::stop_token stop){
     const auto stamp=[&]{
+        if(stop.stop_requested())throw std::runtime_error("Source hashing cancelled.");
         HANDLE handle=CreateFileW(path.c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,0,nullptr);
         if(handle==INVALID_HANDLE_VALUE)throw std::runtime_error("Cannot inspect source identity.");
         BY_HANDLE_FILE_INFORMATION info{};FILE_BASIC_INFO basic{};
@@ -50,12 +80,11 @@ std::string cachedSourceHash(const fs::path& path,std::stop_token stop){
         return std::array<uint64_t,5>{info.dwVolumeSerialNumber,(static_cast<uint64_t>(info.nFileIndexHigh)<<32)|info.nFileIndexLow,
             (static_cast<uint64_t>(info.nFileSizeHigh)<<32)|info.nFileSizeLow,static_cast<uint64_t>(basic.LastWriteTime.QuadPart),static_cast<uint64_t>(basic.ChangeTime.QuadPart)};
     };
-    struct Entry{std::array<uint64_t,5> stamp;std::string hash;};
-    static std::mutex lock;static std::map<fs::path,Entry> cache;
+    auto& storage=sourceHashCache();auto& lock=storage.mutex;auto& cache=storage.entries;
     const auto before=stamp();
     {std::lock_guard guard(lock);const auto found=cache.find(path);if(found!=cache.end()&&found->second.stamp==before)return found->second.hash;}
     const auto digest=fileHash(path,stop);if(stamp()!=before)throw std::runtime_error("Source changed while hashing. Retry opening it.");
-    {std::lock_guard guard(lock);if(cache.size()>=16)cache.erase(cache.begin());cache.insert_or_assign(path,Entry{before,digest});}
+    {std::lock_guard guard(lock);if(cache.size()>=16)cache.erase(cache.begin());cache.insert_or_assign(path,SourceHashCache::Entry{before,digest});}
     return digest;
 }
 }
@@ -72,13 +101,11 @@ std::string fileHash(const fs::path& path,std::stop_token stop) {
     BCRYPT_HASH_HANDLE hash=nullptr;
     if (BCryptCreateHash(algorithm,&hash,nullptr,0,nullptr,0,0)<0) throw std::runtime_error("Cannot create SHA256.");
     std::unique_ptr<void,decltype(&BCryptDestroyHash)> hashOwner(hash,BCryptDestroyHash);
-    std::ifstream file(path,std::ios::binary); if (!file) throw std::runtime_error("Cannot read source for identity.");
+    SourceFile file(path,stop);
     std::vector<char> buffer(65536);
-    while (file.read(buffer.data(),buffer.size()) || file.gcount()) {
-        if(stop.stop_requested())throw std::runtime_error("Source hashing cancelled.");
-        if (BCryptHashData(hash,reinterpret_cast<PUCHAR>(buffer.data()),static_cast<ULONG>(file.gcount()),0)<0) throw std::runtime_error("SHA256 failed.");
+    while (const auto count=file.read(buffer.data(),static_cast<DWORD>(buffer.size()),stop)) {
+        if (BCryptHashData(hash,reinterpret_cast<PUCHAR>(buffer.data()),count,0)<0) throw std::runtime_error("SHA256 failed.");
     }
-    if (!file.eof()) throw std::runtime_error("Source read failed.");
     std::array<unsigned char,32> digest{};
     if (BCryptFinishHash(hash,digest.data(),static_cast<ULONG>(digest.size()),0)<0) throw std::runtime_error("SHA256 failed.");
     const char* digits="0123456789abcdef"; std::string out;
@@ -110,7 +137,7 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
         std::stop_callback cancellation(stop,cancel);
 
         if(stop.stop_requested())throw std::runtime_error("Request cancelled.");
-        const auto token=connection.token.empty()?trim(stateio::read(connection.credentialFile)):connection.token;
+        const auto token=connection.token.empty()?trim(readCredential(connection.credentialFile,stop)):connection.token;
         if(token.size()<32)throw std::runtime_error("Token file is empty or invalid.");
         DWORD redirectPolicy=WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
         if(!WinHttpSetOption(operation.value,WINHTTP_OPTION_REDIRECT_POLICY,&redirectPolicy,sizeof(redirectPolicy)))throw std::runtime_error("Cannot constrain backend redirects.");
@@ -144,7 +171,7 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
         }
         if (output.is_open()) {
             output.close();
-            if(request.body.is_object() && request.body.contains("expected_sha256") && fileHash(temporary)!=request.body.at("expected_sha256").get<std::string>())throw std::runtime_error("Downloaded artifact hash differs.");
+            if(request.body.is_object() && request.body.contains("expected_sha256") && fileHash(temporary,stop)!=request.body.at("expected_sha256").get<std::string>())throw std::runtime_error("Downloaded artifact hash differs.");
             if(!MoveFileExW(temporary.c_str(),request.download.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))throw std::runtime_error("Cannot publish downloaded audio.");reply.body={{"path",utf8(request.download)}};
         }
         else if (status==202){reply.body=Json::parse(bytes.begin(),bytes.end());}
@@ -177,47 +204,168 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
     } catch(const std::exception& e) {reply.error=e.what();if(!temporary.empty()){std::error_code ec;fs::remove(temporary,ec);}}
     return reply;
 }
-size_t Client::lane(const Request& request) {
-    if(request.tag=="audition")return 0;
+
+struct ClientState {
+    Connection connection;
+    Client::Transport transport;
+    Client::CredentialReader reader;
+    Client::Bootstrap bootstrap;
+    std::stop_source stop;
+    // The executor mutex protects these fields, except notification, which has
+    // its own gate so retirement also fences callbacks already being delivered.
+    std::deque<Request> pending;
+    std::vector<Reply> completed;
+    bool retired=false,credentialsStarted=false,credentialsReady=false;
+    std::string credentialError;
+    std::mutex notificationMutex;
+    std::function<void()> notify;
+};
+namespace {
+size_t requestLane(const Request& request) {
+    if(request.tag=="audition" || request.tag=="pcm")return 0;
     if(request.tag=="libraries"||request.tag=="hash"||request.tag=="resolve"||request.method!="GET")return 1;
     return 2;
 }
-Client::Client(Connection c,std::function<void()> n) : connection(std::move(c)),notify(std::move(n)) {
-    for(size_t i=0;i<workers.size();++i)workers[i]=std::jthread([this,i](std::stop_token stop){run(stop,i);});
-}
-void Client::run(std::stop_token stop,size_t index){
-    while(!stop.stop_requested()) {
-        Request request;
-        {std::unique_lock lock(mutex);
-            const auto find=[&]{return std::find_if(pending.begin(),pending.end(),[&](const auto& item){return lane(item)==index;});};
-            if(!wake.wait(lock,stop,[&]{return find()!=pending.end();}))break;
-            const auto next=find();request=std::move(*next);pending.erase(next);
+// One process-wide executor, with exactly three independently scheduled lanes.
+// No Client owns a thread or joins on retirement. Weak registrations and the
+// three active slots bound retired state even when a redirector ignores cancel.
+// Workers join at process teardown, after the UI and instance lock are gone.
+class ClientExecutor {
+    struct Lane {size_t index=0;std::jthread worker;std::shared_ptr<ClientState> active;};
+    std::array<Lane,3> lanes;
+    std::vector<std::weak_ptr<ClientState>> clients;
+    std::shared_ptr<ClientState> find(size_t index) {
+        for(auto& weak:clients)if(auto state=weak.lock();state&&!state->retired) {
+            if(index==1&&!state->credentialsStarted)return state;
+            if(std::any_of(state->pending.begin(),state->pending.end(),[&](const Request& request){return requestLane(request)==index&&(state->credentialsReady||request.tag=="hash");}))return state;
         }
-        auto result=perform(connection,request,stop);
-        if(request.tag=="libraries" && !result.error.empty() && connection.startWorkstation && !stop.stop_requested()) {
-            try {
-                startWorkstationBackend();
-                // Retry the same endpoint while WSL starts, without touching the UI thread.
-                // The launcher lock prevents duplicate servers across player instances.
-                const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(45);
-                do {
-                    {std::unique_lock lock(mutex);wake.wait_for(lock,stop,std::chrono::milliseconds(250),[]{return false;});}
-                    if(stop.stop_requested())break;
-                    result=perform(connection,request,stop);
-                } while(!result.error.empty() && std::chrono::steady_clock::now()<deadline);
-                if(!result.error.empty() && !stop.stop_requested())result.error="Workstation backend did not start. See ~/.local/state/audioharvest/prappy-server.log in WSL. "+result.error;
-            }catch(const std::exception& e){result.error=e.what();}
-        }
-        {std::lock_guard lock(mutex);completed.push_back(std::move(result));}
-        if(notify)notify();
+        return {};
     }
- }
-Client::~Client(){for(auto& worker:workers)worker.request_stop();wake.notify_all();}
-void Client::submit(Request r) {
-    std::lock_guard lock(mutex);
-    if(r.method=="GET" && r.tag!="download") std::erase_if(pending,[&](const auto& old){return old.tag==r.tag && (r.tag!="collectionMember" || old.path==r.path);});
-    if(pending.size()>=512) throw std::runtime_error("Backend request queue is full.");
-    pending.push_back(std::move(r));wake.notify_all();
+    void run(Lane& lane,std::stop_token shutdown) {
+        while(!shutdown.stop_requested()) {
+            std::shared_ptr<ClientState> state;Request request;Connection connection;bool credentials=false;
+            {
+                std::unique_lock guard(mutex);
+                if(!wake.wait(guard,shutdown,[&]{return static_cast<bool>(find(lane.index));}))return;
+                if(shutdown.stop_requested())return;
+                state=find(lane.index);lane.active=state;
+                credentials=lane.index==1&&!state->credentialsStarted;
+                if(credentials)state->credentialsStarted=true;
+                else {
+                    const auto next=std::find_if(state->pending.begin(),state->pending.end(),[&](const Request& item){return requestLane(item)==lane.index&&(state->credentialsReady||item.tag=="hash");});
+                    request=std::move(*next);state->pending.erase(next);
+                }
+                connection=state->connection;
+            }
+            const auto stop=state->stop.get_token();
+            if(credentials) {
+                std::string error;
+                const auto read=[&] {
+                    if(stop.stop_requested())throw std::runtime_error("Credential preparation cancelled.");
+                    if(connection.token.empty())connection.token=trim(state->reader(connection.credentialFile,stop));
+                    if(connection.token.size()<32)throw std::runtime_error("Token file is empty or invalid.");
+                };
+                try {read();}catch(const std::exception& e){error=e.what();connection.token.clear();}
+                if(!error.empty()&&connection.startWorkstation&&!stop.stop_requested()) {
+                    try {
+                        state->bootstrap();
+                        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(45);
+                        do {
+                            if(stop.stop_requested())break;
+                            try {read();error.clear();}catch(const std::exception& e){error=e.what();connection.token.clear();}
+                            if(error.empty())break;
+                            {std::unique_lock guard(mutex);wake.wait_until(guard,stop,std::min(deadline,std::chrono::steady_clock::now()+std::chrono::milliseconds(250)),[]{return false;});}
+                        }while(!stop.stop_requested()&&std::chrono::steady_clock::now()<deadline);
+                    }catch(const std::exception& e){error=e.what();}
+                }
+                std::lock_guard guard(mutex);
+                if(!state->retired){state->connection=std::move(connection);state->credentialError=std::move(error);state->credentialsReady=true;}
+                lane.active.reset();wake.notify_all();
+            } else {
+                Reply result;result.request=request;
+                try {
+                    if(request.tag!="hash"&&!state->credentialError.empty())result.error=state->credentialError;
+                    else if(!stop.stop_requested())result=state->transport(connection,request,stop);
+                    if(request.tag=="libraries"&&!result.error.empty()&&state->credentialError.empty()&&connection.startWorkstation&&!stop.stop_requested()) {
+                        state->bootstrap();
+                        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(45);
+                        do {
+                            {std::unique_lock guard(mutex);wake.wait_for(guard,stop,std::chrono::milliseconds(250),[]{return false;});}
+                            if(stop.stop_requested())break;
+                            result=state->transport(connection,request,stop);
+                        }while(!result.error.empty()&&std::chrono::steady_clock::now()<deadline);
+                        if(!result.error.empty()&&!stop.stop_requested())result.error="Workstation backend did not start. See ~/.local/state/audioharvest/prappy-server.log in WSL. "+result.error;
+                    }
+                }catch(const std::exception& e){result.error=e.what();}
+                // Transport implementations cannot change a request's identity.
+                result.request=request;
+                bool deliver=false;
+                {std::lock_guard guard(mutex);if(!state->retired){state->completed.push_back(std::move(result));deliver=true;}lane.active.reset();}
+                if(deliver){std::lock_guard guard(state->notificationMutex);if(state->notify)state->notify();}
+            }
+        }
+    }
+    ClientExecutor() {
+        // Its function-static storage must outlive workers during CRT teardown.
+        (void)sourceHashCache();
+        try {
+            for(size_t index=0;index<lanes.size();++index){lanes[index].index=index;lanes[index].worker=std::jthread([this,index](std::stop_token stop){run(lanes[index],stop);});}
+        }catch(...) {
+            for(auto& lane:lanes)lane.worker.request_stop();
+            wake.notify_all();
+            for(auto& lane:lanes)if(lane.worker.joinable())lane.worker.join();
+            throw;
+        }
+    }
+public:
+    std::mutex mutex;
+    std::condition_variable_any wake;
+    ~ClientExecutor() {
+        std::array<std::shared_ptr<ClientState>,3> active;
+        for(auto& lane:lanes)lane.worker.request_stop();
+        {
+            std::lock_guard guard(mutex);
+            for(size_t index=0;index<lanes.size();++index){active[index]=lanes[index].active;if(active[index])CancelSynchronousIo(lanes[index].worker.native_handle());}
+        }
+        for(auto& state:active)if(state)state->stop.request_stop();
+        wake.notify_all();
+        // Join before destroying synchronization primitives used by workers.
+        for(auto& lane:lanes)if(lane.worker.joinable())lane.worker.join();
+    }
+    static ClientExecutor& instance(){static ClientExecutor executor;return executor;}
+    void add(const std::shared_ptr<ClientState>& state) {
+        std::lock_guard guard(mutex);
+        std::erase_if(clients,[](const auto& weak){auto value=weak.lock();return !value||value->retired;});
+        clients.push_back(state);wake.notify_all();
+    }
+    void retire(const std::shared_ptr<ClientState>& state) {
+        {std::lock_guard guard(state->notificationMutex);state->notify={};}
+        {
+            std::lock_guard guard(mutex);state->retired=true;state->pending.clear();state->completed.clear();
+            for(auto& lane:lanes)if(lane.active==state)CancelSynchronousIo(lane.worker.native_handle());
+            std::erase_if(clients,[&](const auto& weak){auto value=weak.lock();return !value||value==state;});
+        }
+        state->stop.request_stop();wake.notify_all();
+    }
+};
 }
-std::vector<Reply> Client::collect(){std::lock_guard lock(mutex);auto result=std::move(completed);completed.clear();return result;}
+Client::Client(Connection connection,std::function<void()> notify,Transport transport,CredentialReader reader,Bootstrap bootstrap):state(std::make_shared<ClientState>()) {
+    state->connection=std::move(connection);state->notify=std::move(notify);
+    if(!state->connection.token.empty()) {
+        state->credentialsStarted=true;state->credentialsReady=true;
+        if(state->connection.token.size()<32)state->credentialError="Token file is empty or invalid.";
+    }
+    state->transport=transport?std::move(transport):perform;
+    state->reader=reader?std::move(reader):readCredential;
+    state->bootstrap=bootstrap?std::move(bootstrap):startWorkstationBackend;
+    ClientExecutor::instance().add(state);
+}
+Client::~Client(){ClientExecutor::instance().retire(state);}
+void Client::submit(Request request) {
+    auto& executor=ClientExecutor::instance();std::lock_guard guard(executor.mutex);
+    if(request.method=="GET"&&request.tag!="download")std::erase_if(state->pending,[&](const auto& old){return old.tag==request.tag&&(request.tag!="collectionMember"||old.path==request.path);});
+    if(state->pending.size()>=512)throw std::runtime_error("Backend request queue is full.");
+    state->pending.push_back(std::move(request));executor.wake.notify_all();
+}
+std::vector<Reply> Client::collect(){std::lock_guard guard(ClientExecutor::instance().mutex);auto result=std::move(state->completed);state->completed.clear();return result;}
 }

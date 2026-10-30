@@ -209,7 +209,7 @@ inline void featureTests(const fs::path& root, const Library& fixture, std::ostr
     require(player.navigate(1) && player.navigate(1), "Idle queued playback failed."); wait();
     require(history.playedCount == 1 && key(audio.current) == key(a), "Rapid Next skipped an uncommitted queued track.");
     require(!audio.outputMeter && audio.meterPeak == 0, "Silent decoder started a hardware-output meter.");
-    const auto volume = audio.volume; audio.setGain(-6);
+    const auto volume = audio.volume; audio.setGain(-6); audio.waitIdle();
     double applied = 0; audio.get_property(audio.handle, "volume-gain", MPV_FORMAT_DOUBLE, &applied);
     require(std::abs(applied + 6) < .001 && audio.volume == volume, "Measured gain changed user volume or was not applied.");
     require(player.navigate(1), "Second queued track failed."); wait(); require(history.playedCount == 2 && key(audio.current) == key(b), "Queue consumption committed the wrong visit.");

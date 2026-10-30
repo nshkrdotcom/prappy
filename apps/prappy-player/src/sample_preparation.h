@@ -20,12 +20,16 @@ class SourcePreparation {
         nextWindow=std::chrono::steady_clock::now()+std::chrono::seconds(5);
     }
 public:
-    std::string path,status="Editor preparation idle",digest;
+    std::string path,status="Editor preparation idle",digest,decodeIdentity;
     Json match,overview,regions;
     std::vector<float> pcm;
     Frame pcmStart=0;
     std::string knownDigest(std::string_view current,uint64_t serial)const{
         return path==current&&loadedSerial==serial?digest:std::string{};
+    }
+    void suspend(){
+        if(!client)return;
+        client.reset();connected=connecting=issued=false;attempts=0;retry={};
     }
     void tick(const Connection& connection,const std::function<void()>& notify,const std::string& current,double position,double duration,uint64_t serial){
         const auto now=std::chrono::steady_clock::now();
@@ -33,7 +37,7 @@ public:
         if(configuredUrl!=connection.url||configuredToken!=token){
             client.reset();connected=connecting=issued=false;attempts=0;path.clear();configuredUrl=connection.url;configuredToken=token;
         }
-        if(current!=path||loadedSerial!=serial){path=current;loadedSerial=serial;++generation;issued=false;attempts=0;digest.clear();match=nullptr;overview=nullptr;regions=nullptr;pcm.clear();status="Preparing editor...";due=now+std::chrono::milliseconds(750);}
+        if(current!=path||loadedSerial!=serial){path=current;loadedSerial=serial;++generation;issued=false;attempts=0;digest.clear();decodeIdentity.clear();match=nullptr;overview=nullptr;regions=nullptr;pcm.clear();status="Preparing editor...";due=now+std::chrono::milliseconds(750);}
         if(path.empty()||duration<=0)return;
         if(!client&&now>=due)client=std::make_unique<Client>(connection,notify);
         if(!client)return;
@@ -59,7 +63,7 @@ public:
                 client->submit({"overview","GET",base+"/overview?cached_only=true",nullptr,generation,{}});
             }else if(tag=="pcm"){
                 if(reply.status==202){status="Source ready; audio prepared on demand";continue;}
-                pcmStart=reply.body.at("origin_frame");pcm=std::move(reply.pcm);status="Editor ready (cached audio)";
+                pcmStart=reply.body.at("origin_frame");pcm=std::move(reply.pcm);decodeIdentity=reply.body.at("decode_identity");status="Editor ready (cached audio)";
             }else if(tag=="overview"&&reply.status!=202)overview=reply.body;
             else if(tag=="sourceRegions")regions=reply.body;
         }

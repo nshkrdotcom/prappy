@@ -1,10 +1,11 @@
 #Requires -Version 7.0
 param([Parameter(Mandatory)][string]$Manifest,[string]$BuildVariant='Release',
-    [switch]$StartupOnly,[switch]$WorkstationDefaults,[switch]$RecordingOnly,[switch]$MarkOnly,[switch]$WorkflowOnly,[switch]$AudioLoopback,[switch]$RegisterSource)
+    [switch]$StartupOnly,[switch]$WorkstationDefaults,[switch]$RecordingOnly,[switch]$MarkOnly,[switch]$WorkflowOnly,[switch]$AudioLoopback,[switch]$RegisterSource,[switch]$ColdRestart)
 $ErrorActionPreference='Stop'
 $app=Split-Path $PSScriptRoot -Parent
 $fixture=Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json
 if($RegisterSource -and !$WorkflowOnly){throw 'RegisterSource requires WorkflowOnly and a disposable unregistered fixture.'}
+if($ColdRestart -and (!$WorkflowOnly -or !$fixture.gate_url)){throw 'ColdRestart requires WorkflowOnly and an isolated gated fixture.'}
 $state=Join-Path $app ('build/sampling-ui-'+[Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force "$state/media" | Out-Null
 "directory=$state/media`nextensions=wav" | Set-Content "$state/player.ini"
@@ -36,6 +37,7 @@ public static class SamplingWindow {
 $script:sequence=0
 $process=$null
 $loopback=$null
+$coldHeld=$false
 function Read-Ui {
  try {
   $stream=[IO.File]::Open("$state/ui-status.txt",[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
@@ -165,12 +167,45 @@ try{
   $null=Wait-Ui {param($ui)$ui.Sample.capture -eq $fixture.previous_capture.id -and $ui.Sample.draft_count -eq 1} 'previous song draft retained'
   Click 'sample-workspaces';Click ('sample-workspace-'+$fixture.mark_capture_id)
   $null=Wait-Ui {param($ui)$ui.Sample.active_draft -eq $second -and $ui.Sample.draft_count -eq 2} 'same song restores both samples without duplicate source'
+  if($ColdRestart){
+   $null=Wait-Ui {param($ui)$ui.Sample.pcm_start -le $ui.Sample.start -and $ui.Sample.pcm_end -ge $ui.Sample.end} 'verified preview covers the saved sample before restart'
+  }
   Capture 'source-samples'
   $null=$process.CloseMainWindow();if(!$process.WaitForExit(10000)){throw 'Player did not close'}
   Remove-Item -LiteralPath "$state/ui-status.txt","$state/ui-command.txt"
   $script:sequence=0
+  if($ColdRestart){
+   $coldHeaders=@{Authorization='Bearer '+(Get-Content -LiteralPath $fixture.token_file -Raw).Trim()}
+   $null=Invoke-RestMethod -Method Post -Uri ($fixture.gate_url+'/hold') -Headers $coldHeaders
+   $coldHeld=$true;$coldTimer=[Diagnostics.Stopwatch]::StartNew()
+  }
   $process=Start-Process "$app/build/$BuildVariant/PrappyPlayer.exe" -WindowStyle Hidden -PassThru -ArgumentList '--window-test',('"'+$state+'"')
   $null=Wait-Ui {param($ui)$ui.Sample.open -and $ui.Sample.active_draft -eq $second -and $ui.Sample.draft_count -eq 2 -and $ui.Sample.workspace_count -eq 2} 'two source workspaces and many drafts survive restart'
+  if($ColdRestart){
+   $restored=Wait-Ui {param($ui)$ui.Sample.pcm_frames -gt 0 -and $ui.Sample.pcm_start -le $ui.Sample.start -and $ui.Sample.pcm_end -ge $ui.Sample.end} 'saved editor waveform restored with every backend request blocked'
+   $editorReady=$coldTimer.Elapsed.TotalMilliseconds
+   $until=(Get-Date).AddSeconds(10)
+   do{$gate=Invoke-RestMethod ($fixture.gate_url+'/state') -Headers $coldHeaders;if($gate.waiting_requests -gt 0){break};Start-Sleep -Milliseconds 20}while((Get-Date)-lt $until)
+   if(!$gate.holding -or $gate.waiting_requests -lt 1){throw 'Cold-start request barrier was not actually held'}
+   Click 'sample-play'
+   $null=Wait-Ui {param($ui)$ui.Sample.audio_frames_submitted -gt 4800 -and $ui.Sample.playhead -gt $restored.Sample.start+2400} 'restored cached selection plays before backend release' 5
+   Click 'sample-stop';Click 'sample-return'
+   $player=Wait-Ui {param($ui)!$ui.Sample.open -and $ui.SongPaused} 'return to player remains responsive during blocked startup'
+   if((Get-Content "$state/sample-workspaces.json" -Raw|ConvertFrom-Json).open){throw 'Returning to player persisted the wrong startup mode'}
+   $null=$process.CloseMainWindow();if(!$process.WaitForExit(10000)){throw 'Editor shutdown waited for held backend requests'}
+   Remove-Item -LiteralPath "$state/ui-status.txt","$state/ui-command.txt"
+   $script:sequence=0;$coldTimer.Restart()
+   $process=Start-Process "$app/build/$BuildVariant/PrappyPlayer.exe" -WindowStyle Hidden -PassThru -ArgumentList '--window-test',('"'+$state+'"')
+   $player=Wait-Ui {param($ui)!$ui.Sample.open -and $ui.SongDuration -gt 0 -and $ui.SongPaused} 'saved player mode restores while backend remains blocked'
+   $playerReady=$coldTimer.Elapsed.TotalMilliseconds
+   Click 'play'
+   $null=Wait-Ui {param($ui)!$ui.SongPaused -and $ui.SongPosition -gt $player.SongPosition+.3} 'player transport works before backend release' 5
+   Click 'play';$null=Wait-Ui {param($ui)$ui.SongPaused} 'restored player pauses'
+   $gate=Invoke-RestMethod ($fixture.gate_url+'/state') -Headers $coldHeaders
+   if(!$gate.holding){throw 'Fixture released the backend before cold-start assertions finished'}
+   $null=$process.CloseMainWindow();if(!$process.WaitForExit(10000)){throw 'Player shutdown waited for held backend requests'}
+   Write-Host "PASS controlled cold startup: editor preview/play ready ${editorReady}ms; player ready ${playerReady}ms; responsive transport/mode switch and shutdown before backend release. Evidence: $state"
+  }
   Write-Host "PASS mouse context menu, reverse drag without seek, exact editor handoff/play/save, many samples, canonical source switching and restart. Evidence: $state"
   return
  }
@@ -318,6 +353,7 @@ try{
  $null=Wait-Ui {param($ui)$ui.Sample.amplitude_mode -eq 2 -and [Math]::Abs($ui.Sample.amplitude_gain-$amplitude.Sample.amplitude_gain) -lt .000001} 'amplitude restored'
  Write-Host "PASS sampling UI: browse, PCM, exact nudge, undo/redo, save, audition, background analysis, export and reopen. Evidence: $state"
 }finally{
+ if($coldHeld){$null=Invoke-RestMethod -Method Post -Uri ($fixture.gate_url+'/release') -Headers $coldHeaders}
  if($loopback){$loopback.Dispose()}
  if($process -and !$process.HasExited){$null=$process.CloseMainWindow();if(!$process.WaitForExit(10000)){throw "Test player did not close: $($process.Id)"}}
  if($process -and $process.HasExited){Require-CleanReport}

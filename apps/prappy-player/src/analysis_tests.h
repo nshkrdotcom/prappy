@@ -1,6 +1,7 @@
 #pragma once
 #include "analysis.h"
 #include "analysis_service.h"
+#include "analysis_identity.h"
 #include "library.h"
 #include <cmath>
 #include <limits>
@@ -11,6 +12,16 @@ inline void analysisTests(const fs::path& root, const Library& fixture, std::ost
         bool failed = false; try { action(); } catch (const std::exception&) { failed = true; }
         require(failed, message);
     };
+    {
+        Library saved;
+        Track source;source.path=root/"offline-preview.flac";source.id=key(source.path);source.bytes=100;source.stamp=20;source.offline=true;
+        Track alias=source;alias.path=root/"offline-alias.flac";alias.id=key(alias.path);alias.bytes=200;alias.stamp=21;
+        source.copies.push_back(alias.path);saved.tracks.push_back(source);saved.files={source,alias};
+        require(!analysis::catalogIdentity(saved,source.path)&&!analysis::catalogIdentity(saved,alias.path),"Offline saved identity authorized playback gain.");
+        const auto preview=analysis::catalogIdentity(saved,source.path,true),aliasPreview=analysis::catalogIdentity(saved,alias.path,true);
+        require(preview&&preview->bytes==100&&aliasPreview&&aliasPreview->bytes==200&&aliasPreview->stamp==21,
+            "Saved offline flags blocked local waveform previews or replaced alias-specific identity.");
+    }
     // 1 kHz stereo sine, -23 dBFS peak/channel: approximately -23 LUFS.
     std::vector<float> signal(48000 * 2 * 3);
     const auto amplitude = std::pow(10.0, -23.0 / 20);
@@ -103,6 +114,23 @@ inline void analysisTests(const fs::path& root, const Library& fixture, std::ost
         require(std::none_of(trace.begin(), trace.end(), [](const auto& event) {
             return event.starts_with("start ");
         }), "Warm registry started a whole-song decoder.");
+    }
+    {
+        auto offline = fixture;
+        for (auto& track : offline.tracks) track.offline = true;
+        for (auto& file : offline.files) file.offline = true;
+        const auto saved = analysis::catalogIdentity(offline, identity.path, true);
+        require(saved.has_value(), "Saved selected preview lost its source identity.");
+        analysis::Service service(directory, {2, 1, 128}); service.reconcile(offline);
+        service.prioritize(*saved);
+        const auto previews = collect(service, 1, false);
+        require(previews.front().cached && previews.front().waveform && previews.front().identity == *saved,
+            "Offline saved selection did not restore its local waveform independently of scanning.");
+        const auto trace = service.diagnostics();
+        require(std::none_of(trace.begin(), trace.end(), [](const auto& event) { return event.starts_with("start "); }),
+            "Offline preview unexpectedly opened a source decoder.");
+        require(!analysis::catalogIdentity(offline, identity.path), "Offline preview authorized stale gain metadata.");
+        log << "PASS saved offline selection: local waveform before scan, no source decode or gain authorization\n";
     }
     {
         analysis::Service service(directory, {2, 1, 128}); service.reconcile(fixture, true);

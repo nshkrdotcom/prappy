@@ -84,6 +84,9 @@ add_library(implot STATIC third_party/implot/implot.cpp third_party/implot/implo
 target_include_directories(implot SYSTEM PUBLIC third_party/implot)
 target_link_libraries(implot PUBLIC imgui)
 add_executable(prappy_player WIN32 src/main.cpp src/output_meter.cpp src/player_ui.cpp src/analysis.cpp src/analysis_dsp.cpp src/analysis_registry.cpp src/analysis_queue.cpp src/analysis_service.cpp src/gain_policy.cpp src/text.cpp src/tests.cpp src/sample_client.cpp src/sample_workspace.cpp assets/player.rc)
+# The Debug regression TU instantiates the JSON-backed persistence/IO fixtures.
+# MSVC's standard COFF section count is insufficient without optimization.
+set_property(SOURCE src/tests.cpp APPEND PROPERTY COMPILE_OPTIONS /bigobj)
 target_include_directories(prappy_player SYSTEM PRIVATE third_party/json)
 set_property(SOURCE assets/player.rc APPEND PROPERTY OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/player.ico")
 set_target_properties(prappy_player PROPERTIES OUTPUT_NAME "PrappyPlayer")

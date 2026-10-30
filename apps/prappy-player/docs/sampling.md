@@ -193,3 +193,37 @@ Pending sample saves retain their original payload and request ID across source
 switches and restart. Late acknowledgments advance the right region while retaining
 newer edits. A conflict stays local until explicitly resolved. Corrupt workspace
 state is preserved and shown as a recovery error instead of overwritten.
+
+Restart opens the last saved player or editor view. Editor source, active draft,
+range, cursor, viewport and transport preferences restore before the server replies.
+`sample-preview.bin` is a disposable local cache of the last verified overview and
+up to thirty seconds of canonical stereo PCM, bound to library/capture/timeline,
+original blob hash and total frames. A checksum, size/finite-value checks and backup
+recovery protect the cache. Cache reads/writes run on a worker; a missing or invalid
+preview leaves saved drafts intact and loads details in the background. Saved
+samples covered by the preview can play while the server starts. Uncached sections
+wait for canonical audio without blocking navigation or returning to the player.
+
+Playback's libmpv calls run on a serial owner, keeping UI input independent of slow
+source opens. Gain selection still occurs on paused FILE_LOADED readiness before
+the ordered gain/unpause commands. Sampling clients share three bounded IO lanes;
+retiring a connection cancels it without joining credential or network reads on
+the UI thread. The metadata lane prepares credentials once per connection and can
+bootstrap the local service/token on first use. Speculative preparation retires
+while editing so it cannot hold the foreground connection lane unnecessarily.
+
+The controlled cold-start fixture is separate from the production server:
+
+```bash
+# From the WSL scraper checkout using its existing pinned environment:
+PYTHONPATH=src .venv-studio/bin/python /mnt/c/Users/Home/projects/prappy/apps/prappy-player/tests/create_cold_start_fixture.py --port 18782 --manifest /mnt/c/Users/Home/projects/prappy/apps/prappy-player/build/cold-start-fixture.json
+```
+
+```powershell
+./scripts/verify-sampling.ps1 -Manifest ./build/cold-start-fixture.json -WorkflowOnly -ColdRestart -AudioLoopback
+```
+
+The fixture blocks every backend response behind an authenticated test-only gate.
+The test checks cached editor play, return to player, a second restart into player
+mode, player transport and clean shutdown **before** releasing the gate. These
+endpoints exist only in the fixture wrapper; the product server has none.

@@ -8,6 +8,7 @@
 #include <thread>
 #include <vector>
 #include <array>
+#include <memory>
 namespace sampling {
 using Json = nlohmann::json;
 struct Connection { std::string url = "http://127.0.0.1:8765", token; fs::path credentialFile; bool startWorkstation=false; };
@@ -27,19 +28,16 @@ struct Reply {
 Reply perform(const Connection&, const Request&, std::stop_token = {});
 std::string uuid();
 std::string fileHash(const fs::path&,std::stop_token = {});
+struct ClientState;
 class Client {
-    Connection connection;
-    std::function<void()> notify;
-    std::mutex mutex;
-    std::condition_variable_any wake;
-    std::deque<Request> pending;
-    std::vector<Reply> completed;
-    // Playback must never wait for catalog browsing or waveform preparation.
-    std::array<std::jthread,3> workers;
-    static size_t lane(const Request&);
-    void run(std::stop_token,size_t);
 public:
-    Client(Connection, std::function<void()>);
+    using Transport=std::function<Reply(const Connection&,const Request&,std::stop_token)>;
+    using CredentialReader=std::function<std::string(const fs::path&,std::stop_token)>;
+    using Bootstrap=std::function<void()>;
+private:
+    std::shared_ptr<ClientState> state;
+public:
+    Client(Connection, std::function<void()>,Transport = {},CredentialReader = {},Bootstrap = {});
     ~Client();
     Client(const Client&) = delete;
     Client& operator=(const Client&) = delete;

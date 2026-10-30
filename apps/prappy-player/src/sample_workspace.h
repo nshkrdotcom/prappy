@@ -7,6 +7,7 @@
 #include "waveform_viewport.h"
 #include "sample_handoff.h"
 #include "sample_preparation.h"
+#include "sample_preview.h"
 #include <array>
 #include <set>
 namespace sampling {
@@ -24,6 +25,7 @@ class Workspace {
     SourcePreparation preparation;
     fs::path directory;
     std::function<void()> notify;
+    PreviewStore previewStore;
     std::unique_ptr<Client> client;
     Connection connection;
     Json libraries=Json::array(),items=Json::array(),collections=Json::array(),capture,region,overview,timing,metadata;
@@ -39,6 +41,9 @@ class Workspace {
     bool boundaryHeld=false,hadOpen=false;
     uint64_t generation=0;
     std::string library,notice,libraryQuery,facet,facetValue,regionName="New sample",kind="unknown",collectionName;
+    std::string pcmDecoder;
+    bool connectionReady=false;
+    std::optional<Request> waitingAudition;
     std::string serverUrl="http://127.0.0.1:8765",tokenFile;
     std::string metadataTarget,browsePath,auditionPath,analysisJob;
     std::chrono::steady_clock::time_point jobDue{};
@@ -83,6 +88,9 @@ class Workspace {
     void discardConflicts();
     void persist();
     void restore();
+    void restorePreview();
+    void cachePreview();
+    void collectPreview();
     void metadataFields(const Json&);
     Json humanFacts(bool forSample=false)const;
     void requestAudition(Frame,bool);
@@ -97,6 +105,7 @@ public:
     Workspace(fs::path,std::function<void()>);
     ~Workspace();
     void connect();
+    void returnToPlayer();
     void mark(Audio&,std::optional<SecondsSpan> selection={},OpenSource action=OpenSource::Cue);
     void toggleTransport(Audio&);
     void tick(Audio&);

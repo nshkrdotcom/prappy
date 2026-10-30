@@ -5,8 +5,8 @@ BEGIN
  101 "Prappy Player"
 END
 1 VERSIONINFO
-FILEVERSION 0,1,1,0
-PRODUCTVERSION 0,1,1,0
+FILEVERSION 0,1,3,0
+PRODUCTVERSION 0,1,3,0
 FILETYPE VFT_APP
 BEGIN
  BLOCK "StringFileInfo"
@@ -17,8 +17,8 @@ BEGIN
    VALUE "InternalName", "PrappyPlayer\0"
    VALUE "OriginalFilename", "PrappyPlayer.exe\0"
    VALUE "ProductName", "Prappy Player\0"
-   VALUE "FileVersion", "0.1.1\0"
-   VALUE "ProductVersion", "0.1.1\0"
+   VALUE "FileVersion", "0.1.3\0"
+   VALUE "ProductVersion", "0.1.3\0"
   END
  END
  BLOCK "VarFileInfo"

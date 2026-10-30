@@ -19,6 +19,13 @@ The UI uses SDL's Direct3D 11 renderer for hardware-accelerated drawing at 4K.
 Input, ImGui and rendering stay on the window thread, with one queued GPU frame;
 audio seeking and library analysis run independently. Paused idle stays event driven.
 
+Restart restores the last player/editor mode, source, saved position, sample drafts
+and editor viewport/cursor. A checked local editor preview restores the last
+available waveform and audio while the WSL service starts in the background.
+Slow source opens, credential reads, catalog browsing and decoder preparation do
+not run on the window thread. New or uncached audio can show a loading state;
+the player, editor and return controls remain usable while it becomes available.
+
 Filenames use DirectWrite shaping, Windows font fallback and a bundled Noto CJK
 font. CJK scripts, supplementary Unicode characters and color emoji work in
 library/history rows, the current title and path tooltips. Highlighting follows

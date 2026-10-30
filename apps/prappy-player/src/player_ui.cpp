@@ -2,6 +2,7 @@
 #include "player_ui.h"
 #include "analysis.h"
 #include "analysis_service.h"
+#include "analysis_identity.h"
 #include "gain_policy.h"
 #include "playback.h"
 #include "scan.h"
@@ -197,8 +198,8 @@ static std::string historyTime(int64_t timestamp) {
     return text;
 }
 static std::string timeText(double seconds) {
-    int n = static_cast<int>(std::max(0.0, seconds));
-    char buf[32]; std::snprintf(buf, sizeof(buf), "%d:%02d", n / 60, n % 60); return buf;
+    const auto n=static_cast<int64_t>(std::clamp(std::isfinite(seconds)?seconds:0.,0.,1e12));
+    char buf[32]; std::snprintf(buf,sizeof(buf),"%lld:%02lld",static_cast<long long>(n/60),static_cast<long long>(n%60));return buf;
 }
 static void style() {
     ImGui::StyleColorsDark(); auto& s = ImGui::GetStyle();
@@ -325,14 +326,8 @@ int runPlayer(HINSTANCE instance) {
             return std::find_if(library.tracks.begin(), library.tracks.end(),
                 [&](const auto& track) { return Library::matches(track, id); });
         };
-        const auto identityForPath = [&](const fs::path& path) -> std::optional<analysis::Identity> {
-            const auto item = matchingTrack(path);
-            if (item == library.tracks.end() || item->offline) return {};
-            if (key(item->path) == key(path)) return analysis::Identity{item->path, item->bytes, item->stamp};
-            const auto alias = std::find_if(library.files.begin(), library.files.end(),
-                [&](const Track& file) { return file.id == key(path); });
-            if (alias == library.files.end() || alias->offline) return {};
-            return analysis::Identity{alias->path, alias->bytes, alias->stamp};
+        const auto identityForPath = [&](const fs::path& path,bool savedPreview=false) {
+            return analysis::catalogIdentity(library,path,savedPreview);
         };
         const auto gainForPath = [&](const fs::path& path, uint64_t serial) {
             gain::Measurement measured;
@@ -380,7 +375,9 @@ int runPlayer(HINSTANCE instance) {
         const auto prioritizeCurrent = [&] {
             const auto track = matchingTrack(audio.current);
             currentAnalysisId = key(audio.current);
-            const auto identity = identityForPath(audio.current);
+            // A last-known offline flag must not hide a local saved waveform
+            // while cold roots are checked. This lookup does not authorize gain.
+            const auto identity = identityForPath(audio.current,true);
             if (waveformId != currentAnalysisId || (waveformIdentity &&
                 (!identity || *waveformIdentity != *identity))) {
                 waveform.reset(); waveformIdentity.reset(); waveformId = currentAnalysisId;
@@ -700,7 +697,7 @@ int runPlayer(HINSTANCE instance) {
                 const auto id = key(result.identity.path);
                 const auto foundTrack = analysisById.find(id);
                 Track* track = foundTrack == analysisById.end() ? nullptr : foundTrack->second;
-                const auto sourceIdentity = identityForPath(result.identity.path);
+                const auto sourceIdentity = identityForPath(result.identity.path,result.cached&&id==currentAnalysisId);
                 if (track && sourceIdentity && *sourceIdentity == result.identity) {
                     if (result.waveform && id == currentAnalysisId) {
                         waveform = result.waveform; waveformId = id;
@@ -771,9 +768,11 @@ int runPlayer(HINSTANCE instance) {
             int width, height; SDL_GetWindowSize(window, &width, &height);
             ImGui::SetNextWindowPos({0, 0}); ImGui::SetNextWindowSize({static_cast<float>(width), static_cast<float>(height)});
             ImGui::Begin("Player", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+            const auto listeningPosition=playback.pending&&playback.pending->kind==Playback::Kind::Restore?playback.pending->position:audio.displayPosition();
+            const auto listeningDuration=audio.duration>0?audio.duration:waveform&&waveformId==currentAnalysisId?waveform->duration():0.;
             const auto drawPlayerWaveform=[&](ImVec2 size){
-                double seek=audio.displayPosition();
-                if(waveformSeek(waveformImage,waveformId==currentAnalysisId?waveform:nullptr,seek,audio.duration,size,!waveformSelection.active))audio.seek(seek);
+                double seek=listeningPosition;
+                if(waveformSeek(waveformImage,waveformId==currentAnalysisId?waveform:nullptr,seek,listeningDuration,size,!waveformSelection.active))audio.seek(seek);
                 const auto min=ImGui::GetItemRectMin(),max=ImGui::GetItemRectMax();uiProbe.observe("seek",ImGui::IsItemActivated());rememberControl();
                 waveformSelection.draw(min,max,audio.displayPosition(),audio.duration,preferences.strip,
                     [&](std::optional<sampling::SecondsSpan> span,sampling::OpenSource action){sampleWorkspace.mark(audio,span,action);waveformSelection.active=false;},
@@ -786,7 +785,8 @@ int runPlayer(HINSTANCE instance) {
                 ImGui::SetCursorPos({10, 5});
                 if (centeredButton("<##strip", {30, 26}, "back")) playback.navigate(-1); rememberControl();
                 ImGui::SameLine();
-                if (centeredButton(audio.active && !audio.paused ? "Pause##strip" : "Play##strip", {55, 26}, "play")) togglePlayback(); rememberControl();
+                const bool wantsPause=playback.pending?playback.pending->paused:audio.paused;
+                if (centeredButton(audio.active && !wantsPause ? "Pause##strip" : "Play##strip", {55, 26}, "play")) togglePlayback(); rememberControl();
                 ImGui::SameLine();
                 if (centeredButton(">##strip", {30, 26}, "next")) playback.navigate(1); rememberControl();
                 ImGui::SameLine();
@@ -1110,8 +1110,8 @@ int runPlayer(HINSTANCE instance) {
             if(!waveformSelection.active){const bool edit=ImGui::Button("Edit samples (Ctrl+M)");uiProbe.observe("edit-samples",edit);rememberControl();if(edit)sampleWorkspace.mark(audio);if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",sampleWorkspace.preparationStatus().c_str());}
             ImGui::EndDisabled();
             tooltip(waveform ? "Stereo waveform scaled to the track peak. Drag to seek; focus and use Left/Right (5s), Home or End." : "Waveform analysis pending. Drag to seek.");
-            ImGui::TextDisabled("%s / %s", timeText(audio.displayPosition()).c_str(), timeText(audio.duration).c_str());
-            ImGui::SameLine(u(248)); ImGui::TextDisabled("%s", audio.active ? (audio.paused ? "PAUSED" : "PLAYING") : "READY");
+            ImGui::TextDisabled("%s / %s", timeText(listeningPosition).c_str(), timeText(listeningDuration).c_str());
+            ImGui::SameLine(u(248)); ImGui::TextDisabled("%s", playback.pending?"OPENING":audio.active ? (audio.paused ? "PAUSED" : "PLAYING") : "READY");
             uiProbe.observe("transport-status", false);
             ImGui::SameLine(); peakMeter(displayedPeak, {std::max(30.0f, static_cast<float>(width) - ImGui::GetCursorPosX() - 12), 6}, ImGui::GetTextLineHeight());
             uiProbe.observe("peak-meter", false); tooltip(audio.loaded && !audio.paused && !audio.meterAvailable ? "Waiting for Windows audio-session meter" : "Prappy Windows audio-session peak after volume/gain; not a true-peak meter");
