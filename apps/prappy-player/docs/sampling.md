@@ -49,6 +49,13 @@ normal local use requires no edits there.
 The launcher also exposes the existing artist-search library when present. Ctrl+M
 resolves the playing file across all configured libraries and switches to its
 registered source automatically; it does not depend on the browser's chosen library.
+If the source is not registered yet, explicitly opening it in the editor registers
+a verified copy in the selected library. The local launcher allows sources beneath
+the scraper's `library/` and the phase-02 library; standalone servers must explicitly
+allow their source directories. Playback/background preparation never imports files.
+The original stays untouched, and the captured source, cue and selected range survive
+connection failures and restart. Retry continues the same registration request;
+returning to the previous draft cancels that pending editor handoff.
 
 Choose a library, then a recording, saved sample or collection. Search and metadata
 filters use effective recording/sample facts. The browser pages through recordings
@@ -153,6 +160,11 @@ Validation against an isolated running server:
 ```powershell
 ./scripts/verify-sampling.ps1 -Manifest ./build/sampling-integration.json -BuildVariant Release-Sampling
 ```
+
+For an initially unregistered source in a disposable library, add
+`-WorkflowOnly -RegisterSource -AudioLoopback`. This verifies that background
+preparation stays read-only, explicit registration preserves the original hash,
+and the exact selected range plays, saves and survives source switching/restart.
 
 The manifest supplies `url`, `token_file` and `library_id`. The GUI test writes
 only isolated player state and explicit test samples in that configured library;

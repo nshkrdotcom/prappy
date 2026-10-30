@@ -262,7 +262,9 @@ struct Audio {
             submitSeek();
         }
         if (outputMeter) {
-            const bool audible = loaded && active && !paused;
+            // Integer device conversion may retain a one-LSB dither floor at
+            // mpv volume zero. Treat explicit mute like pause for the UI meter.
+            const bool audible = loaded && active && !paused && volume > 0;
             outputMeter->enable(audible);
             const auto peak = outputMeter->read();
             meterPeak = audible ? peak : 0;

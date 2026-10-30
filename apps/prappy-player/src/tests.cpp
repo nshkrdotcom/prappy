@@ -8,6 +8,7 @@
 #include "ui_schedule.h"
 #include "waveform_tests.h"
 #include "sample_library_tests.h"
+#include "sample_handoff_tests.h"
 #include <SDL3/SDL.h>
 #include <cmath>
 #include <fstream>
@@ -48,7 +49,11 @@ int outputMeterTests(const fs::path& signal, const fs::path& logPath) {
         audio.setGain(-6); const auto reduced = settle();
         log << "gain ratio=" << reduced/normal << '\n';
         require(reduced/normal > .4 && reduced/normal < .6,"Output meter ignores application gain.");
-        audio.setVolume(0); require(settle() < .00001,"Zero volume still shows output signal.");
+        audio.setVolume(0); const auto muted=settle();
+        log << "muted peak=" << muted << " mpv volume=" << audio.textProperty("volume")
+            << " audio-pts=" << audio.textProperty("audio-pts") << '\n' << std::flush;
+        require(muted < .00001,"Zero volume still shows output signal.");
+        require(!audio.meterAvailable,"Zero-volume output meter remains active.");
         audio.setVolume(70); audio.setGain(0); require(settle() > .001,"Restored volume lost meter.");
         audio.setPaused(true); require(settle() == 0,"Paused output meter remains active.");
         audio.seek(.3); settle(); audio.setPaused(false);
@@ -295,6 +300,7 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
         const auto root = logPath.parent_path() / ("state-test-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
         fs::create_directories(root);
         sampleLibraryTests(root,log);
+        pendingSampleHandoffTests(root,log);
         {
             // Public-domain test signal: 3072 stereo silent frames, 48 kHz/24-bit
             // FLAC generated with SoX, retaining STREAMINFO and its one audio frame.

@@ -11,7 +11,7 @@
 #include <set>
 namespace sampling {
 class Workspace {
-    struct PlayingSongMark {fs::path path;Frame frame;uint64_t ticket;bool submitted=false,failed=false;std::optional<SecondsSpan> selection;double duration=0;OpenSource action=OpenSource::Cue;};
+    struct PlayingSongMark {fs::path path;Frame frame;uint64_t ticket;bool submitted=false,failed=false;std::optional<SecondsSpan> selection;double duration=0;OpenSource action=OpenSource::Cue;std::string digest{},importRequest{},importLibrary{};};
     std::optional<PlayingSongMark> pendingMark;
     Json markMatches=Json::array();
     SampleLibrary sampleLibrary;
@@ -75,6 +75,7 @@ class Workspace {
     void fetchSourceRegions(size_t offset=0);
     void chooseRegion(const Json&);
     void submitMark();
+    void importMarkedSource();
     void finishMark(const Json&);
     void openCapture(Json, std::optional<Span> = {});
     void loadDetails(bool refresh=false);

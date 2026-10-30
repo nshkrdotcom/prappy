@@ -25,8 +25,25 @@ class SourceHandoff {
     std::optional<SourceIntent> pending;
 public:
     const auto& current()const{return pending;}
+    LibraryJson snapshot()const{
+        if(!pending)return nullptr;
+        LibraryJson value={{"path",pending->path},{"action",static_cast<int>(pending->action)},
+            {"cue",pending->cue},{"duration",pending->duration},{"selection",nullptr}};
+        if(pending->selection)value["selection"]={{"start",pending->selection->start},{"end",pending->selection->end}};
+        return value;
+    }
+    void restore(const LibraryJson& value){
+        pending.reset();if(value.is_null())return;
+        const auto action=value.at("action").get<int>();
+        if(action<0||action>static_cast<int>(OpenSource::Samples))throw std::runtime_error("Invalid saved source action.");
+        std::optional<SecondsSpan> selection;
+        if(!value.at("selection").is_null())selection=SecondsSpan{value.at("selection").at("start"),value.at("selection").at("end")};
+        begin(value.at("path"),static_cast<OpenSource>(action),value.at("cue"),value.at("duration"),selection);
+    }
     SourceIntent begin(std::string path,OpenSource action,double cue,double duration,std::optional<SecondsSpan> selection={}){
-        if(path.empty()||!std::isfinite(duration)||duration<=0||!std::isfinite(cue)||cue<0||cue>duration||
+        if(path.empty()||!std::isfinite(duration)||duration<=0||
+           duration*Rate>=static_cast<double>(std::numeric_limits<Frame>::max())||
+           !std::isfinite(cue)||cue<0||cue>duration||
            ((action==OpenSource::Selection)!=selection.has_value()))throw std::runtime_error("Invalid source handoff.");
         if(selection&&(!std::isfinite(selection->start)||!std::isfinite(selection->end)||selection->start<0||
            selection->start>=selection->end||selection->end>duration))throw std::runtime_error("Invalid player selection.");

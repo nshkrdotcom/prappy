@@ -1,9 +1,10 @@
 #Requires -Version 7.0
 param([Parameter(Mandatory)][string]$Manifest,[string]$BuildVariant='Release',
-    [switch]$StartupOnly,[switch]$WorkstationDefaults,[switch]$RecordingOnly,[switch]$MarkOnly,[switch]$WorkflowOnly,[switch]$AudioLoopback)
+    [switch]$StartupOnly,[switch]$WorkstationDefaults,[switch]$RecordingOnly,[switch]$MarkOnly,[switch]$WorkflowOnly,[switch]$AudioLoopback,[switch]$RegisterSource)
 $ErrorActionPreference='Stop'
 $app=Split-Path $PSScriptRoot -Parent
 $fixture=Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json
+if($RegisterSource -and !$WorkflowOnly){throw 'RegisterSource requires WorkflowOnly and a disposable unregistered fixture.'}
 $state=Join-Path $app ('build/sampling-ui-'+[Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force "$state/media" | Out-Null
 "directory=$state/media`nextensions=wav" | Set-Content "$state/player.ini"
@@ -48,7 +49,7 @@ function Read-Ui {
    elseif($line.StartsWith('FEATURES ')){$feature=$line -split ' ';$ui.SongPosition=[double]::Parse($feature[5],[Globalization.CultureInfo]::InvariantCulture);$ui.SongDuration=[double]::Parse($feature[6],[Globalization.CultureInfo]::InvariantCulture)}
    elseif($line -match '^ACTIVATION "([^"]+)" ([0-9]+)$'){$ui.Activations[$matches[1]]=[uint64]$matches[2]}
    elseif($line -match '^CONTROL "([^"]+)" ([^ ]+) ([^ ]+) ([^ ]+) ([^ ]+) ([01]) ([01]) ([0-9]+)$'){
-    $ui.Controls[$matches[1]]=[pscustomobject]@{X=([double]::Parse($matches[2],[Globalization.CultureInfo]::InvariantCulture)+[double]::Parse($matches[4],[Globalization.CultureInfo]::InvariantCulture))/2;Y=([double]::Parse($matches[3],[Globalization.CultureInfo]::InvariantCulture)+[double]::Parse($matches[5],[Globalization.CultureInfo]::InvariantCulture))/2;Left=[double]::Parse($matches[2],[Globalization.CultureInfo]::InvariantCulture);Right=[double]::Parse($matches[4],[Globalization.CultureInfo]::InvariantCulture);Clicks=[uint64]$matches[8];Hovered=($matches[6] -eq "1");Active=($matches[7] -eq "1")}
+    $ui.Controls[$matches[1]]=[pscustomobject]@{X=([double]::Parse($matches[2],[Globalization.CultureInfo]::InvariantCulture)+[double]::Parse($matches[4],[Globalization.CultureInfo]::InvariantCulture))/2;Y=([double]::Parse($matches[3],[Globalization.CultureInfo]::InvariantCulture)+[double]::Parse($matches[5],[Globalization.CultureInfo]::InvariantCulture))/2;Top=[double]::Parse($matches[3],[Globalization.CultureInfo]::InvariantCulture);Bottom=[double]::Parse($matches[5],[Globalization.CultureInfo]::InvariantCulture);Left=[double]::Parse($matches[2],[Globalization.CultureInfo]::InvariantCulture);Right=[double]::Parse($matches[4],[Globalization.CultureInfo]::InvariantCulture);Clicks=[uint64]$matches[8];Hovered=($matches[6] -eq "1");Active=($matches[7] -eq "1")}
    }
   }
   return $ui
@@ -94,7 +95,13 @@ try{
  if($WorkflowOnly){
   Click 'list';Click 'library-0'
   $before=Wait-Ui {param($ui)$ui.SongPosition -gt .25 -and !$ui.SongPaused} 'playing song'
-  $null=Wait-Ui {param($ui)$ui.Sample.preparation -match 'ready'} 'background source preparation'
+  if($RegisterSource){
+   $null=Wait-Ui {param($ui)$ui.Sample.preparation -eq 'Song is not registered for editing'} 'read-only background lookup of unregistered song'
+   $fixtureHash=(Get-FileHash -LiteralPath $fixture.mark_song -Algorithm SHA256).Hash.ToLowerInvariant()
+   $fixtureHeaders=@{Authorization='Bearer '+(Get-Content -LiteralPath $fixture.token_file -Raw).Trim()}
+   $unregistered=Invoke-RestMethod -Uri ($fixture.url+'/v1/resolve?sha256='+$fixtureHash) -Headers $fixtureHeaders
+   if($unregistered.matches.Count -ne 0){throw 'Background preparation registered a source or fixture was already registered'}
+  }else{$null=Wait-Ui {param($ui)$ui.Sample.preparation -match 'ready'} 'background source preparation'}
   Send-Input 'KEY CTRL 1';Send-Input 'KEY E 1';Send-Input 'KEY E 0';Send-Input 'KEY CTRL 0'
   $null=Wait-Ui {param($ui)$ui.PlayerSelection.active} 'Ctrl+E enters selection mode'
   Send-Input 'KEY ESC 1';Send-Input 'KEY ESC 0'
@@ -104,7 +111,10 @@ try{
   $y=$plot.Y.ToString([Globalization.CultureInfo]::InvariantCulture)
   Send-Input ('MOVE '+(& $x .1)+' '+$y);Send-Input 'RIGHT_DOWN';Send-Input 'RIGHT_UP'
   Click 'waveform-select'
-  $plot=(Get-Ui).Controls['seek'];$y=$plot.Y.ToString([Globalization.CultureInfo]::InvariantCulture)
+  # The menu activates after this frame's waveform height was computed. Wait
+  # for the selection controls to fit above transport before using its bounds.
+  $layout=Wait-Ui {param($ui)$ui.PlayerSelection.active -and $ui.Controls.ContainsKey('waveform-confirm') -and $ui.Controls['waveform-confirm'].Bottom -lt $ui.Controls['play'].Top} 'selection layout above transport'
+  $plot=$layout.Controls['seek'];$y=$plot.Y.ToString([Globalization.CultureInfo]::InvariantCulture)
   Send-Input ('MOVE '+(& $x .7)+' '+$y);Send-Input 'DOWN';Send-Input ('MOVE '+(& $x .4)+' '+$y);Send-Input 'UP'
   $song=Get-Ui
   if($song.SongPaused -or $song.SongPosition -gt 6){throw 'Selection gesture sought or paused the song'}
@@ -112,7 +122,7 @@ try{
   $range=$song.PlayerSelection
   Send-Input ('MOVE '+(& $x ($range.start/$song.SongDuration))+' '+$y);Send-Input 'DOWN';Send-Input ('MOVE '+(& $x .45)+' '+$y);Send-Input 'UP'
   $edge=Get-Ui
-  if($edge.PlayerSelection.start -le $range.start -or [Math]::Abs($edge.PlayerSelection.end-$range.end)*48000 -gt 1){throw 'In handle did not adjust independently'}
+  if($edge.PlayerSelection.start -le $range.start -or [Math]::Abs($edge.PlayerSelection.end-$range.end)*48000 -gt 1){throw ('In handle did not adjust independently: before='+($range|ConvertTo-Json -Compress)+' after='+($edge.PlayerSelection|ConvertTo-Json -Compress))}
   Send-Input ('MOVE '+(& $x ($edge.PlayerSelection.end/$song.SongDuration))+' '+$y);Send-Input 'DOWN';Send-Input ('MOVE '+(& $x .8)+' '+$y)
   Send-Input 'KEY ESC 1';Send-Input 'KEY ESC 0';Send-Input 'UP'
   $rolled=Get-Ui
@@ -122,7 +132,13 @@ try{
   if([Math]::Abs(($song.PlayerSelection.end-$song.PlayerSelection.start)-($edge.PlayerSelection.end-$edge.PlayerSelection.start)) -gt (1./48000)){throw ('Moving a range changed its duration: before='+($edge.PlayerSelection|ConvertTo-Json -Compress)+' after='+($song.PlayerSelection|ConvertTo-Json -Compress))}
   Capture 'player-selection'
   Click 'waveform-confirm'
-  $marked=Wait-Ui {param($ui)$ui.Sample.open -and !$ui.Sample.mark_pending -and $ui.Sample.capture -eq $fixture.mark_capture_id -and $ui.Sample.selection_defined} 'mouse range handoff'
+  if($RegisterSource){
+   $marked=Wait-Ui {param($ui)$ui.Sample.open -and !$ui.Sample.mark_pending -and $ui.Sample.capture -and $ui.Sample.capture -ne $fixture.previous_capture.id -and $ui.Sample.selection_defined} 'verified registration and exact mouse range handoff'
+   $fixture.mark_capture_id=$marked.Sample.capture
+   $registered=Invoke-RestMethod -Uri ($fixture.url+'/v1/resolve?sha256='+$fixtureHash) -Headers $fixtureHeaders
+   if($registered.matches.Count -ne 1 -or $registered.matches[0].capture.id -ne $fixture.mark_capture_id){throw 'Source registration created duplicate or mismatched captures'}
+   if((Get-FileHash -LiteralPath $fixture.mark_song -Algorithm SHA256).Hash.ToLowerInvariant() -ne $fixtureHash){throw 'Source registration changed the original recording'}
+  }else{$marked=Wait-Ui {param($ui)$ui.Sample.open -and !$ui.Sample.mark_pending -and $ui.Sample.capture -eq $fixture.mark_capture_id -and $ui.Sample.selection_defined} 'mouse range handoff'}
   if($marked.Sample.start -ne [Math]::Round(48000*$song.PlayerSelection.start) -or $marked.Sample.end -ne [Math]::Round(48000*$song.PlayerSelection.end)){throw 'Handed-off range differs from player drag'}
   if($AudioLoopback){
    Add-Type -Path "$PSScriptRoot/AudioLoopback.cs"

@@ -266,3 +266,106 @@ budget must not be described as a process-wide allocation cap.
 
 Follow-up commit IDs and the authorized `origin/main` push result are reported
 in the final handoff after Git confirms them.
+
+## Editor registration follow-up, 2026-10-29
+
+The reported Take On Me failure was reproduced in the old real Windows player:
+an unregistered source reached the editor with `mark_failed=true` and the exact
+"not registered in a connected library" notice. Playback's filesystem catalog
+and the sampling server's canonical capture registry were separate, with no
+explicit editor registration bridge. Pending source selections also were not
+checkpointed, and local-source deduplication replayed the journal per capture.
+
+Explicit editor opens now resolve first and, when absent, register through the
+authenticated, durable `source.import` command in the selected library. The server
+requires configured source roots and a matching full-file SHA-256. It authorizes
+the actual opened Linux descriptor and retains it through staging and mutation
+verification, preventing file/ancestor symlink replacement from redirecting reads.
+Originals remain untouched. Background playback preparation remains read-only.
+The launcher permits the scraper's `library/` and phase-02 source trees; other
+paths fail safely while retaining the requested range.
+
+The player checkpoints the frozen path, action, cue, duration, selection, known
+listening digest, import UUID and destination before registration. Listening hash
+reuse requires the same playback serial and path. Restart/retry retains identity;
+cancellation and superseding gestures reject late replies. Saved times are checked
+against canonical frame limits before conversion. Previous source drafts remain
+intact until the requested source resolves. The old failed selection was never
+saved, so its original range cannot be recovered after the old process exited.
+
+The backend now verifies canonical truth once for local-source deduplication.
+One measured live HTTP deduplication request for the 243.960458-second Take On Me
+MKA returned its existing capture in 1.632390 seconds with `new_file=false`.
+This was a warm duplicate-import observation, not a controlled cold/warm comparison
+and not an attribution of the historical 38-second delay.
+
+Additional Windows findings: the session meter could report a residual
+`2.15061e-05` peak while mpv volume was exactly zero. Explicit mute now disables
+the UI meter like pause; the numerical assertion was retained and an inactive-meter
+assertion added. The fixed real-device run reported zero muted peak, gain ratio
+0.500955, correct silence/tone timing and real WASAPI capture. The GUI fixture also
+now waits for the selection layout's rendered geometry. Combo navigation uses
+player-owned one-frame key taps, acknowledged after release, so host scheduling
+cannot turn a scripted tap into auto-repeat. Expected range/view assertions remain.
+
+Executed validation and evidence in `build/`:
+
+- WSL pinned `.venv-studio` pytest on `test_source_import_http.py`,
+  `test_sampling_server.py`, `test_library.py`, `test_music.py`: **88 passed**.
+  Includes deterministic pre-open/pre-stage/post-stage file/parent replacement,
+  unchanged originals, in-place mutation, FIFO, scope/authentication/digest rejection,
+  idempotency, resolve, PCM and region access. `bash -n prappy.sh` and diff checks pass.
+- `verify-sampling.ps1 -WorkflowOnly -RegisterSource -AudioLoopback` passed
+  with separate disposable libraries in pinned Release, Debug and Debug ASan.
+  It verifies no background import, exact drag/edge/move/Escape handoff, one matching
+  capture, unchanged original hash, selected-tone WASAPI output, sample save, two
+  drafts, source switching and restart. Debug CRT reporting passed.
+- Pinned Release `verify-sampling.ps1 -MarkOnly` passed cold/warm editor opens
+  and playback of the actual Take On Me source through the live server, using
+  isolated player state and retaining the previous draft; no test region was saved
+  into the user's library. Evidence: `take-on-me-editor.log`.
+- Native persistence tests first failed against the missing checkpoint and then
+  passed; oversized saved-time conversion also had a failing regression before
+  its guard. Native state tests cover restored identity/UUID/destination and
+  same-path/different-serial digest fencing.
+
+The sampling service was gracefully restarted with the updated launcher; collection
+processes were untouched. Backend commit `4086ef4` was pushed to `origin/main` in
+the scraper repository. Windows security enforcement and DLL loading policy remain
+unchanged. Targeted Defender scans and retries were used during intermittent launch
+blocks; these observations do not establish a general policy-acceptance guarantee.
+The earlier analysis-specific calibration, adverse-network, 7k measured restart,
+retry/offline and total-memory limitations above remain open.
+
+Final verification used the normal pinned build directories. Strict Release,
+Release-Analyze, Debug and Debug ASan builds passed. Then
+`scripts/verify-health.ps1 -SkipBuild -Repetitions 1` passed the complete serial
+state/dedup/features/window/relaunch suite, including Debug CRT reports. An earlier
+concurrent validation run failed its idle-render assertion; the assertion was
+retained and the complete suite rerun serially on an idle desktop. CTest passed
+**2/2 in each of Release, Debug and Debug-Asan**. The final pinned
+`test-output-meter.ps1` passed with gain ratio 0.501111 and muted peak zero;
+`verify-sampling.ps1 -MarkOnly` again passed on the actual Take On Me source.
+Evidence: `editor-registration-health-serial.log`, `editor-final-output-meter.log`,
+`editor-final-take-on-me.log`. The expanded backend importer-consumer regression
+run passed **335 tests**, including offline collector, curation, projects,
+readiness and regions, without operating production collection jobs.
+
+Finally `scripts/build.ps1` rebuilt the exact normal Release target, which opened
+normally as **PID 39188**, version **0.1.1**, with Authenticode **Valid**:
+
+`C:/Users/Home/projects/prappy/apps/prappy-player/build/Release/PrappyPlayer.exe`
+
+SHA-256: `306498BC394EAC7E65F65A053E2BD18020235B4839E02CF58B02241597284FBA`.
+Its restored editor was connected to the live artist-search library. Native
+Play/Pause input played the user's restored source through real WASAPI:
+baseline RMS 0, playing RMS 0.2684434509 over 4,800 captured frames, then paused
+RMS 3.67055e-10 over 5,760 frames. The player remains open and paused.
+**574 history entries, 8 source workspaces and 25 drafts** were retained; draft
+IDs, ranges and saved-region bindings were compared before and after playback.
+Evidence: `editor-final-reopen.json`, `editor-final-live-playback.json`,
+`editor-final-paused.json`, `editor-final-pinned-release.png`.
+Smart App Control remains enforced (`VerifiedAndReputablePolicyState=1`).
+No tracked source was deleted or renamed, legacy worker/gain/cache execution
+symbols were absent in the final source search, and the old runtime
+`player-analysis/` cache was not deleted.

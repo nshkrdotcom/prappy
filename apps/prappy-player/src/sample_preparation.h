@@ -24,6 +24,9 @@ public:
     Json match,overview,regions;
     std::vector<float> pcm;
     Frame pcmStart=0;
+    std::string knownDigest(std::string_view current,uint64_t serial)const{
+        return path==current&&loadedSerial==serial?digest:std::string{};
+    }
     void tick(const Connection& connection,const std::function<void()>& notify,const std::string& current,double position,double duration,uint64_t serial){
         const auto now=std::chrono::steady_clock::now();
         const auto token=connection.credentialFile.generic_string();

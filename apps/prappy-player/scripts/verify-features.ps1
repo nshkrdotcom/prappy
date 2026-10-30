@@ -179,9 +179,9 @@ function Context([string]$name) {
     $null=Wait-Ui {param($s) $s.Controls.ContainsKey('queue-next')} 'track context menu opened'
 }
 function Select-Combo([string]$name,[int]$index) {
-    Click $name; Send-UiInput 'KEY HOME 1'; Send-UiInput 'KEY HOME 0'
-    for ($i=0; $i -lt $index; $i++) { Send-UiInput 'KEY DOWN 1'; Send-UiInput 'KEY DOWN 0' }
-    Send-UiInput 'KEY ENTER 1'; Send-UiInput 'KEY ENTER 0'
+    Click $name; Send-UiInput 'TAP HOME'
+    for ($i=0; $i -lt $index; $i++) { Send-UiInput 'TAP DOWN' }
+    Send-UiInput 'TAP ENTER'
 }
 function Search([string]$query) {
     Click 'search'
@@ -397,10 +397,7 @@ try {
     Click 'refresh'
     $null=Wait-Ui {param($s) !$s.History -and $s.Visible -eq 122 -and $s.Controls.ContainsKey('refresh') -and $s.Controls['refresh'].Hovered} 'long catalog refresh complete'
     foreach ($mode in @(0,1,2)) {
-        Click 'order'
-        Send-UiInput 'KEY HOME 1'; Send-UiInput 'KEY HOME 0'
-        for ($step=0; $step -lt $mode; $step++) { Send-UiInput 'KEY DOWN 1'; Send-UiInput 'KEY DOWN 0' }
-        Send-UiInput 'KEY ENTER 1'; Send-UiInput 'KEY ENTER 0'
+        Select-Combo 'order' $mode
         $null=Wait-Ui {param($s) $s.SortOrder -eq $mode -and $s.ScrollMaxY -gt 100} "sort mode $mode selected"
         # Child scrollbar ranges reflect the previous layout frame. A faster
         # input redraw must not make the baseline capture that stale range.

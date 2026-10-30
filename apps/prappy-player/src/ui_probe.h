@@ -18,6 +18,9 @@ struct UiProbe {
     bool scripted = false, mouseDown = false, rightDown = false;
     ImVec2 mousePosition{};
     uint64_t acknowledged = 0;
+    uint64_t tapPreviousAck = 0;
+    ImGuiKey tapKey = ImGuiKey_None;
+    unsigned tapFrames = 0;
     float scrollX = 0, scrollY = 0, scrollMaxY = 0;
     int order = 0;
     size_t drawnTracks = 0;
@@ -59,14 +62,19 @@ struct UiProbe {
                     else if (action == "RIGHT_DOWN") rightDown = true;
                     else if (action == "RIGHT_UP") rightDown = false;
                     else if (action == "WHEEL") valid = static_cast<bool>(command >> wheel) && std::isfinite(wheel) && std::abs(wheel) <= 100;
-                    else if (action == "KEY") {
+                    else if (action == "KEY" || action == "TAP") {
                         std::string name; int down = 0;
-                        valid = static_cast<bool>(command >> name >> down) && (down == 0 || down == 1);
+                        valid = static_cast<bool>(command >> name);
+                        if(action=="TAP")down=1;
+                        else valid=valid&&static_cast<bool>(command >> down)&&(down==0||down==1);
                         const auto key = name == "HOME" ? ImGuiKey_Home : name == "DOWN" ? ImGuiKey_DownArrow : name == "ENTER" ? ImGuiKey_Enter :
                             name == "ESC" ? ImGuiKey_Escape : name == "LEFT" ? ImGuiKey_LeftArrow : name == "RIGHT" ? ImGuiKey_RightArrow :
                             name == "END" ? ImGuiKey_End : name == "CTRL" ? ImGuiMod_Ctrl : name == "SHIFT" ? ImGuiMod_Shift :
                             name == "F" ? ImGuiKey_F : name == "ALT" ? ImGuiMod_Alt : name == "E" ? ImGuiKey_E : name == "A" ? ImGuiKey_A : name == "M" ? ImGuiKey_M : name == "T" ? ImGuiKey_T : ImGuiKey_None;
-                        if (valid && key != ImGuiKey_None) keys[key] = down != 0; else valid = false;
+                        if (valid && key != ImGuiKey_None){
+                            keys[key]=down!=0;
+                            if(action=="TAP"){tapPreviousAck=acknowledged;tapKey=key;tapFrames=2;}
+                        }else valid=false;
                     }
                     else if (action == "TEXT") valid = static_cast<bool>(command >> std::quoted(characters));
                     else if (action == "NATIVE_TEXT" || action == "NATIVE_EDIT") {
@@ -103,6 +111,10 @@ struct UiProbe {
             io.AddMouseButtonEvent(0, mouseDown);
             io.AddMouseButtonEvent(1, rightDown);
             for (const auto& [key, down] : keys) io.AddKeyEvent(key, down);
+            // A host round trip can exceed ImGui's repeat delay. A TAP queues
+            // release for the next rendered frame and acknowledges only then.
+            if(tapFrames==2){keys[tapKey]=false;tapFrames=1;}
+            else if(tapFrames==1){tapFrames=0;tapKey=ImGuiKey_None;}
             if (pendingWheel != 0) io.AddMouseWheelEvent(0, pendingWheel);
             if (!pendingCharacters.empty()) io.AddInputCharactersUTF8(pendingCharacters.c_str());
             pendingCharacters.clear(); pendingWheel = 0;
@@ -120,7 +132,7 @@ struct UiProbe {
     }
     void flush(const std::filesystem::path& directory, const std::string& state) {
         if (!enabled) return;
-        std::ostringstream out; out << state << ' ' << acknowledged << '\n';
+        std::ostringstream out; out << state << ' ' << (tapFrames?tapPreviousAck:acknowledged) << '\n';
         out << "SCROLL " << scrollX << ' ' << scrollY << ' ' << scrollMaxY << '\n';
         out << "ORDER " << order << '\n';
         out << "DRAWN " << drawnTracks << '\n';

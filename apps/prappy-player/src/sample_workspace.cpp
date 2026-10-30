@@ -1,5 +1,6 @@
 #include "sample_workspace.h"
 #include "state_io.h"
+#include "sample_source_registration.h"
 #include "imgui.h"
 #include "implot.h"
 #include "waveform_view.h"
@@ -161,7 +162,10 @@ void Workspace::persist(){
     stash();
     Json data={{"workspaces",sampleLibrary.json()},{"active_source",capture.is_null()?Json():sourceRef().json()},
         {"open",open},{"commands",pending},{"browser_library",library},{"search",libraryQuery},{"facet",facet},{"facet_value",facetValue},
-        {"tab",tab},{"offset",browseOffset},{"gain",previewGain}};
+        {"tab",tab},{"offset",browseOffset},{"gain",previewGain},{"source_handoff",handoff.snapshot()},
+        {"source_handoff_digest",pendingMark?pendingMark->digest:""},
+        {"source_handoff_request",pendingMark?pendingMark->importRequest:""},
+        {"source_handoff_library",pendingMark?pendingMark->importLibrary:""}};
     stateio::write(directory/"sample-workspaces.json",data.dump(2));draftDirty=false;persistedSpan=editor.span;
 }
 void Workspace::restore(){
@@ -170,6 +174,14 @@ void Workspace::restore(){
     // Invalid state must be visible, never silently replaced by an empty library.
     auto data=Json::parse(stateio::read(path));sampleLibrary=SampleLibrary::parse(data.at("workspaces"));pending=data.at("commands");open=data.at("open");
     library=data.at("browser_library");libraryQuery=data.at("search");facet=data.at("facet");facetValue=data.at("facet_value");tab=data.at("tab");browseOffset=data.at("offset");previewGain=data.at("gain");
+    handoff.restore(data.value("source_handoff",Json()));
+    if(const auto& intent=handoff.current()){
+        pendingMark=PlayingSongMark{stateio::pathFromText(intent->path),static_cast<Frame>(std::llround(intent->cue*Rate)),
+            intent->ticket,false,false,intent->selection,intent->duration,intent->action};
+        pendingMark->digest=data.value("source_handoff_digest","");
+        pendingMark->importRequest=data.value("source_handoff_request","");
+        pendingMark->importLibrary=data.value("source_handoff_library","");
+    }
     if(data.at("active_source").is_null())return;
     const auto source=SourceRef::parse(data.at("active_source"));auto& ws=sampleLibrary.at(source);sourceLibrary=source.library;
     capture=ws.view.at("capture");
@@ -184,15 +196,37 @@ void Workspace::mark(Audio& audio,std::optional<SecondsSpan> selection,OpenSourc
     if(storageBlocked){open=true;return;}
     if(audio.current.empty()||audio.duration<=0){notice="No song is loaded in the player.";return;}
     const auto intent=handoff.begin(utf8(audio.current),selection?OpenSource::Selection:action,audio.displayPosition(),audio.duration,selection);
-    persist();open=true;audio.setPaused(true);stopTransport();++generation;
+    open=true;audio.setPaused(true);stopTransport();++generation;
     pendingMark=PlayingSongMark{audio.current,static_cast<Frame>(std::llround(intent.cue*Rate)),intent.ticket,false,false,selection,intent.duration,intent.action};markMatches=Json::array();
+    pendingMark->digest=preparation.knownDigest(intent.path,audio.loadedSerial);
     notice="Opening the playing song...";
+    persist();
     if(!client||libraries.empty())connect();else submitMark();
 }
 void Workspace::submitMark(){
     if(!pendingMark||pendingMark->submitted||pendingMark->failed||!client||libraries.empty())return;
     pendingMark->submitted=true;notice="Finding the playing song in your libraries...";
     client->submit({"hash","GET",utf8(pendingMark->path),{{"mark",pendingMark->ticket}},generation,{}});
+}
+void Workspace::importMarkedSource(){
+    if(!pendingMark||!client)return;
+    const auto target=pendingMark->importLibrary.empty()?library:pendingMark->importLibrary;
+    const auto enabled=std::any_of(libraries.begin(),libraries.end(),[&](const auto& item){
+        return item.at("id")==target&&item.value("source_import_enabled",false);
+    });
+    const auto path=sourceImportPath(pendingMark->path,serverUrl);
+    if(!enabled||!path){
+        pendingMark->failed=true;
+        notice=!enabled?"This server has source registration disabled. Your selected range is retained.":
+            "The connected server cannot access this source path. Your selected range is retained.";
+        persist();return;
+    }
+    if(pendingMark->importRequest.empty())pendingMark->importRequest=uuid();
+    pendingMark->importLibrary=target;
+    const Json body={{"request_id",pendingMark->importRequest},{"operation","source.import"},
+        {"payload",{{"path",*path},{"sha256",pendingMark->digest}}}};
+    persist();notice="Registering this recording for editing; the original and selected range are preserved...";
+    client->submit({"source-import","POST",endpoint(target)+"/commands",body,generation,{}});
 }
 void Workspace::finishMark(const Json& match){
     if(!pendingMark)return;
@@ -263,10 +297,11 @@ void Workspace::process(){
         const auto& tag=reply.request.tag;
         if(tag!="libraries" && tag!="command" && tag!="collections" && reply.request.generation!=generation)continue;
         if((tag=="hash"||tag=="resolve")&&(!pendingMark||reply.request.body.at("mark")!=pendingMark->ticket))continue;
+        if(tag=="source-import"&&(!pendingMark||reply.request.body.at("request_id")!=pendingMark->importRequest))continue;
         if(tag=="collections" && reply.request.path!=endpoint(library)+"/collections")continue;
         if(tag=="browse" && reply.request.path!=browsePath)continue;
         if(tag=="audition" && (reply.request.path!=auditionPath || reply.request.body.at("epoch")!=transportEpoch))continue;
-        if(!reply.error.empty()){if(pendingMark&&(tag=="hash"||tag=="resolve"||tag=="libraries"))pendingMark->failed=true;if(tag=="audition"){auditionPath.clear();audition.stop();transport.state=PlaybackState::Error;}notice=reply.error;if(reply.status==409){notice="Conflict: local draft retained. Reload the saved sample or Fork before saving. "+notice;if(tag=="command")for(auto& row:pending)if(row.at("command").at("request_id")==reply.request.body.at("request_id")){row["conflict"]=true;if(row.contains("source"))sampleLibrary.conflict(SourceRef::parse(row.at("source")),row.at("draft_id"),row.at("command").at("request_id"));}persist();}continue;}
+        if(!reply.error.empty()){if(pendingMark&&(tag=="hash"||tag=="resolve"||tag=="source-import"||tag=="libraries"))pendingMark->failed=true;if(tag=="audition"){auditionPath.clear();audition.stop();transport.state=PlaybackState::Error;}notice=reply.error;if(reply.status==409){notice="Conflict: local draft retained. Reload the saved sample or Fork before saving. "+notice;if(tag=="command")for(auto& row:pending)if(row.at("command").at("request_id")==reply.request.body.at("request_id")){row["conflict"]=true;if(row.contains("source"))sampleLibrary.conflict(SourceRef::parse(row.at("source")),row.at("draft_id"),row.at("command").at("request_id"));}persist();}continue;}
         if(tag=="libraries"){
             libraries=reply.body;notice="Connected";
             if(library.empty()&&!libraries.empty())library=libraries[0].at("id");
@@ -320,15 +355,23 @@ void Workspace::process(){
             beats.clear();for(const auto& a:anchors)beats.push_back(a.at("frame").get<Frame>());
             selectedAnchor=0;
         }else if(tag=="hash"){
-            if(preparation.path==utf8(pendingMark->path)&&!preparation.digest.empty()&&preparation.digest!=reply.body.at("sha256").get<std::string>()){
-                pendingMark->failed=true;notice="This file changed after listening started. Reload the song before selecting a sample.";continue;
+            const auto digest=reply.body.at("sha256").get<std::string>();
+            if(!pendingMark->digest.empty()&&pendingMark->digest!=digest){
+                pendingMark->failed=true;notice="This file changed after the selection was captured. Reload the song before editing.";persist();continue;
             }
+            pendingMark->digest=digest;persist();
             if(!preparation.match.is_null()&&preparation.digest==reply.body.at("sha256").get<std::string>()){finishMark(preparation.match);continue;}
             client->submit({"resolve","GET","/v1/resolve?sha256="+reply.body.at("sha256").get<std::string>(),{{"mark",pendingMark->ticket}},generation,{}});
         }else if(tag=="resolve"){
             const auto matches=reply.body.at("matches");
             if(matches.size()==1)finishMark(matches[0]);
-            else{pendingMark->failed=true;markMatches=matches;notice=matches.empty()?"The playing file is not registered in a connected library. Your previous draft is preserved.":"Several recordings match this file. Choose its source below.";}
+            else if(matches.empty())importMarkedSource();
+            else{pendingMark->failed=true;markMatches=matches;notice="Several recordings match this file. Choose its source below.";}
+        }else if(tag=="source-import"){
+            if(reply.body.at("capture").at("blob_sha256")!=pendingMark->digest){
+                pendingMark->failed=true;notice="Registered source does not match the selected file. Your range is retained.";persist();continue;
+            }
+            finishMark(reply.body);
         }else if(tag=="capture"){
             const auto savedRegion=region;openCapture(reply.body);
             if(!savedRegion.is_null())chooseRegion(savedRegion);
@@ -613,7 +656,7 @@ void Workspace::draw(Audio& audio,const std::function<void(const char*,bool)>& o
                     if(ImGui::Button(label.c_str())){const auto chosen=match;finishMark(chosen);break;}
                 }
                 if(ImGui::Button("Retry opening playing song")){pendingMark->failed=false;pendingMark->submitted=false;if(libraries.empty())connect();else submitMark();}
-                if(ImGui::Button("Return to previous draft")){handoff.cancel();pendingMark.reset();markMatches=Json::array();notice="Previous draft restored.";loadDetails();}
+                if(ImGui::Button("Return to previous draft")){handoff.cancel();pendingMark.reset();markMatches=Json::array();notice="Previous draft restored.";loadDetails();persist();}
             }
         }else if(!capture.is_null()){
             ImGui::TextWrapped("%s",capture.at("recording").value("title","Recording").c_str());
