@@ -100,9 +100,15 @@ struct Audio {
         int result = command(handle, list.data());
         if (result < 0) { error = error_string(result); return false; } return true;
     }
+    static std::string decoderFile(fs::path nativePath) {
+        nativePath.make_preferred();
+        // Keep the caller's source identity unchanged, but give mpv a native
+        // extended path so valid Windows/WSL filenames can exceed MAX_PATH.
+        return utf8(nativePath.is_absolute() ? extendedPath(nativePath) : nativePath);
+    }
     bool play(const fs::path& path, bool startPaused = false, double startPosition = 0) {
         poll(); // Consume the previous track's events before replacing its identity.
-        const auto file = utf8(path);
+        const auto file = decoderFile(path);
         int pauseValue = startPaused ? 1 : 0;
         const int result = set_property(handle, "pause", MPV_FORMAT_FLAG, &pauseValue);
         if (result < 0) { error = error_string(result); return false; }
@@ -126,7 +132,7 @@ struct Audio {
         // samples reach the decoder. Retry once as a sequential stream, keeping
         // a bounded packet cache and the same application playback intent.
         sequentialRetry = true;
-        const auto stream = "ffmpeg://"+utf8(current);
+        const auto stream = "ffmpeg://"+decoderFile(current);
         const auto options = std::string(pauseRequested ? "pause=yes" : "pause=no")+
             ",stream-lavf-o=seekable=0,demuxer-seekable-cache=yes,demuxer-max-bytes=1048576";
         if (!run({"loadfile",stream.c_str(),"replace","-1",options.c_str()})) return false;
@@ -184,6 +190,12 @@ struct Audio {
             const Audio* audio; mpv_node& value;
             ~NodeOwner() { audio->free_node_contents(&value); }
         } owner{this, metadata};
+        return tagsFromNode(metadata);
+    }
+    // Property-change event nodes are borrowed until the next wait_event.
+    // Copy their strings without freeing libmpv's event-owned storage.
+    static std::vector<std::pair<std::string, std::string>> tagsFromNode(const mpv_node& metadata) {
+        std::vector<std::pair<std::string, std::string>> result;
         if (metadata.format != MPV_FORMAT_NODE_MAP || !metadata.u.list) return result;
         const auto* list = metadata.u.list;
         if (list->num < 0 || list->num > 2048 || (list->num && (!list->keys || !list->values))) return result;

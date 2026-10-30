@@ -16,10 +16,10 @@ function Percentile($values,[double]$p) {
 }
 foreach($driver in @('software','direct3d11')) {
     $stateDirectory=Join-Path $app ('build/perf-'+$driver+'-'+[Guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Force "$stateDirectory/player-analysis" | Out-Null
+    New-Item -ItemType Directory -Force "$stateDirectory/player-analysis-v2" | Out-Null
     foreach($name in @('player.ini','player-catalog.bin','player-history.txt')) { Copy-Item -LiteralPath (Join-Path $StateSource $name) -Destination $stateDirectory }
-    foreach($file in Get-ChildItem (Join-Path $StateSource 'player-analysis') -Filter '*.bin') {
-        New-Item -ItemType HardLink -Path (Join-Path "$stateDirectory/player-analysis" $file.Name) -Target $file.FullName | Out-Null
+    foreach($file in Get-ChildItem (Join-Path $StateSource 'player-analysis-v2') -File) {
+        Copy-Item -LiteralPath $file.FullName -Destination "$stateDirectory/player-analysis-v2"
     }
     $script:inputSequence=0; $hwnd=[IntPtr]::Zero
     if ($driver -eq 'software') { $env:PRAPPY_TEST_SOFTWARE='1' } else { Remove-Item Env:PRAPPY_TEST_SOFTWARE -ErrorAction SilentlyContinue }

@@ -44,6 +44,9 @@ Service::Service(fs::path cacheDirectory, ServiceSettings limits, std::function<
         throw std::invalid_argument("Invalid analysis service limits");
     maxWaveBytes = static_cast<size_t>(settings.waveformMemoryMiB) * 1024 * 1024;
     const auto count = settings.workers ? settings.workers : analysis_queue::automaticWorkers(std::thread::hardware_concurrency());
+    // The threads inspect workers under this mutex. Publish the entire vector
+    // before either loop can read it, including an immediately loaded registry.
+    std::lock_guard lock(mutex);
     ioThread = std::jthread([this](std::stop_token stop) { ioLoop(stop); });
     for (unsigned i = 0; i < count; ++i)
         workers.emplace_back([this](std::stop_token stop) { decodeLoop(stop); });
@@ -304,9 +307,11 @@ void Service::decodeLoop(std::stop_token stop) {
             uint64_t firstPcmMs = 0;
             const auto pcm = [&](uint64_t) { if (!firstPcmMs) firstPcmMs = elapsed(begin); };
             gain::Tags observedTags;
+            std::string observedCodec;
             bool tagsObserved = false;
             const auto metadata = [&](const auto& values, const std::string& codec) {
                 observedTags = gain::parseTags(values, lower(codec).find("opus") != std::string::npos);
+                observedCodec = codec;
                 tagsObserved = true;
             };
             auto result = measure(identity.path, taskToken, pcm, metadata);
@@ -349,12 +354,13 @@ void Service::decodeLoop(std::stop_token stop) {
                     changedLocked();
                     if (!selected || *selected != identity) summary.waveform.reset();
                     if (selected && *selected == identity && summary.waveform) requestedWaveforms.insert(job.key);
-                    completeLocked(std::move(summary));
-                    recordLocked("complete " + job.key + " openCheckMs=" + std::to_string(openMs) +
+                    recordLocked("complete " + job.key + " codec=" + observedCodec +
+                        " duration=" + std::to_string(summary.duration) + " openCheckMs=" + std::to_string(openMs) +
                         " firstPcmMs=" + std::to_string(firstPcmMs) + " decodeTotalMs=" + std::to_string(decodedMs) +
                         " serializationMs=" + std::to_string(serializationMs) +
                         " artifactWriteMs=" + std::to_string(publicationMs) +
                         " publishTotalMs=" + std::to_string(elapsed(begin)));
+                    completeLocked(std::move(summary));
                 }
             }
         } catch (const std::exception& e) {

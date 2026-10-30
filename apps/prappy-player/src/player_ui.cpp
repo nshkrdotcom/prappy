@@ -680,6 +680,12 @@ int runPlayer(HINSTANCE instance) {
                 browseVisits = UINT64_MAX; browseCatalogDirty = true;
                 prioritizeCurrent();
             }
+            // Establish selection before draining a fast warm-cache completion.
+            // Otherwise a startup waveform can be discarded while the service
+            // correctly believes it has already delivered that selected blob.
+            if (analysisGeneration != playback.generation) {
+                analysisGeneration = playback.generation; prioritizeCurrent();
+            }
             auto newAnalysis = analyzer.initialSummaries();
             auto updates = analyzer.collect();
             for (auto& update : updates) newAnalysis.push_back(std::move(update));
@@ -694,7 +700,8 @@ int runPlayer(HINSTANCE instance) {
                 const auto id = key(result.identity.path);
                 const auto foundTrack = analysisById.find(id);
                 Track* track = foundTrack == analysisById.end() ? nullptr : foundTrack->second;
-                if (track && track->bytes == result.identity.bytes && track->stamp == result.identity.stamp) {
+                const auto sourceIdentity = identityForPath(result.identity.path);
+                if (track && sourceIdentity && *sourceIdentity == result.identity) {
                     if (result.waveform && id == currentAnalysisId) {
                         waveform = result.waveform; waveformId = id;
                         waveformIdentity = result.identity;
@@ -712,9 +719,6 @@ int runPlayer(HINSTANCE instance) {
             }
             if (browseVisits != history.visitsRevision) {
                 browseVisits = history.visitsRevision; browser.rebuild(library, history, browseCatalogDirty); browseCatalogDirty = false; filterDirty = true;
-            }
-            if (analysisGeneration != playback.generation) {
-                analysisGeneration = playback.generation; prioritizeCurrent();
             }
             // No automatic gain update here. A completion can update the
             // registry, durations and waveform, but never this playback gain.

@@ -30,14 +30,23 @@ struct Handle {
     Handle& operator=(const Handle&) = delete;
 };
 void cancelled(std::stop_token stop) { if (stop.stop_requested()) throw std::runtime_error("Analysis cancelled."); }
-void pollDecoder(Audio& decoder, bool& eof, const Metadata& metadata) {
+struct DecoderMetadata {
+    std::vector<std::pair<std::string, std::string>> tags;
+    std::string codec;
+};
+void pollDecoder(Audio& decoder, bool& eof, const Metadata& metadata, DecoderMetadata& observed) {
     for (;;) {
         const auto event = decoder.wait_event(decoder.handle, 0);
         if (event->event_id == MPV_EVENT_NONE) return;
-        if (event->event_id == MPV_EVENT_FILE_LOADED && metadata) {
-            decoder.loaded = true;
-            decoder.readInfo();
-            metadata(decoder.loadedTags(), decoder.info.codec);
+        // Synchronous properties can wait for mpv's audio thread, which can
+        // itself be blocked writing to the pipe this thread must drain.
+        if (event->event_id == MPV_EVENT_PROPERTY_CHANGE && metadata) {
+            const auto* property = static_cast<const mpv_event_property*>(event->data);
+            if (event->reply_userdata == 4 && property->format == MPV_FORMAT_NODE)
+                observed.tags = Audio::tagsFromNode(*static_cast<const mpv_node*>(property->data));
+            if (event->reply_userdata == 5 && property->format == MPV_FORMAT_STRING)
+                observed.codec = *static_cast<const char* const*>(property->data);
+            if (!observed.codec.empty()) metadata(observed.tags, observed.codec);
         }
         if (event->event_id == MPV_EVENT_END_FILE) {
             const auto end = static_cast<mpv_event_end_file*>(event->data);
@@ -81,11 +90,16 @@ Result measure(const fs::path& path, std::stop_token stop, const Progress& progr
         }
     } pendingIo{pipe.value, io, ioPending};
     bool eof = false;
+    DecoderMetadata observed;
     const auto output = utf8(pipeName);
     decoder.volume = 100;
     decoder.open(false, {{"ao", "pcm"}, {"ao-pcm-file", output.c_str()}, {"ao-pcm-waveheader", "no"},
         {"audio-format", "float"}, {"audio-samplerate", "48000"}, {"audio-channels", "stereo"},
         {"gapless-audio", "no"}, {"replaygain", "no"}, {"keep-open", "no"}}, false);
+    if (metadata) {
+        decoder.check(decoder.observe_property(decoder.handle, 4, "metadata", MPV_FORMAT_NODE));
+        decoder.check(decoder.observe_property(decoder.handle, 5, "current-tracks/audio/codec", MPV_FORMAT_STRING));
+    }
     bool connected = ConnectNamedPipe(pipe.value, &io) != FALSE;
     if (!connected) {
         const auto error = GetLastError();
@@ -99,7 +113,7 @@ Result measure(const fs::path& path, std::stop_token stop, const Progress& progr
         for (;;) {
             cancelled(stop);
             const auto ready = WaitForSingleObject(event.value, 20);
-            pollDecoder(decoder, eof, metadata);
+            pollDecoder(decoder, eof, metadata, observed);
             if (ready == WAIT_OBJECT_0) return;
             if (ready == WAIT_FAILED) throw std::runtime_error("Analysis pipe wait failed.");
             if (std::chrono::steady_clock::now() - lastData > std::chrono::seconds(30))
@@ -141,11 +155,11 @@ Result measure(const fs::path& path, std::stop_token stop, const Progress& progr
         carry = available % 8;
         std::memmove(buffer.data(), buffer.data() + frames * 8, carry);
         if (progress) progress(accumulator.frames());
-        pollDecoder(decoder, eof, metadata);
+        pollDecoder(decoder, eof, metadata, observed);
     }
     // Pipe closure alone is insufficient: only a clean decoder EOF commits data.
     while (!eof) {
-        cancelled(stop); pollDecoder(decoder, eof, metadata);
+        cancelled(stop); pollDecoder(decoder, eof, metadata, observed);
         if (!eof) {
             if (std::chrono::steady_clock::now() - lastData > std::chrono::seconds(30)) throw std::runtime_error("Analysis EOF timeout.");
             std::this_thread::sleep_for(std::chrono::milliseconds(5));

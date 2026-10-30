@@ -55,7 +55,11 @@ inline void analysisTests(const fs::path& root, const Library& fixture, std::ost
     rejects([&] { analysis::parse(analysis::serialize(identity, invalid), identity); }, "Inconsistent pyramid accepted.");
     log << "PASS analysis DSP/cache: reference tone, gain, gates, silence, short/nonfinite input, extrema, stale/corrupt/versioned cache\n" << std::flush;
 
-    const auto decoded = analysis::measure(identity.path);
+    std::string decodedCodec;
+    const auto decoded = analysis::measure(identity.path, {}, {}, [&](const auto&, const std::string& codec) {
+        decodedCodec = codec;
+    });
+    require(decodedCodec == "pcm_s16le", "Analysis metadata events lost source codec.");
     require(std::abs(decoded.duration() - 3) < .02 && decoded.loudness && decoded.levels.back()[0].leftMax > .02f,
         "Streaming decoder duration/loudness/peaks failed.");
     std::stop_source stopped; stopped.request_stop();
@@ -69,6 +73,9 @@ inline void analysisTests(const fs::path& root, const Library& fixture, std::ost
     const auto broken = root / "broken-audio.wav"; { std::ofstream file(broken); file << "broken audio"; }
     rejects([&] { analysis::measure(broken); }, "Invalid audio analysis succeeded.");
     const auto directory = root / "analysis-v2";
+    std::set<std::wstring> sources;
+    for (const auto& file : fixture.files) sources.insert(key(file.path));
+    for (const auto& track : fixture.tracks) sources.insert(key(track.path));
     auto collect = [&](analysis::Service& service, size_t required, bool initial) {
         std::vector<analysis::Summary> results;
         for (int i = 0; i < 6000 && results.size() < required; ++i) {
@@ -84,13 +91,13 @@ inline void analysisTests(const fs::path& root, const Library& fixture, std::ost
     {
         analysis::Service service(directory, {2, 1, 128});
         service.reconcile(fixture); service.prioritize(fixture.tracks.back());
-        for (const auto& result : collect(service, fixture.tracks.size(), false))
+        for (const auto& result : collect(service, sources.size(), false))
             require(result.error.empty() && !result.cached && result.duration > 0,
                 "Fresh analysis service failed.");
     }
     {
         analysis::Service service(directory, {2, 1, 128}); service.reconcile(fixture);
-        for (const auto& result : collect(service, fixture.tracks.size(), true))
+        for (const auto& result : collect(service, sources.size(), true))
             require(result.error.empty() && result.cached, "Registry did not reuse cached summary.");
         const auto trace = service.diagnostics();
         require(std::none_of(trace.begin(), trace.end(), [](const auto& event) {
@@ -99,7 +106,7 @@ inline void analysisTests(const fs::path& root, const Library& fixture, std::ost
     }
     {
         analysis::Service service(directory, {2, 1, 128}); service.reconcile(fixture, true);
-        for (const auto& result : collect(service, fixture.tracks.size(), false))
+        for (const auto& result : collect(service, sources.size(), false))
             require(result.error.empty() && !result.cached, "Forced refresh reused old analysis.");
     }
     {
@@ -110,7 +117,7 @@ inline void analysisTests(const fs::path& root, const Library& fixture, std::ost
         analysis::Service service(directory, {2, 1, 128}); service.reconcile(fixture);
         // A cached summary is still immediately available even when a
         // selected waveform is damaged; only that blob is rebuilt.
-        collect(service, fixture.tracks.size(), true);
+        collect(service, sources.size(), true);
         service.prioritize(fixture.tracks.front());
         auto repairs = collect(service, 1, false);
         require(!repairs.front().cached && repairs.front().error.empty(),
@@ -121,6 +128,22 @@ inline void analysisTests(const fs::path& root, const Library& fixture, std::ost
         service.reconcile(fixture);
         // Destructor cancels decoding and joins without detached jobs.
     }
+    const auto index = directory / "summaries.bin";
+    const auto goodIndex = analysis_registry::readFile(index);
+    const auto verifyRecovery = [&] {
+        analysis::Service service(directory, {2, 1, 128}); service.reconcile(fixture);
+        for (const auto& result : collect(service, sources.size(), true))
+            require(result.cached && result.error.empty(), "Registry backup recovery decoded a source.");
+    };
+    stateio::write(fs::path(index.wstring() + L".bak"), goodIndex, false);
+    auto corruptIndex = goodIndex; corruptIndex.back() ^= 1;
+    stateio::write(index, corruptIndex, false);
+    verifyRecovery();
+    require(analysis_registry::decode(analysis_registry::readFile(index)).size() == sources.size(),
+        "Recovered registry was not checkpointed on shutdown.");
+    stateio::write(fs::path(index.wstring() + L".bak"), goodIndex, false);
+    fs::remove(index); // Disposable test registry only: interrupted replacement.
+    verifyRecovery();
     log << "PASS analysis streaming/registry/service: decode/cancel, warm summary reuse, "
-           "forced refresh, corrupt selected blob repair, orderly shutdown\n";
+           "forced refresh, corrupt selected blob repair, backup/interrupted replacement recovery, orderly shutdown\n";
 }

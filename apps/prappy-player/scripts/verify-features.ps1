@@ -276,7 +276,8 @@ try {
     $info=(Read-Ui).Controls['audio-info']
     Send-UiInput ('MOVE {0} {1}' -f $info.X.ToString([Globalization.CultureInfo]::InvariantCulture),$info.Y.ToString([Globalization.CultureInfo]::InvariantCulture))
     $null=Wait-Ui {param($s) $s.Tooltip -match 'pcm_s16le.*44100 Hz.*1 ch.*Stereo analysis:.*LUFS'} 'audio format and measured loudness tooltip'
-    Require ((Get-ChildItem -LiteralPath "$stateDirectory/player-analysis" -Filter '*.bin').Count -eq 2) 'analysis writes its independent per-track cache'
+    Require ((Get-ChildItem -LiteralPath "$stateDirectory/player-analysis-v2" -Filter 'wave-*.bin').Count -eq 3) 'analysis writes independent source/alias waveform blobs'
+    $null=Wait-Ui {param($s) Test-Path -LiteralPath "$stateDirectory/player-analysis-v2/summaries.bin"} 'analysis checkpoints its separate summary registry'
     Capture 'startup'
     $layout=Read-Ui
     Check-HeaderText 'startup' $layout

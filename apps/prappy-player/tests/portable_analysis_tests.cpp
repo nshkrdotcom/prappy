@@ -58,6 +58,13 @@ static void gainTests() {
     check(gain::parseTags({{"replaygain_track_gain", "5 dB"}, {"replaygain_reference_loudness", "83 dB"}}, false).state == gain::TagState::Unsupported,
           "Unknown ReplayGain reference");
     check(gain::parseTags({{"r128_track_gain", "32768"}}, true).state == gain::TagState::Invalid, "R128 range");
+    const auto positiveR128 = gain::parseTags({{"R128_TRACK_GAIN", "+512"}}, true);
+    check(positiveR128.selected && positiveR128.selected->adjustmentDb == 2, "Signed positive R128 was rejected");
+    for (const auto* invalid : {" 512", "512 ", "0000512", "+-512"})
+        check(gain::parseTags({{"R128_TRACK_GAIN", invalid}}, true).state == gain::TagState::Invalid,
+              "R128 accepted whitespace, excess digits or multiple signs");
+    check(gain::parseTags({{"R128_TRACK_GAIN", "512"}, {"R128_TRACK_GAIN", "512"}}, true).state == gain::TagState::Invalid,
+          "R128 accepted duplicate track gain tags");
     check(gain::parseTags({{"iTunNORM", "000016E7 000016E7 ..."}}, false).state == gain::TagState::Unsupported,
           "Sound Check must not silently invent a conversion");
     check(gain::parseTags({{"r128_track_gain", "200"}}, false).state == gain::TagState::Unsupported,
@@ -69,8 +76,14 @@ static void gainTests() {
     check(gain::parseTags({{"replaygain_track_gain", "1 dB"}, {"REPLAYGAIN_TRACK_GAIN", "1 dB"}}, false).selected.has_value(),
           "Identical duplicate keys must not conflict");
     auto positiveTag = gain::parseTags({{"REPLAYGAIN_TRACK_GAIN", "+7.00 dB"}}, false);
+    check(positiveTag.state == gain::TagState::Valid && positiveTag.selected &&
+          positiveTag.selected->adjustmentDb == 7, "Signed positive ReplayGain was rejected");
     check(gain::choose(20, "unknown-peak", enabled, positiveTag, {}).appliedDb == 0,
           "Positive tag gain with unknown peak must be capped");
+    const auto unverifiedPeak = gain::parseTags({{"REPLAYGAIN_TRACK_GAIN", "+7.00 dB"},
+                                                {"REPLAYGAIN_TRACK_PEAK", "0.1"}}, false);
+    check(gain::choose(20, "unverified-peak-domain", enabled, unverifiedPeak, {}).appliedDb == 0,
+          "An unverified source-domain tag peak authorized a decoded-domain boost");
     check(gain::choose(21, "trusted-peak", enabled, positiveTag, {std::nullopt, 1.0}).appliedDb == -1,
           "Measured same-domain peak must constrain a tag-based decision");
     gain::Lock lock;
@@ -242,6 +255,7 @@ static void dspTests() {
     std::cout << "PASS DSP: reference -23 LUFS tone, -6.02 dB scale, silence and invalid frames\n";
 }
 int main() {
+    std::cout << "Running portable gain, registry, scheduler and DSP checks\n" << std::flush;
     try { gainTests(); registryTests(); schedulerTests(); dspTests(); }
     catch (const std::exception& e) { std::cerr << "FAIL: " << e.what() << '\n'; return 1; }
     std::cout << "ALL PORTABLE ANALYSIS TESTS PASS\n";

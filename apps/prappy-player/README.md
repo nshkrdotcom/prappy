@@ -395,6 +395,8 @@ Gain is clamped to a maximum +12 dB and a -1 dB **sample-peak** ceiling when
 same-domain peak information is trusted; a positive request is capped at
 **0 dB when the peak is unknown**, and attenuation can still apply. Fallback
 0 dB is not a promise that the unprocessed source is under the ceiling.
+Tag peaks are retained as metadata but do not authorize boost: their domain
+has not been verified after decoder output gain, resampling and downmixing.
 The player does not add a limiter/compressor or claim true-peak protection.
 
 Opus `R128_TRACK_GAIN` uses signed Q7.8 and the -23 LUFS reference (hence a
@@ -405,7 +407,8 @@ format-specific calibration is established, this application documents an
 conversion. Conflicting, malformed or unknown-reference tags are rejected.
 Apple/iTunes `iTunNORM` Sound Check conversion is **not yet verified or
 supported** and safely falls back to measured loudness or the fallback. Tag
-behavior requires validation with the locally pinned libmpv and real fixtures.
+behavior and remaining validation gaps are recorded in
+[`IMPLEMENTATION_REPORT.md`](IMPLEMENTATION_REPORT.md).
 No media file or tags are modified.
 
 Optional advanced `player.ini` settings (existing normalization enabled flag

@@ -58,6 +58,143 @@ int outputMeterTests(const fs::path& signal, const fs::path& logPath) {
         return 0;
     } catch (const std::exception& e) { log << "FAIL " << e.what() << '\n'; return 1; }
 }
+static void playbackStateTests(const fs::path& root, Library& fixture, std::ostream& log) {
+    const auto require = [](bool value, const char* message) { if (!value) throw std::runtime_error(message); };
+        Audio audio; audio.open(true);
+        History visits; HistoryFile sessionFile(root / "session.txt"); Playback player(audio, fixture, visits, sessionFile);
+        double availableLufs = -24;
+        player.decideGain = [&](const fs::path& path, uint64_t serial) {
+            int paused = 0;
+            require(audio.get_property(audio.handle, "pause", MPV_FORMAT_FLAG, &paused) >= 0 && paused,
+                "Gain selection ran after playback unpaused.");
+            return gain::choose(serial, analysis_registry::pathUtf8(path), {true, -18, 0}, {},
+                {availableLufs, 0.1});
+        };
+        const auto actualGain = [&] {
+            double value = 0;
+            require(audio.get_property(audio.handle, "volume-gain", MPV_FORMAT_DOUBLE, &value) >= 0,
+                "Pinned libmpv volume-gain property unavailable.");
+            return value;
+        };
+        const auto wait = [&](Playback& session, Audio& source) {
+            for (int i = 0; i < 1000; ++i) {
+                session.tick();
+                if (!session.pending && source.loaded) return;
+                SDL_Delay(5);
+            }
+            throw std::runtime_error("Playback state timeout: " + session.notice + " " + source.error);
+        };
+        const auto play = [&](const fs::path& path) { require(player.request(path), "Playback request failed."); wait(player, audio); };
+        play(fixture.tracks[0].path); const auto visitA = visits.current()->id;
+        const auto gainEpochA = audio.loadedSerial;
+        require(player.gainDecision.current() && player.gainDecision.current()->serial == gainEpochA &&
+            std::abs(actualGain() - 6) < .001, "Gain was not locked before playback unpaused.");
+        availableLufs = -26; // A late result is for the NEXT playback only.
+        for (int i = 0; i < 5; ++i) player.tick();
+        audio.setPaused(true); audio.seek(.5); audio.setPaused(false);
+        require(player.gainDecision.current()->serial == gainEpochA && std::abs(actualGain() - 6) < .001,
+            "Late loudness, pause/resume or seek changed gain within a playback epoch.");
+        audio.setVolume(23);
+        require(std::abs(audio.gain - 6) < .001, "User volume changed application normalization.");
+        audio.setVolume(70);
+        for (int i = 0; i < 400 && (audio.info.codec.empty() || audio.info.sampleFormat.empty() || audio.info.sampleRate <= 0 || audio.info.channels <= 0); ++i) {
+            SDL_Delay(5); player.tick();
+        }
+        require(audio.info.codec == "pcm_s16le" && audio.info.sampleRate == 44100 && audio.info.channels == 1 &&
+            !audio.info.sampleFormat.empty() && audio.info.describe().find("44100 Hz") != std::string::npos,
+            "Source audio format details are missing or incorrect.");
+        play(fixture.tracks[1].path); const auto visitB = visits.current()->id;
+        require(player.gainDecision.current() && player.gainDecision.current()->serial == audio.loadedSerial &&
+            std::abs(actualGain() - 8) < .001, "Next playback did not use the available late measurement.");
+        play(fixture.tracks[0].path); const auto visitC = visits.current()->id;
+        require(player.navigate(-1), "Back unavailable."); wait(player, audio);
+        require(visits.current()->id == visitB && visits.entries.size() == 3, "Back added a visit.");
+        require(player.navigate(-1), "Second Back unavailable."); wait(player, audio);
+        require(visits.current()->id == visitA && !player.adjacent(-1), "Back boundary incorrect.");
+        require(player.navigate(1), "Forward unavailable."); wait(player, audio);
+        require(visits.current()->id == visitB, "Forward chose library instead of trail.");
+        play(fixture.tracks[1].path);
+        require(visits.trail.size() == 3 && visits.find(visitC) && visits.trail[1] == visitB, "New branch lost old history.");
+        const auto beforeRapid = visits.entries.size();
+        require(player.request(fixture.tracks[0].path) && player.request(fixture.tracks[1].path) && player.request(fixture.tracks[0].path), "Rapid requests failed.");
+        wait(player, audio);
+        require(visits.entries.size() == beforeRapid + 1 && key(visits.current()->path) == key(fixture.tracks[0].path), "Stale load events committed wrong visits.");
+        require(player.request(fixture.tracks[0].path), "Pause-during-load request failed.");
+        player.toggle(); wait(player, audio);
+        require(audio.paused, "Pause intent during loading was lost.");
+        player.toggle(); require(!audio.paused, "Resume after pending pause failed.");
+        const auto beforeMissing = visits.entries.size(), currentId = visits.current()->id;
+        const auto previousGain = player.gainDecision.current()->appliedDb;
+        availableLufs = -22; // Rollback must preserve the previous listening gain.
+        require(player.request(root / "missing.wav"), "Missing request not accepted by mpv."); wait(player, audio);
+        require(visits.entries.size() == beforeMissing && visits.current()->id == currentId && !player.notice.empty(), "Failed load changed history or lost error.");
+        require(player.gainDecision.current() && std::abs(actualGain() - previousGain) < .001,
+            "Failed-load rollback silently renormalized the previous listening session.");
+        const auto invalidAudio = root / "invalid.wav"; { std::ofstream bad(invalidAudio); bad << "not an audio file"; }
+        require(player.request(invalidAudio), "Invalid media request failed early."); wait(player, audio);
+        require(visits.entries.size() == beforeMissing && visits.current()->id == currentId, "Decoder error recorded a visit.");
+        audio.pause();
+        const auto seekStart = Audio::Clock::now(); const auto requestsBefore = audio.seekSequence;
+        for (int i = 0; i < 10000; ++i) audio.seek(static_cast<double>(i%19)/10);
+        audio.seek(.8);
+        require(audio.seekSequence == requestsBefore+1 && audio.queuedSeek == .8 && audio.displayPosition() == .8,
+            "Live rapid seeking blocked coalescing or optimistic feedback.");
+        log << "Seek submission: 10001 targets coalesced in " << std::chrono::duration<double,std::milli>(Audio::Clock::now()-seekStart).count() << " ms\n";
+        for (int i = 0; i < 200 && std::abs(audio.position - .8) > .25; ++i) { player.tick(); SDL_Delay(5); }
+        require(audio.paused && audio.position > .5, "Cannot checkpoint paused position.");
+        double decoded = 0;
+        require(audio.get_property(audio.handle,"time-pos",MPV_FORMAT_DOUBLE,&decoded) >= 0 && std::abs(decoded-.8) < .25,
+            "Seek preview hid an incorrect decoder position.");
+        player.checkpoint(); visits.repeat = RepeatMode::One; ++visits.revision; player.finish();
+        HistoryFile restoredFile(root / "session.txt"); auto restoredHistory = restoredFile.load(10000);
+        Audio restoredAudio; restoredAudio.open(true); Playback restored(restoredAudio, fixture, restoredHistory, restoredFile);
+        restored.restore(); wait(restored, restoredAudio);
+        require(restoredAudio.paused && restoredHistory.entries.size() == visits.entries.size() && restoredAudio.position > .5 && restoredHistory.repeat == RepeatMode::One, "Session did not restore paused without adding visits.");
+        int paused = 0; restoredAudio.get_property(restoredAudio.handle, "pause", MPV_FORMAT_FLAG, &paused);
+        require(paused != 0, "Restored mpv was not paused.");
+        log << "PASS playback: branch/Back/Forward, rapid requests, locked gain vs late results/seek/pause, "
+               "next-play gain, independent volume, failed-load gain rollback, paused restore/repeat\n";
+
+        const auto awaitEofAction = [&](Playback& session, Audio& source, uint64_t previous) {
+            for (int i = 0; i < 1400; ++i) {
+                session.tick(); if (source.serial > previous && !session.pending && source.loaded) return;
+                SDL_Delay(5);
+            }
+            throw std::runtime_error("EOF repeat/progression timeout.");
+        };
+        const auto sameVisit = restoredHistory.current()->id;
+        const auto sameCount = restoredHistory.entries.size();
+        restored.toggle(); restoredAudio.seek(restoredAudio.duration - .12); const auto beforeLoop = restoredAudio.serial;
+        awaitEofAction(restored, restoredAudio, beforeLoop);
+        require(restoredHistory.current()->id == sameVisit && restoredHistory.entries.size() == sameCount, "Repeat One added history entries.");
+        require(restored.navigate(1), "Repeat One intercepted manual Next."); wait(restored, restoredAudio);
+        require(restoredHistory.entries.size() == sameCount + 1, "Manual Next failed while repeating One.");
+        restoredHistory.repeat = RepeatMode::All; ++restoredHistory.revision;
+        require(restored.request(fixture.tracks.back().path), "Cannot select final library track."); wait(restored, restoredAudio);
+        restoredAudio.seek(restoredAudio.duration - .12); const auto beforeAll = restoredAudio.serial;
+        awaitEofAction(restored, restoredAudio, beforeAll);
+        require(key(restoredAudio.current) == fixture.tracks.front().id, "Repeat All did not wrap library.");
+        restoredHistory.repeat = RepeatMode::Off; ++restoredHistory.revision;
+        require(restored.request(fixture.tracks.back().path), "Cannot select final track for repeat Off."); wait(restored, restoredAudio);
+        restoredAudio.seek(restoredAudio.duration - .12); const auto beforeOff = restoredAudio.serial;
+        for (int i = 0; i < 1400 && restoredAudio.active; ++i) { restored.tick(); SDL_Delay(5); }
+        require(!restoredAudio.active && !restored.pending && restoredAudio.serial == beforeOff, "Repeat Off did not stop at library end.");
+        require(restored.navigate(-1), "Cannot traverse while testing concurrent pruning.");
+        restoredHistory.setLimit(1); wait(restored, restoredAudio);
+        require(restoredHistory.entries.size() == 1 && restoredHistory.current(), "Pruned pending target caused invalid navigation.");
+        Library one; one.tracks.push_back(fixture.tracks.front());
+        History oneHistory; oneHistory.repeat = RepeatMode::All;
+        HistoryFile oneFile(root / "one.txt"); Audio oneAudio; oneAudio.open(true); Playback onePlayer(oneAudio, one, oneHistory, oneFile);
+        require(onePlayer.navigate(1), "Single-track start failed."); wait(onePlayer, oneAudio);
+        oneAudio.seek(oneAudio.duration - .12); const auto beforeOne = oneAudio.serial;
+        awaitEofAction(onePlayer, oneAudio, beforeOne);
+        require(oneHistory.entries.size() == 2 && key(oneAudio.current) == one.tracks.front().id, "Single-track Repeat All failed.");
+        Library empty; History noHistory; HistoryFile noFile(root / "empty.txt"); Playback noPlayer(oneAudio, empty, noHistory, noFile);
+        require(!noPlayer.navigate(1), "Empty library should not start/retry playback.");
+        restored.finish(); onePlayer.finish(); player.finish();
+        log << "PASS repeat: One preserves visits/manual navigation; All wraps; Off stops; one-track and empty libraries\n";
+}
+
 // Integration checks run only in explicit --state-test fixture directories.
 int stateTests(const fs::path& configPath, const fs::path& logPath) {
     std::ofstream log(logPath);
@@ -331,130 +468,7 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
         require(loadCatalog(catalogPath, settings, catalog), "Catalog backup recovery failed.");
         log << "PASS catalog: independent version, checksum, config matching, unchanged-hash reuse, changed/deleted files, offline roots, backup recovery\n";
 
-        Audio audio; audio.open(true);
-        History visits; HistoryFile sessionFile(root / "session.txt"); Playback player(audio, fixture, visits, sessionFile);
-        double availableLufs = -24;
-        player.decideGain = [&](const fs::path& path, uint64_t serial) {
-            return gain::choose(serial, analysis_registry::pathUtf8(path), {true, -18, 0}, {},
-                {availableLufs, 0.1});
-        };
-        const auto wait = [&](Playback& session, Audio& source) {
-            for (int i = 0; i < 1000; ++i) {
-                session.tick();
-                if (!session.pending && source.loaded) return;
-                SDL_Delay(5);
-            }
-            throw std::runtime_error("Playback state timeout: " + session.notice + " " + source.error);
-        };
-        const auto play = [&](const fs::path& path) { require(player.request(path), "Playback request failed."); wait(player, audio); };
-        play(fixture.tracks[0].path); const auto visitA = visits.current()->id;
-        const auto gainEpochA = audio.loadedSerial;
-        require(player.gainDecision.current() && player.gainDecision.current()->serial == gainEpochA &&
-            std::abs(audio.gain - 6) < .001, "Gain was not locked before playback unpaused.");
-        availableLufs = -26; // A late result is for the NEXT playback only.
-        for (int i = 0; i < 5; ++i) player.tick();
-        audio.setPaused(true); audio.seek(.5); audio.setPaused(false);
-        require(player.gainDecision.current()->serial == gainEpochA && std::abs(audio.gain - 6) < .001,
-            "Late loudness, pause/resume or seek changed gain within a playback epoch.");
-        audio.setVolume(23);
-        require(std::abs(audio.gain - 6) < .001, "User volume changed application normalization.");
-        audio.setVolume(70);
-        for (int i = 0; i < 400 && (audio.info.codec.empty() || audio.info.sampleFormat.empty() || audio.info.sampleRate <= 0 || audio.info.channels <= 0); ++i) {
-            SDL_Delay(5); player.tick();
-        }
-        require(audio.info.codec == "pcm_s16le" && audio.info.sampleRate == 44100 && audio.info.channels == 1 &&
-            !audio.info.sampleFormat.empty() && audio.info.describe().find("44100 Hz") != std::string::npos,
-            "Source audio format details are missing or incorrect.");
-        play(fixture.tracks[1].path); const auto visitB = visits.current()->id;
-        require(player.gainDecision.current() && player.gainDecision.current()->serial == audio.loadedSerial &&
-            std::abs(audio.gain - 8) < .001, "Next playback did not use the available late measurement.");
-        play(fixture.tracks[0].path); const auto visitC = visits.current()->id;
-        require(player.navigate(-1), "Back unavailable."); wait(player, audio);
-        require(visits.current()->id == visitB && visits.entries.size() == 3, "Back added a visit.");
-        require(player.navigate(-1), "Second Back unavailable."); wait(player, audio);
-        require(visits.current()->id == visitA && !player.adjacent(-1), "Back boundary incorrect.");
-        require(player.navigate(1), "Forward unavailable."); wait(player, audio);
-        require(visits.current()->id == visitB, "Forward chose library instead of trail.");
-        play(fixture.tracks[1].path);
-        require(visits.trail.size() == 3 && visits.find(visitC) && visits.trail[1] == visitB, "New branch lost old history.");
-        const auto beforeRapid = visits.entries.size();
-        require(player.request(fixture.tracks[0].path) && player.request(fixture.tracks[1].path) && player.request(fixture.tracks[0].path), "Rapid requests failed.");
-        wait(player, audio);
-        require(visits.entries.size() == beforeRapid + 1 && key(visits.current()->path) == key(fixture.tracks[0].path), "Stale load events committed wrong visits.");
-        require(player.request(fixture.tracks[0].path), "Pause-during-load request failed.");
-        player.toggle(); wait(player, audio);
-        require(audio.paused, "Pause intent during loading was lost.");
-        player.toggle(); require(!audio.paused, "Resume after pending pause failed.");
-        const auto beforeMissing = visits.entries.size(), currentId = visits.current()->id;
-        const auto previousGain = player.gainDecision.current()->appliedDb;
-        availableLufs = -22; // Rollback must preserve the previous listening gain.
-        require(player.request(root / "missing.wav"), "Missing request not accepted by mpv."); wait(player, audio);
-        require(visits.entries.size() == beforeMissing && visits.current()->id == currentId && !player.notice.empty(), "Failed load changed history or lost error.");
-        require(player.gainDecision.current() && std::abs(audio.gain - previousGain) < .001,
-            "Failed-load rollback silently renormalized the previous listening session.");
-        const auto invalidAudio = root / "invalid.wav"; { std::ofstream bad(invalidAudio); bad << "not an audio file"; }
-        require(player.request(invalidAudio), "Invalid media request failed early."); wait(player, audio);
-        require(visits.entries.size() == beforeMissing && visits.current()->id == currentId, "Decoder error recorded a visit.");
-        audio.pause();
-        const auto seekStart = Audio::Clock::now(); const auto requestsBefore = audio.seekSequence;
-        for (int i = 0; i < 10000; ++i) audio.seek(static_cast<double>(i%19)/10);
-        audio.seek(.8);
-        require(audio.seekSequence == requestsBefore+1 && audio.queuedSeek == .8 && audio.displayPosition() == .8,
-            "Live rapid seeking blocked coalescing or optimistic feedback.");
-        log << "Seek submission: 10001 targets coalesced in " << std::chrono::duration<double,std::milli>(Audio::Clock::now()-seekStart).count() << " ms\n";
-        for (int i = 0; i < 200 && std::abs(audio.position - .8) > .25; ++i) { player.tick(); SDL_Delay(5); }
-        require(audio.paused && audio.position > .5, "Cannot checkpoint paused position.");
-        double decoded = 0;
-        require(audio.get_property(audio.handle,"time-pos",MPV_FORMAT_DOUBLE,&decoded) >= 0 && std::abs(decoded-.8) < .25,
-            "Seek preview hid an incorrect decoder position.");
-        player.checkpoint(); visits.repeat = RepeatMode::One; ++visits.revision; player.finish();
-        HistoryFile restoredFile(root / "session.txt"); auto restoredHistory = restoredFile.load(10000);
-        Audio restoredAudio; restoredAudio.open(true); Playback restored(restoredAudio, fixture, restoredHistory, restoredFile);
-        restored.restore(); wait(restored, restoredAudio);
-        require(restoredAudio.paused && restoredHistory.entries.size() == visits.entries.size() && restoredAudio.position > .5 && restoredHistory.repeat == RepeatMode::One, "Session did not restore paused without adding visits.");
-        int paused = 0; restoredAudio.get_property(restoredAudio.handle, "pause", MPV_FORMAT_FLAG, &paused);
-        require(paused != 0, "Restored mpv was not paused.");
-        log << "PASS playback: branch/Back/Forward, rapid requests, locked gain vs late results/seek/pause, "
-               "next-play gain, independent volume, failed-load gain rollback, paused restore/repeat\n";
-
-        const auto awaitEofAction = [&](Playback& session, Audio& source, uint64_t previous) {
-            for (int i = 0; i < 1400; ++i) {
-                session.tick(); if (source.serial > previous && !session.pending && source.loaded) return;
-                SDL_Delay(5);
-            }
-            throw std::runtime_error("EOF repeat/progression timeout.");
-        };
-        const auto sameVisit = restoredHistory.current()->id;
-        const auto sameCount = restoredHistory.entries.size();
-        restored.toggle(); restoredAudio.seek(restoredAudio.duration - .12); const auto beforeLoop = restoredAudio.serial;
-        awaitEofAction(restored, restoredAudio, beforeLoop);
-        require(restoredHistory.current()->id == sameVisit && restoredHistory.entries.size() == sameCount, "Repeat One added history entries.");
-        require(restored.navigate(1), "Repeat One intercepted manual Next."); wait(restored, restoredAudio);
-        require(restoredHistory.entries.size() == sameCount + 1, "Manual Next failed while repeating One.");
-        restoredHistory.repeat = RepeatMode::All; ++restoredHistory.revision;
-        require(restored.request(fixture.tracks.back().path), "Cannot select final library track."); wait(restored, restoredAudio);
-        restoredAudio.seek(restoredAudio.duration - .12); const auto beforeAll = restoredAudio.serial;
-        awaitEofAction(restored, restoredAudio, beforeAll);
-        require(key(restoredAudio.current) == fixture.tracks.front().id, "Repeat All did not wrap library.");
-        restoredHistory.repeat = RepeatMode::Off; ++restoredHistory.revision;
-        require(restored.request(fixture.tracks.back().path), "Cannot select final track for repeat Off."); wait(restored, restoredAudio);
-        restoredAudio.seek(restoredAudio.duration - .12); const auto beforeOff = restoredAudio.serial;
-        for (int i = 0; i < 1400 && restoredAudio.active; ++i) { restored.tick(); SDL_Delay(5); }
-        require(!restoredAudio.active && !restored.pending && restoredAudio.serial == beforeOff, "Repeat Off did not stop at library end.");
-        require(restored.navigate(-1), "Cannot traverse while testing concurrent pruning.");
-        restoredHistory.setLimit(1); wait(restored, restoredAudio);
-        require(restoredHistory.entries.size() == 1 && restoredHistory.current(), "Pruned pending target caused invalid navigation.");
-        Library one; one.tracks.push_back(fixture.tracks.front());
-        History oneHistory; oneHistory.repeat = RepeatMode::All;
-        HistoryFile oneFile(root / "one.txt"); Audio oneAudio; oneAudio.open(true); Playback onePlayer(oneAudio, one, oneHistory, oneFile);
-        require(onePlayer.navigate(1), "Single-track start failed."); wait(onePlayer, oneAudio);
-        oneAudio.seek(oneAudio.duration - .12); const auto beforeOne = oneAudio.serial;
-        awaitEofAction(onePlayer, oneAudio, beforeOne);
-        require(oneHistory.entries.size() == 2 && key(oneAudio.current) == one.tracks.front().id, "Single-track Repeat All failed.");
-        Library empty; History noHistory; HistoryFile noFile(root / "empty.txt"); Playback noPlayer(oneAudio, empty, noHistory, noFile);
-        require(!noPlayer.navigate(1), "Empty library should not start/retry playback.");
-        restored.finish(); onePlayer.finish(); player.finish();
-        log << "PASS repeat: One preserves visits/manual navigation; All wraps; Off stops; one-track and empty libraries\n";
+        playbackStateTests(root, fixture, log);
         analysisTests(root, fixture, log);
         featureTests(root, fixture, log);
         log << "ALL PASS\n";

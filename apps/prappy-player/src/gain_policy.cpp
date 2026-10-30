@@ -22,6 +22,12 @@ std::optional<double> decimal(std::string_view text, bool dbSuffix = false) {
     if (dbSuffix && value.size() >= 2 && lower(value.substr(value.size() - 2)) == "db")
         value = trim(std::string_view(value).substr(0, value.size() - 2));
     if (value.empty()) return {};
+    // from_chars deliberately rejects a leading '+', which ReplayGain writers
+    // commonly emit. Accept one sign, retaining strict full-string validation.
+    if (value.front() == '+') {
+        value.erase(0, 1);
+        if (value.empty() || value.front() == '+' || value.front() == '-') return {};
+    }
     double number = 0;
     const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), number,
                                               std::chars_format::general);
@@ -29,8 +35,14 @@ std::optional<double> decimal(std::string_view text, bool dbSuffix = false) {
     return number;
 }
 std::optional<int> r128(std::string_view text) {
-    const auto value = trim(text);
-    if (value.empty()) return {};
+    // RFC 7845 5.2.1: at most six ASCII characters, optional single sign,
+    // no whitespace. Validate before discarding an explicit positive sign.
+    auto value = text;
+    if (value.empty() || value.size() > 6) return {};
+    if (value.front() == '+') {
+        value.remove_prefix(1);
+        if (value.empty() || value.front() == '+' || value.front() == '-') return {};
+    }
     int number = 0;
     const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), number);
     if (error != std::errc{} || end != value.data() + value.size() || number < -32768 || number > 32767) return {};
@@ -42,9 +54,9 @@ Tags parseTags(const std::vector<std::pair<std::string, std::string>>& metadata,
     bool conflict = false;
     for (const auto& [key, value] : metadata) {
         auto normalized = lower(trim(key));
-        const auto content = trim(value);
+        const auto content = opusCodec && normalized == "r128_track_gain" ? value : trim(value);
         const auto [it, added] = keys.emplace(normalized, content);
-        if (!added && it->second != content) conflict = true;
+        if (!added && (it->second != content || (opusCodec && normalized == "r128_track_gain"))) conflict = true;
     }
     const auto get = [&](std::string_view key) -> std::optional<std::string> {
         if (auto it = keys.find(std::string(key)); it != keys.end()) return it->second;
@@ -120,8 +132,9 @@ Decision choose(uint64_t serial, std::string source, const Settings& settings, c
             result.origin = tag.origin; result.reference = tag.reference;
             result.referenceLufs = tag.referenceLufs;
             requested = tag.adjustmentDb + result.targetLufs - tag.referenceLufs;
-            if (!result.samplePeak && tag.samplePeak && std::isfinite(*tag.samplePeak) && *tag.samplePeak > 0 && *tag.samplePeak <= 64)
-                result.samplePeak = tag.samplePeak;
+            // A source-domain tag peak does not establish the peak after mpv
+            // downmix/resampling/mandatory codec gain. Retain it as metadata,
+            // but authorize boost only with a matching decoded measurement.
         }
     } else if (measurement.loudness && std::isfinite(*measurement.loudness) &&
                *measurement.loudness >= -70 && *measurement.loudness <= 50) {

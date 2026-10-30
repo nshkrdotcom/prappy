@@ -24,7 +24,7 @@ try {
     do {
         $process.Refresh()
         $ready=Test-Path "$state/ui-status.txt"
-        $caches=@(Get-ChildItem "$state/player-analysis/*.bin" -ErrorAction SilentlyContinue).Count
+        $caches=@(Get-ChildItem "$state/player-analysis-v2/wave-*.bin" -ErrorAction SilentlyContinue).Count
         if($ready -and $caches -eq 2 -and $process.MainWindowHandle -ne [IntPtr]::Zero){break}
         if($timer.Elapsed.TotalSeconds -gt 20 -or $process.HasExited){throw 'Benchmark startup failed.'}
         Start-Sleep -Milliseconds 25
