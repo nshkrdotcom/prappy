@@ -387,7 +387,7 @@ void Service::decodeLoop(std::stop_token stop) {
             std::lock_guard lock(mutex);
             queue.complete(job, cancelled, !stop.stop_requested());
             if (!cancelled) forceKeys.erase(job.key);
-            if (!stop.stop_requested()) scheduleMissingLocked();
+            if (!stop.stop_requested()) scheduleMissingLocked(false);
         }
         wake.notify_all();
         if (notify) notify();

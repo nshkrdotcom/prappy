@@ -22,14 +22,14 @@ inline Config readConfig(const fs::path& file) {
     std::ifstream input(file);
     if (!input) throw std::runtime_error("Cannot read player.ini beside the executable.");
     Config config;
-    std::string line; int number = 0;
+    std::string line; int lineNumber = 0;
     while (std::getline(input, line)) {
-        ++number;
-        if (number == 1 && line.starts_with("\xef\xbb\xbf")) line.erase(0, 3);
+        ++lineNumber;
+        if (lineNumber == 1 && line.starts_with("\xef\xbb\xbf")) line.erase(0, 3);
         line = trim(line);
         if (line.empty() || line[0] == '#' || line[0] == ';') continue;
         auto equal = line.find('=');
-        if (equal == std::string::npos) throw std::runtime_error("Config line " + std::to_string(number) + ": expected key=value.");
+        if (equal == std::string::npos) throw std::runtime_error("Config line " + std::to_string(lineNumber) + ": expected key=value.");
         const auto name = lower(trim(line.substr(0, equal)));
         auto value = trim(line.substr(equal + 1));
         if (name == "directory") {
@@ -76,7 +76,7 @@ inline Config readConfig(const fs::path& file) {
             if (error != std::errc{} || end != value.data() + value.size() || limit == 0 || limit > stateio::MaxRecords)
                 throw std::runtime_error("Config: history_limit must be between 1 and 1000000.");
             config.historyLimit = limit;
-        } else throw std::runtime_error("Config line " + std::to_string(number) + ": unknown key " + name);
+        } else throw std::runtime_error("Config line " + std::to_string(lineNumber) + ": unknown key " + name);
     }
     if (config.roots.empty() || config.extensions.empty()) throw std::runtime_error("Config needs directory and extensions entries.");
     return config;
