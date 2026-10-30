@@ -33,9 +33,6 @@ struct UiSchedule {
         paint = now + std::chrono::milliseconds(16); ++presents;
     }
 };
-inline double approachGain(double current, double target, double seconds) {
-    return current + std::clamp(target - current, -9 * seconds, 9 * seconds);
-}
 inline double releasePeak(double previous, double signal, double seconds) {
     const auto value = std::max(signal, previous * std::exp(-seconds / .258));
     return value < .00001 ? 0 : value;

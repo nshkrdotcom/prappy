@@ -140,11 +140,17 @@ inline void featureTests(const fs::path& root, const Library& fixture, std::ostr
     ranked.tracks = {alias, directory, exact}; ranked.rebuildSearch(); Browse ranking;
     require(ranking.select(ranked, "NIGHT") == std::vector<size_t>({2, 1, 0}) && ranking.select(ranked, "night missing").empty(), "Ranked filename/path/alias search failed.");
 
-    analysis::Summary measured; measured.loudness = -24; measured.samplePeak = .1f;
-    require(std::abs(normalizationGain(&measured, true) - 6) < .001 && normalizationGain(&measured, false) == 0, "Normalization target/disable failed.");
-    measured.loudness = -40; require(normalizationGain(&measured, true) == 12, "Normalization boost cap failed.");
-    measured.samplePeak = 1; require(std::abs(normalizationGain(&measured, true) + 1) < .001, "Normalization peak headroom failed.");
-    measured.loudness.reset(); require(normalizationGain(&measured, true) == 0 && normalizationGain(nullptr, true) == 0, "Unknown loudness received gain.");
+    const auto matching = gain::choose(3, "fixture", {true, -18, 0}, {}, {-24, .1});
+    require(std::abs(matching.appliedDb - 6) < .001 && matching.origin == gain::Origin::Measurement,
+        "Measured normalization decision failed.");
+    require(gain::choose(3, "fixture", {false, -18, 0}, {}, {-24, .1}).appliedDb == 0,
+        "Disabled normalization failed.");
+    require(gain::choose(3, "fixture", {true, -18, 0}, {}, {-40, .01}).appliedDb == 12,
+        "Normalization boost cap failed.");
+    require(std::abs(gain::choose(3, "fixture", {true, -18, 0}, {}, {-40, 1}).appliedDb + 1) < .001,
+        "Normalization sample peak headroom failed.");
+    require(gain::choose(3, "fixture", {true, -18, 0}, {}, {-40, {}}).appliedDb == 0,
+        "Unknown peak received a positive boost.");
     Preferences preferences; preferences.topmost = preferences.strip = preferences.normalize = true; preferences.folder = a.parent_path();
     preferences.transportHeight = 390; preferences.hiddenDirectories = {a.parent_path()}; preferences.pinnedDirectories = {b.parent_path()};
     auto& session = preferences.session;

@@ -3,12 +3,21 @@
 #include "state_io.h"
 #include <shlobj.h>
 #include <charconv>
+#include <cmath>
 #include <fstream>
 #include <set>
 #include <sstream>
 #include <vector>
 #include <memory>
-struct Config { std::vector<fs::path> roots; std::set<std::string> extensions; size_t historyLimit = 10000; bool addNewListeningHistoryEntryWhenReplayingHistoryItem = false; };
+struct Config {
+    std::vector<fs::path> roots;
+    std::set<std::string> extensions;
+    size_t historyLimit = 10000;
+    bool addNewListeningHistoryEntryWhenReplayingHistoryItem = false;
+    double normalizationTargetLufs = -18, normalizationUnmeasuredFallbackDb = 0;
+    unsigned analysisWorkerCount = 0, analysisRemoteConcurrencyLimit = 2;
+    unsigned analysisWaveformMemoryMiB = 128;
+};
 inline Config readConfig(const fs::path& file) {
     std::ifstream input(file);
     if (!input) throw std::runtime_error("Cannot read player.ini beside the executable.");
@@ -41,6 +50,26 @@ inline Config readConfig(const fs::path& file) {
             value=lower(value);
             if(value!="true"&&value!="false")throw std::runtime_error("Config: add_new_listening_history_entry_when_replaying_history_item must be true or false.");
             config.addNewListeningHistoryEntryWhenReplayingHistoryItem=value=="true";
+        } else if (name == "normalization_target_lufs" || name == "normalization_unmeasured_fallback_db") {
+            double number = 0;
+            const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), number, std::chars_format::general);
+            const bool target = name == "normalization_target_lufs";
+            if (error != std::errc{} || end != value.data() + value.size() || !std::isfinite(number) ||
+                (target && (number < -36 || number > -5)) || (!target && (number < -24 || number > 12)))
+                throw std::runtime_error("Config: invalid " + name + " (target -36..-5 LUFS; fallback -24..12 dB).");
+            if (target) config.normalizationTargetLufs = number;
+            else config.normalizationUnmeasuredFallbackDb = number;
+        } else if (name == "analysis_worker_count" || name == "analysis_remote_concurrency_limit" || name == "analysis_waveform_memory_mib") {
+            unsigned number = 0;
+            const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), number);
+            if (error != std::errc{} || end != value.data() + value.size() ||
+                (name == "analysis_worker_count" && number > 4) ||
+                (name == "analysis_remote_concurrency_limit" && (number < 1 || number > 4)) ||
+                (name == "analysis_waveform_memory_mib" && (number < 16 || number > 512)))
+                throw std::runtime_error("Config: invalid " + name + " (workers 0..4, remote 1..4, memory 16..512 MiB).");
+            if (name == "analysis_worker_count") config.analysisWorkerCount = number;
+            else if (name == "analysis_remote_concurrency_limit") config.analysisRemoteConcurrencyLimit = number;
+            else config.analysisWaveformMemoryMiB = number;
         } else if (name == "history_limit") {
             size_t limit = 0;
             const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), limit);
@@ -60,6 +89,11 @@ inline void createDefaultConfig(const fs::path& file) {
     const auto root = utf8(fs::path(music));
     std::ofstream out(file);
     out << "# UTF-8. Repeat directory= for more roots. Relative roots resolve beside this file.\n"
-        << "directory=" << root << "\nextensions=flac,wav,mp3,opus,m4a,wv,mka,webm,ogg,aac,aiff,wma\nhistory_limit=10000\nadd_new_listening_history_entry_when_replaying_history_item=false\n";
+        << "directory=" << root << "\nextensions=flac,wav,mp3,opus,m4a,wv,mka,webm,ogg,aac,aiff,wma\n"
+        << "history_limit=10000\nadd_new_listening_history_entry_when_replaying_history_item=false\n"
+        << "# Loudness matching is enabled/disabled in Options and saved with player-ui.txt.\n"
+        << "normalization_target_lufs=-18\nnormalization_unmeasured_fallback_db=0\n"
+        << "# 0 = auto: hardware cores minus two, clamped to 1..4.\n"
+        << "analysis_worker_count=0\nanalysis_remote_concurrency_limit=2\nanalysis_waveform_memory_mib=128\n";
     if (!out) throw std::runtime_error("Cannot create player.ini. Put the player in a writable folder.");
 }

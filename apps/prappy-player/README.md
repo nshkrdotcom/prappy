@@ -28,8 +28,7 @@ at the text cursor. Composition Enter, Escape and Space are reserved for input.
 
 The paused player waits for events and redraws only when needed, including caret
 blinks and delayed tooltips. Playback remains animated; worker completions and
-audio events wake the UI, including while minimized. Meter decay and normalization
-ramps use elapsed time. Text layouts are shared across measurement, colors and
+audio events wake the UI, including while minimized. Meter decay uses elapsed time; playback normalization never ramps automatically. Text layouts are shared across measurement, colors and
 highlights; separate raster caches retain up to 64 MiB of visible text tiles.
 Evicted textures are retired after the frame using them is presented. A recovered
 graphics-device reset rebuilds text, waveform and font textures without restarting
@@ -320,13 +319,14 @@ operate the scraper, change its recordings or interfere with collection jobs.
   **Reveal in Explorer**. WSL conversion supports `\\wsl.localhost\distro\...`,
   `\\wsl$\distro\...`, and extended UNC paths, preserving Unicode and spaces.
   The WSL action is disabled for other Windows paths/shares.
-- **More** contains **Always on top**, **Slim strip** and **Normalize to -18 LUFS**.
+- **More** contains **Always on top**, **Slim strip** and **Loudness match to -18 LUFS**.
   Strip mode keeps transport, waveform and meter in 86 content pixels of height;
   use More to return. Ctrl+Shift+M toggles strip mode, and Ctrl+Shift+T toggles
   topmost. These settings, folder scope, waveform height, hidden directories and
   pins and volume use `player-ui.txt` format 3. Existing format 2 settings are
   preserved with a default volume of 70. Volume changes are saved automatically
-  and restored on startup, including mute. Catalog and analysis-cache formats are unchanged.
+  and restored on startup, including mute. Catalog format is unchanged;
+  disposable audio analysis now has a separate versioned summary registry.
 - Sorting changes fallback library progression without reordering history.
   Refresh reloads config and scans once, preserving playback by full path.
   If the playing file disappears from the list, it can finish; Next starts at
@@ -347,63 +347,95 @@ The content uses physical pixels; Windows sizes the native frame for each monito
 DPI. The compact layout was enlarged
 from the initial 350px / 12px design at the user's request.
 
-## Audio analysis
+## Audio analysis and locked playback gain
 
-After a successful catalog scan, one background worker analyzes online tracks,
-prioritizing the current track when it is still queued. It uses the bundled
-libmpv decoder and a bounded Windows pipe, without temporary PCM files or another
-installed tool. Each decode produces frame-count duration, stereo min/max peaks
-at 1,024-frame resolution with successively halved levels, and gated integrated
-loudness. The seekbar uses these cached peaks; only the selected track's full
-peak pyramid is handed to the UI. Other tracks retain lightweight summaries.
-Selecting an already analyzed track reads its cache on the same worker, without
-another decode pass. No histogram view is implemented.
+Analysis runs independently of listening. A compact, checksummed `summaries.bin`
+registry in `player-analysis-v2/` contains path/size/mtime identities, measured
+LUFS, sample peaks, tag findings and retry status. It loads on a dedicated IO
+thread without reading the whole library's waveform files. Each waveform is a
+separate validated blob, read on demand for the selected source. Newly scanned
+or changed sources get a background decode. The old disposable
+`player-analysis/` cache is **not** imported or deleted; the new namespace is
+built once. Recorded audio, history, user preferences, sample workspaces,
+drafts and the source catalog are **not** part of this cache.
 
-Analysis uses a 48 kHz floating-point **stereo render** at unity gain with
-ReplayGain disabled. Its LUFS value describes that render, including mono
-duplication or surround downmixing; it is not a native multichannel measurement
-or a true-peak measurement. K-weighting and the 400 ms/100 ms absolute/relative
-gates follow [ITU-R BS.1770-5, Annex 1](https://www.itu.int/rec/R-REC-BS.1770-5-202311-I/).
-Silence and audio shorter than 400 ms have no integrated loudness value.
-Playback uses a 48 kHz stereo output path matching the analysis render. When
-**Normalize to -18 LUFS** is enabled, measured loudness selects a constant gain
-per track, capped at +12 dB and reduced as needed for a -1 dB sample-peak ceiling.
-Silence, short tracks and pending/failed analysis use zero gain. Newly available
-measurements ramp toward the target during playback; a known gain is applied
-while a track loads paused, before it becomes audible. The volume slider stays
-independent. This preserves dynamics and does not promise true-peak limiting or
-an exact target when the boost/headroom bounds apply.
+By default the analysis service uses `hardware_concurrency - 2` decode workers
+(clamped to 1–4), with at most two concurrent WSL/remote decodes. A foreground
+source can cancel lower-priority work to obtain a decode slot; ready summaries
+and selected-waveform IO do not wait in the decoder queue. Each decode owns
+its own libmpv handle and bounded cancellation-aware named pipe, producing
+stereo peaks, duration and integrated loudness together. Queued next/history
+selections and three library-next hints are prioritized before background
+work. Canceled jobs and changed identities are fenced from the currently
+selected waveform and playback gain. Errors are visible in the current track
+tooltip and in **More**, where **Retry selected analysis** explicitly overrides
+the usual retry delay. Old caches are left in place until deliberately removed.
 
-The live meter reads `IAudioMeterInformation` for Windows audio sessions belonging
-to this process, across active render devices. A worker samples every 10 ms,
-retains transients until the next UI read, and rediscovers sessions every 500 ms
-while playing (including output-device changes). It sleeps while idle. Other
-applications are excluded; no source is decoded twice and no audio is captured.
-Windows reports the preceding device period, avoiding decoder read-ahead.
-Session peaks reflect application gain; downstream device volume, Bluetooth or
-external hardware latency can still differ from what reaches your ears.
-Run `./scripts/test-output-meter.ps1` for the real-device timing regression
-(it plays test tones). It checks one-second decode buffering, unrelated-process
-audio isolation, gain, volume, pause and seek, with WASAPI loopback confirmation.
+The analysis PCM is 48 kHz floating-point **stereo**, with optional mpv
+ReplayGain disabled; mandatory codec output gain is present. K-weighting and
+the 400 ms / 100 ms gates follow
+[ITU-R BS.1770-5, Annex 1](https://www.itu.int/rec/R-REC-BS.1770-5-202311-I/).
+Silent tracks and tracks under 400 ms have no integrated LUFS. The measured
+peak is a **sample peak**, not an oversampled true peak, and the measured LUFS
+is for this stereo render rather than original multichannel content.
 
-Playback gain uses mpv's separate
-`volume-gain` property. Playback and analysis disable automatic ReplayGain
-adjustments so measured gain has one authority.
+**Loudness match to -18 LUFS** is a per-playback decision, applied once on
+matching libmpv `FILE_LOADED` while playback remains paused. The player uses
+available, valid track ReplayGain/R128 metadata first, then already-persisted
+measured loudness, then its configured fallback (0 dB). A newly completed
+measurement or waveform **never** changes gain during that playback: seek,
+pause/resume, queue changes, editor work and catalog refresh keep the same
+value. A new track start, restart, history traversal or repeat-one start may
+choose a newer measurement. Explicit user enable/disable changes **do**
+recompute the current gain immediately, using only available metadata. The
+user's volume slider remains independent. More and the title tooltip show the
+applied dB and its origin. A late measurement is marked for the next playback.
 
-Disposable, checksummed per-track files live in `player-analysis/` beside the
-executable, separately from the catalog and history. Reuse requires the same
-path, byte length, modification time and analysis schema. Invalid or incompatible
-files are rebuilt directly; there are no cache migration paths. Shift+Refresh
-also handles edits that preserve size and modification time. Deleting this
-directory safely resets analysis. It may be omitted when relocating the player;
-unused entries are not automatically pruned.
+Gain is clamped to a maximum +12 dB and a -1 dB **sample-peak** ceiling when
+same-domain peak information is trusted; a positive request is capped at
+**0 dB when the peak is unknown**, and attenuation can still apply. Fallback
+0 dB is not a promise that the unprocessed source is under the ceiling.
+The player does not add a limiter/compressor or claim true-peak protection.
 
-The worker skips offline roots, rejects sources that change during processing,
-and reports analysis failures in the current track tooltip without interrupting
-playback. Closing cancels pending pipe I/O and decoding; refreshing cancels work
-for a removed or changed source. Each track is bounded to eight hours, and a
-decoder that makes no progress for 30 seconds is stopped. Scanning, analysis and
-history saving own separate workers; their results are collected by the UI.
+Opus `R128_TRACK_GAIN` uses signed Q7.8 and the -23 LUFS reference (hence a
++5 dB reference offset at -18 LUFS). Decoder-applied Opus header gain is not
+added again. Track ReplayGain requires its known 89 dB SPL reference; until a
+format-specific calibration is established, this application documents an
+**assumed alignment of that reference to -18 LUFS**, not an exact standard LUFS
+conversion. Conflicting, malformed or unknown-reference tags are rejected.
+Apple/iTunes `iTunNORM` Sound Check conversion is **not yet verified or
+supported** and safely falls back to measured loudness or the fallback. Tag
+behavior requires validation with the locally pinned libmpv and real fixtures.
+No media file or tags are modified.
+
+Optional advanced `player.ini` settings (existing normalization enabled flag
+still lives in `player-ui.txt`):
+
+```ini
+normalization_target_lufs=-18
+normalization_unmeasured_fallback_db=0
+analysis_worker_count=0
+analysis_remote_concurrency_limit=2
+analysis_waveform_memory_mib=128
+```
+
+The parser rejects nonfinite/out-of-range values. Target supports -36 through
+-5 LUFS; fallback -24 through +12 dB; worker override 0 (auto) or 1–4;
+remote limit 1–4; waveform memory 16–512 MiB. Editing these settings requires
+restarting the player; Refresh does not recreate the decode worker pool. Explicit changes to the normalization checkbox
+apply immediately; measurements arriving afterward do not.
+
+The existing Windows output meter is unchanged. It reads the current
+process's Windows audio-session sample peaks after application volume/gain,
+with 10 ms sampling and device/session rediscovery. It is not a true-peak or
+acoustic loudness meter. `scripts/test-output-meter.ps1` checks real WASAPI
+session isolation, decoded timing, gain/volume, pause and seek; it plays tones.
+
+Monotonic queue wait, first-PCM, decoder total and cache/publication timings,
+selected priority, cancellation and result-discard messages are bounded to
+recent diagnostic events and Windows debug output; they are not a universal
+cold-WSL speed guarantee. The 38-second previously observed delay has not
+been attributed to any one phase by a reproducible measurement.
 
 ## Code organization and design boundaries
 
@@ -417,15 +449,22 @@ history saving own separate workers; their results are collected by the UI.
   shares record pages and copies the numeric navigation trail; subsequent record
   changes detach only their affected page. Library and history searches reuse
   normalized text; sorting reuses cached names.
-- `analysis.h`, `analysis.cpp`: streaming analysis, DSP, cache and cancellation.
+- `analysis_dsp.h/.cpp`: portable streaming loudness/peak accumulator.
+- `analysis.h/.cpp`: Windows decoder, pipe cancellation and waveform codec.
+- `gain_policy.h/.cpp`: portable track tag policy and per-serial frozen decisions.
+- `analysis_registry.h/.cpp`: portable summary registry, checksum and atomic IO.
+- `analysis_queue.h/.cpp`: portable deduplication, priority and preemption.
+- `analysis_service.h/.cpp`: bounded decode pool and independent registry/blob IO.
 - `browse.h`, `preferences.h`, `feature_ui.h`: retained-history views, ranked
   filtering, settings, shell actions, waveform and peak widgets.
 - `directory_filter.h`, `directory_ui.h`: subtree scopes, priority directory
   indexing, pins and a clipped one-level directory browser.
 - `grouped_list.h`, `transport_layout.h`: cached grouped rows and bounded,
   persistent waveform-panel sizing.
-- `tests.cpp`, `analysis_tests.h`, `feature_tests.h`: playback/state, analysis,
-  queue, browsing, normalization and feature regression checks.
+- `tests/portable_analysis_tests.cpp`: platform-independent DSP, gain,
+  registry and barrier-controlled scheduler checks (CMake/CTest on Linux).
+- `tests.cpp`, `analysis_tests.h`, `feature_tests.h`: Windows playback/state,
+  streaming decode, UI-facing analysis, browsing and feature regressions.
 
 The navigation trail contains both successful visits and explicitly queued
 future slots, distinguished in the history model and persisted as `QUEUED`

@@ -2,6 +2,8 @@
 #include "audio.h"
 #include "library.h"
 #include "history.h"
+#include "gain_policy.h"
+#include "analysis_registry.h"
 #include <functional>
 // Playback intents are committed by matching successful mpv playlist entry IDs.
 struct Playback {
@@ -16,7 +18,9 @@ struct Playback {
     std::string notice;
     uint64_t generation = 0;
     fs::path folder;
-    std::function<void(const fs::path&)> prepare;
+    gain::Lock gainDecision;
+    // Invoked on matching FILE_LOADED, before unpausing or restoring position.
+    std::function<gain::Decision(const fs::path&, uint64_t)> decideGain;
     Playback(Audio& source, Library& catalog, History& visits, HistoryFile& storage)
         : audio(source), library(catalog), history(visits), file(storage) {}
     ~Playback() { try { finish(); } catch (const std::exception& e) { OutputDebugStringA(e.what()); } }
@@ -125,7 +129,12 @@ struct Playback {
                 if (position > 0) audio.seek(position);
                 audio.position = position; history.position(position);
             }
-            if (prepare) prepare(audio.current);
+            if (decideGain) {
+                const auto source = analysis_registry::pathUtf8(audio.current);
+                auto decision = completed.kind == Kind::Rollback ? gainDecision.rollback(audio.loadedSerial, source) : std::nullopt;
+                if (!decision) decision = decideGain(audio.current, audio.loadedSerial);
+                if (decision && gainDecision.lockLoaded(*decision)) audio.setGain(decision->appliedDb);
+            }
             audio.setPaused(completed.paused);
             ++generation; file.save(history, true);
         }

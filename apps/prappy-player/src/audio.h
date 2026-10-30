@@ -39,7 +39,7 @@ struct Audio {
 #define MPV_API(name) decltype(&mpv_##name) name = nullptr
     MPV_API(create); MPV_API(initialize); MPV_API(terminate_destroy); MPV_API(set_option_string);
     MPV_API(command); MPV_API(set_property); MPV_API(get_property); MPV_API(wait_event); MPV_API(error_string); MPV_API(free);
-    MPV_API(set_wakeup_callback); MPV_API(command_async); MPV_API(observe_property);
+    MPV_API(set_wakeup_callback); MPV_API(command_async); MPV_API(observe_property); MPV_API(free_node_contents);
 #undef MPV_API
     std::string error;
     fs::path current;
@@ -76,7 +76,7 @@ struct Audio {
 #define MPV_LOAD(name) name = reinterpret_cast<decltype(name)>(GetProcAddress(dll, "mpv_" #name)); if (!name) throw std::runtime_error("Incompatible libmpv: " #name)
         MPV_LOAD(create); MPV_LOAD(initialize); MPV_LOAD(terminate_destroy); MPV_LOAD(set_option_string);
         MPV_LOAD(command); MPV_LOAD(set_property); MPV_LOAD(get_property); MPV_LOAD(wait_event); MPV_LOAD(error_string); MPV_LOAD(free);
-        MPV_LOAD(set_wakeup_callback); MPV_LOAD(command_async); MPV_LOAD(observe_property);
+        MPV_LOAD(set_wakeup_callback); MPV_LOAD(command_async); MPV_LOAD(observe_property); MPV_LOAD(free_node_contents);
 #undef MPV_LOAD
         handle = create(); if (!handle) throw std::runtime_error("libmpv could not create the player.");
         for (auto [name, value] : std::array<std::pair<const char*, const char*>, 8>{{
@@ -84,6 +84,7 @@ struct Audio {
             {"input-default-bindings", "no"}, {"load-scripts", "no"}, {"ytdl", "no"}, {"idle", "yes"}}})
             check(set_option_string(handle, name, value));
         if (silent) check(set_option_string(handle, "ao", "null"));
+        check(set_option_string(handle, "replaygain", "no")); // Application policy is the only optional loudness gain.
         check(set_option_string(handle, "audio-channels", "stereo"));
         check(set_option_string(handle, "audio-samplerate", "48000"));
         for (const auto& [name, value] : options) check(set_option_string(handle, name, value));
@@ -173,6 +174,27 @@ struct Audio {
         if (get_property(handle, name, MPV_FORMAT_STRING, &value) < 0) return {};
         const std::unique_ptr<char, decltype(free)> owner(value, free);
         return value ? value : "";
+    }
+    std::vector<std::pair<std::string, std::string>> loadedTags() const {
+        std::vector<std::pair<std::string, std::string>> result;
+        if (!handle || !loaded || !free_node_contents) return result;
+        mpv_node metadata{};
+        if (get_property(handle, "metadata", MPV_FORMAT_NODE, &metadata) < 0) return result;
+        struct NodeOwner {
+            const Audio* audio; mpv_node& value;
+            ~NodeOwner() { audio->free_node_contents(&value); }
+        } owner{this, metadata};
+        if (metadata.format != MPV_FORMAT_NODE_MAP || !metadata.u.list) return result;
+        const auto* list = metadata.u.list;
+        if (list->num < 0 || list->num > 2048 || (list->num && (!list->keys || !list->values))) return result;
+        for (int i = 0; i < list->num; ++i) {
+            if (!list->keys[i] || list->values[i].format != MPV_FORMAT_STRING || !list->values[i].u.string) continue;
+            std::string key(list->keys[i]);
+            std::string value(list->values[i].u.string);
+            if (key.size() > 256 || value.size() > 4096) continue;
+            result.emplace_back(std::move(key), std::move(value));
+        }
+        return result;
     }
     void readInfo() {
         info.codec = textProperty("current-tracks/audio/codec");

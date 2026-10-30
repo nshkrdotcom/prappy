@@ -125,9 +125,8 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
             require(schedule.wait(now, false, false, false, false, {}) == 1000, "Hidden UI paints caret.");
             schedule.presented(now); schedule.input(now+std::chrono::milliseconds(1));
             require(schedule.due(now+std::chrono::milliseconds(1),false), "Input waits behind animation frame cap.");
-            require(std::abs(approachGain(0, 12, .5) - 4.5) < .001 &&
-                std::abs(releasePeak(releasePeak(1, 0, .1), 0, .2) - releasePeak(1, 0, .3)) < .00001,
-                "Gain or meter depends on frame rate.");
+            require(std::abs(releasePeak(releasePeak(1, 0, .1), 0, .2) - releasePeak(1, 0, .3)) < .00001,
+                "Meter depends on frame rate.");
             log << "PASS Unicode shaping, emoji clusters, scaled text, idle/caret deadlines and elapsed-time audio controls\n";
         }
         {
@@ -273,6 +272,26 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
         const auto badConfig = root / "invalid.ini";
         { std::ofstream config(badConfig); config << "directory=" << utf8(media) << "\nextensions=wav\nhistory_limit=-1\n"; }
         rejects([&] { readConfig(badConfig); }, "Invalid history limit accepted.");
+        const auto tuning = root / "analysis-tuning.ini";
+        const auto writeTuning = [&](const std::string& setting) {
+            std::ofstream out(tuning);
+            out << "directory=" << utf8(media) << "\nextensions=wav\n" << setting << '\n';
+        };
+        writeTuning("normalization_target_lufs=-20\nnormalization_unmeasured_fallback_db=-4\n"
+            "analysis_worker_count=2\nanalysis_remote_concurrency_limit=1\nanalysis_waveform_memory_mib=64");
+        auto tuned = readConfig(tuning);
+        require(tuned.normalizationTargetLufs == -20 && tuned.normalizationUnmeasuredFallbackDb == -4 &&
+            tuned.analysisWorkerCount == 2 && tuned.analysisRemoteConcurrencyLimit == 1 &&
+            tuned.analysisWaveformMemoryMiB == 64, "Advanced analysis configuration did not round trip.");
+        for (const auto& invalid : {
+            "normalization_target_lufs=NaN", "normalization_target_lufs=-37",
+            "normalization_unmeasured_fallback_db=12.5", "analysis_worker_count=5",
+            "analysis_remote_concurrency_limit=0", "analysis_waveform_memory_mib=8"
+        }) {
+            writeTuning(invalid);
+            rejects([&] { readConfig(tuning); }, "Invalid analysis configuration was accepted.");
+        }
+        log << "PASS advanced analysis configuration: valid values, finite/range strictness\n";
         Library catalog; ScanProgress initial;
         require(catalog.refresh(localConfig, {}, &initial) && catalog.tracks.size() == 2 && initial.hashReads > 0, "Catalog initial duplicate verification failed.");
         const auto catalogPath = root / "catalog.bin"; saveCatalog(catalogPath, catalog);
@@ -314,6 +333,11 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
 
         Audio audio; audio.open(true);
         History visits; HistoryFile sessionFile(root / "session.txt"); Playback player(audio, fixture, visits, sessionFile);
+        double availableLufs = -24;
+        player.decideGain = [&](const fs::path& path, uint64_t serial) {
+            return gain::choose(serial, analysis_registry::pathUtf8(path), {true, -18, 0}, {},
+                {availableLufs, 0.1});
+        };
         const auto wait = [&](Playback& session, Audio& source) {
             for (int i = 0; i < 1000; ++i) {
                 session.tick();
@@ -324,6 +348,17 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
         };
         const auto play = [&](const fs::path& path) { require(player.request(path), "Playback request failed."); wait(player, audio); };
         play(fixture.tracks[0].path); const auto visitA = visits.current()->id;
+        const auto gainEpochA = audio.loadedSerial;
+        require(player.gainDecision.current() && player.gainDecision.current()->serial == gainEpochA &&
+            std::abs(audio.gain - 6) < .001, "Gain was not locked before playback unpaused.");
+        availableLufs = -26; // A late result is for the NEXT playback only.
+        for (int i = 0; i < 5; ++i) player.tick();
+        audio.setPaused(true); audio.seek(.5); audio.setPaused(false);
+        require(player.gainDecision.current()->serial == gainEpochA && std::abs(audio.gain - 6) < .001,
+            "Late loudness, pause/resume or seek changed gain within a playback epoch.");
+        audio.setVolume(23);
+        require(std::abs(audio.gain - 6) < .001, "User volume changed application normalization.");
+        audio.setVolume(70);
         for (int i = 0; i < 400 && (audio.info.codec.empty() || audio.info.sampleFormat.empty() || audio.info.sampleRate <= 0 || audio.info.channels <= 0); ++i) {
             SDL_Delay(5); player.tick();
         }
@@ -331,6 +366,8 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
             !audio.info.sampleFormat.empty() && audio.info.describe().find("44100 Hz") != std::string::npos,
             "Source audio format details are missing or incorrect.");
         play(fixture.tracks[1].path); const auto visitB = visits.current()->id;
+        require(player.gainDecision.current() && player.gainDecision.current()->serial == audio.loadedSerial &&
+            std::abs(audio.gain - 8) < .001, "Next playback did not use the available late measurement.");
         play(fixture.tracks[0].path); const auto visitC = visits.current()->id;
         require(player.navigate(-1), "Back unavailable."); wait(player, audio);
         require(visits.current()->id == visitB && visits.entries.size() == 3, "Back added a visit.");
@@ -349,8 +386,12 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
         require(audio.paused, "Pause intent during loading was lost.");
         player.toggle(); require(!audio.paused, "Resume after pending pause failed.");
         const auto beforeMissing = visits.entries.size(), currentId = visits.current()->id;
+        const auto previousGain = player.gainDecision.current()->appliedDb;
+        availableLufs = -22; // Rollback must preserve the previous listening gain.
         require(player.request(root / "missing.wav"), "Missing request not accepted by mpv."); wait(player, audio);
         require(visits.entries.size() == beforeMissing && visits.current()->id == currentId && !player.notice.empty(), "Failed load changed history or lost error.");
+        require(player.gainDecision.current() && std::abs(audio.gain - previousGain) < .001,
+            "Failed-load rollback silently renormalized the previous listening session.");
         const auto invalidAudio = root / "invalid.wav"; { std::ofstream bad(invalidAudio); bad << "not an audio file"; }
         require(player.request(invalidAudio), "Invalid media request failed early."); wait(player, audio);
         require(visits.entries.size() == beforeMissing && visits.current()->id == currentId, "Decoder error recorded a visit.");
@@ -373,7 +414,8 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
         require(restoredAudio.paused && restoredHistory.entries.size() == visits.entries.size() && restoredAudio.position > .5 && restoredHistory.repeat == RepeatMode::One, "Session did not restore paused without adding visits.");
         int paused = 0; restoredAudio.get_property(restoredAudio.handle, "pause", MPV_FORMAT_FLAG, &paused);
         require(paused != 0, "Restored mpv was not paused.");
-        log << "PASS playback: branch/Back/Forward, rapid requests, failed-load rollback, paused session/position/repeat restore\n";
+        log << "PASS playback: branch/Back/Forward, rapid requests, locked gain vs late results/seek/pause, "
+               "next-play gain, independent volume, failed-load gain rollback, paused restore/repeat\n";
 
         const auto awaitEofAction = [&](Playback& session, Audio& source, uint64_t previous) {
             for (int i = 0; i < 1400; ++i) {

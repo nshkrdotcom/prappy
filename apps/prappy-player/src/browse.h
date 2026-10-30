@@ -95,11 +95,3 @@ struct Browse {
         for (const auto& match : matches) result.push_back(match.first); return result;
     }
 };
-
-inline double normalizationGain(const analysis::Summary* summary, bool enabled) {
-    if (!enabled || !summary || !summary->error.empty() || !summary->loudness || !std::isfinite(*summary->loudness) ||
-        !std::isfinite(summary->samplePeak) || summary->samplePeak <= 0) return 0;
-    const auto desired = -18.0 - *summary->loudness;
-    const auto headroom = -1.0 - 20 * std::log10(summary->samplePeak);
-    return std::clamp(std::min(desired, headroom), -96.0, 12.0);
-}

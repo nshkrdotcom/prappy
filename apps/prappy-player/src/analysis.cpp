@@ -1,4 +1,5 @@
 #include "analysis.h"
+#include "analysis_dsp.h"
 #include "audio.h"
 #include "library.h"
 #include <bit>
@@ -11,75 +12,16 @@ namespace analysis {
 namespace {
 constexpr uint64_t Version = 1;
 constexpr size_t MaxPeaks = static_cast<size_t>((MaxFrames + FramesPerPeak - 1) / FramesPerPeak);
-struct Biquad {
-    double b0, b1, b2, a1, a2;
-    double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
-    double process(double x) {
-        const auto y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
-        x2 = x1; x1 = x; y2 = y1; y1 = y; return y;
-    }
-};
-struct Weighting {
-    // ITU-R BS.1770-5 Annex 1, 48 kHz K-weighting coefficients.
-    Biquad shelf{1.53512485958697, -2.69169618940638, 1.19839281085285, -1.69065929318241, .73248077421585};
-    Biquad highpass{1, -2, 1, -1.99004745483398, .99007225036621};
-    double process(double x) { return highpass.process(shelf.process(x)); }
-};
+// The parser validates the serialized reduction pyramid independently of
+// the portable DSP that produced it.
 Peak combine(const Peak& a, const Peak& b) {
     return {std::min(a.leftMin, b.leftMin), std::max(a.leftMax, b.leftMax),
         std::min(a.rightMin, b.rightMin), std::max(a.rightMax, b.rightMax)};
 }
 bool samePeak(const Peak& a, const Peak& b) {
-    return a.leftMin == b.leftMin && a.leftMax == b.leftMax && a.rightMin == b.rightMin && a.rightMax == b.rightMax;
+    return a.leftMin == b.leftMin && a.leftMax == b.leftMax &&
+           a.rightMin == b.rightMin && a.rightMax == b.rightMax;
 }
-struct Accumulator {
-    Result result;
-    Weighting left, right;
-    Peak peak;
-    std::array<double, 4> energies{};
-    double energy = 0;
-    uint64_t hops = 0;
-    std::vector<double> blocks;
-    Accumulator() { result.levels.emplace_back(); }
-    void add(float l, float r) {
-        if (result.frames >= MaxFrames) throw std::runtime_error("Analysis exceeds the eight-hour limit.");
-        if (!std::isfinite(l) || !std::isfinite(r) || std::abs(l) > 64 || std::abs(r) > 64)
-            throw std::runtime_error("Invalid decoded sample.");
-        if (result.frames % FramesPerPeak == 0) peak = {l, l, r, r};
-        else peak = combine(peak, {l, l, r, r});
-        const auto kl = left.process(l), kr = right.process(r);
-        energy += kl * kl + kr * kr;
-        ++result.frames;
-        if (result.frames % FramesPerPeak == 0) result.levels[0].push_back(peak);
-        // 400 ms blocks at 100 ms intervals, with complete blocks only.
-        if (result.frames % 4800 == 0) {
-            energies[hops % 4] = energy / 4800; energy = 0; ++hops;
-            if (hops >= 4) blocks.push_back(std::accumulate(energies.begin(), energies.end(), 0.0) / 4);
-        }
-    }
-    Result finish() {
-        if (!result.frames) throw std::runtime_error("No audio frames decoded.");
-        if (result.frames % FramesPerPeak) result.levels[0].push_back(peak);
-        while (result.levels.back().size() > 1) {
-            const auto& previous = result.levels.back(); std::vector<Peak> next;
-            next.reserve((previous.size() + 1) / 2);
-            for (size_t i = 0; i < previous.size(); i += 2)
-                next.push_back(i + 1 < previous.size() ? combine(previous[i], previous[i + 1]) : previous[i]);
-            result.levels.push_back(std::move(next));
-        }
-        // Absolute -70 LUFS gate, then -10 LU relative to its gated mean.
-        const double absolute = std::pow(10.0, (-70 + .691) / 10);
-        double sum = 0; size_t count = 0;
-        for (auto block : blocks) if (block > absolute) { sum += block; ++count; }
-        if (count) {
-            const double threshold = std::max(absolute, sum / static_cast<double>(count) / 10);
-            sum = 0; count = 0;
-            for (auto block : blocks) if (block > threshold) { sum += block; ++count; }
-            if (count) result.loudness = -.691 + 10 * std::log10(sum / static_cast<double>(count));
-        }
-        return std::move(result);
-    }
-};
 struct Handle {
     HANDLE value = INVALID_HANDLE_VALUE;
     explicit Handle(HANDLE h) : value(h) { if (!h || h == INVALID_HANDLE_VALUE) throw std::runtime_error("Cannot create analysis pipe/event."); }
@@ -88,10 +30,15 @@ struct Handle {
     Handle& operator=(const Handle&) = delete;
 };
 void cancelled(std::stop_token stop) { if (stop.stop_requested()) throw std::runtime_error("Analysis cancelled."); }
-void pollDecoder(Audio& decoder, bool& eof) {
+void pollDecoder(Audio& decoder, bool& eof, const Metadata& metadata) {
     for (;;) {
         const auto event = decoder.wait_event(decoder.handle, 0);
         if (event->event_id == MPV_EVENT_NONE) return;
+        if (event->event_id == MPV_EVENT_FILE_LOADED && metadata) {
+            decoder.loaded = true;
+            decoder.readInfo();
+            metadata(decoder.loadedTags(), decoder.info.codec);
+        }
         if (event->event_id == MPV_EVENT_END_FILE) {
             const auto end = static_cast<mpv_event_end_file*>(event->data);
             if (decoder.retryEmptyFlac(*end)) continue;
@@ -107,14 +54,7 @@ Identity identify(const fs::path& path) {
     return {path, fs::file_size(extended), fs::last_write_time(extended).time_since_epoch().count()};
 }
 
-Result measureSamples(const std::vector<float>& samples) {
-    if (samples.size() % 2) throw std::runtime_error("Incomplete stereo frame.");
-    Accumulator accumulator;
-    for (size_t i = 0; i < samples.size(); i += 2) accumulator.add(samples[i], samples[i + 1]);
-    return accumulator.finish();
-}
-
-Result measure(const fs::path& path, std::stop_token stop, const Progress& progress) {
+Result measure(const fs::path& path, std::stop_token stop, const Progress& progress, const Metadata& metadata) {
     cancelled(stop);
     static std::atomic<uint64_t> sequence{0};
     const auto pipeName = L"\\\\.\\pipe\\PrappyAnalysis-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(++sequence);
@@ -159,7 +99,7 @@ Result measure(const fs::path& path, std::stop_token stop, const Progress& progr
         for (;;) {
             cancelled(stop);
             const auto ready = WaitForSingleObject(event.value, 20);
-            pollDecoder(decoder, eof);
+            pollDecoder(decoder, eof, metadata);
             if (ready == WAIT_OBJECT_0) return;
             if (ready == WAIT_FAILED) throw std::runtime_error("Analysis pipe wait failed.");
             if (std::chrono::steady_clock::now() - lastData > std::chrono::seconds(30))
@@ -200,12 +140,12 @@ Result measure(const fs::path& path, std::stop_token stop, const Progress& progr
         }
         carry = available % 8;
         std::memmove(buffer.data(), buffer.data() + frames * 8, carry);
-        if (progress) progress(accumulator.result.frames);
-        pollDecoder(decoder, eof);
+        if (progress) progress(accumulator.frames());
+        pollDecoder(decoder, eof, metadata);
     }
     // Pipe closure alone is insufficient: only a clean decoder EOF commits data.
     while (!eof) {
-        cancelled(stop); pollDecoder(decoder, eof);
+        cancelled(stop); pollDecoder(decoder, eof, metadata);
         if (!eof) {
             if (std::chrono::steady_clock::now() - lastData > std::chrono::seconds(30)) throw std::runtime_error("Analysis EOF timeout.");
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -272,85 +212,5 @@ Result parse(const std::string& bytes, const Identity& expected) {
     }
     if (result.levels.back().size() != 1) throw std::runtime_error("Incomplete analysis pyramid.");
     input.finish(); return result;
-}
-fs::path cachePath(const fs::path& directory, const Identity& identity) {
-    std::ostringstream name; name << std::hex << stateio::checksum(utf8(identity.path)) << ".bin";
-    return directory / name.str();
-}
-Worker::Worker(fs::path cacheDirectory, std::function<void()> completion) : directory(std::move(cacheDirectory)), notify(std::move(completion)), thread([this](std::stop_token stop) { run(stop); }) {}
-Worker::~Worker() { thread.request_stop(); wake.notify_all(); }
-void Worker::reconcile(const Library& library, bool force) {
-    std::lock_guard lock(mutex); pending.clear(); completed.clear();
-    forcePending = force;
-    selectedReady = false;
-    bool keepActive = false;
-    for (const auto& track : library.tracks) if (!track.offline) {
-        Identity identity{track.path, track.bytes, track.stamp};
-        if (!force && active == identity) keepActive = true;
-        else pending.push_back(std::move(identity));
-    }
-    if (!keepActive) activeStop.request_stop();
-    wake.notify_all();
-}
-void Worker::prioritize(const Track& track) {
-    if (track.offline) return;
-    std::lock_guard lock(mutex);
-    const Identity identity{track.path, track.bytes, track.stamp};
-    const bool ready = selected == identity && selectedReady;
-    selected = identity;
-    if (!ready) selectedReady = false;
-    const auto found = std::find(pending.begin(), pending.end(), identity);
-    if (found != pending.end()) { pending.erase(found); pending.push_front(identity); wake.notify_all(); }
-    else if (!ready && active != identity) { pending.push_front(identity); wake.notify_all(); }
-}
-std::vector<Summary> Worker::collect() {
-    std::lock_guard lock(mutex); auto result = std::move(completed); completed.clear(); return result;
-}
-void Worker::run(std::stop_token stop) {
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-    while (!stop.stop_requested()) {
-        Identity identity;
-        std::stop_source taskStop;
-        bool force = false;
-        {
-            std::unique_lock lock(mutex);
-            if (!wake.wait(lock, stop, [&] { return !pending.empty(); })) break;
-            identity = std::move(pending.front()); pending.pop_front(); active = identity;
-            activeStop = taskStop;
-            force = forcePending;
-        }
-        std::stop_callback stopTask(stop, [&] { taskStop.request_stop(); });
-        const auto taskToken = taskStop.get_token();
-        Summary summary; summary.identity = identity;
-        std::shared_ptr<const Result> waveform;
-        try {
-            cancelled(taskToken);
-            if (identify(identity.path) != identity) throw std::runtime_error("Source changed before analysis.");
-            Result result;
-            const auto file = cachePath(directory, identity);
-            try {
-                if (force) throw std::runtime_error("Forced analysis refresh.");
-                result = parse(stateio::read(file), identity); summary.cached = true;
-            }
-            catch (const std::exception&) { result = measure(identity.path, taskToken); }
-            cancelled(taskToken);
-            if (identify(identity.path) != identity) throw std::runtime_error("Source changed during analysis.");
-            summary.duration = result.duration(); summary.loudness = result.loudness;
-            const auto& peak = result.levels.back()[0];
-            summary.samplePeak = std::max({std::abs(peak.leftMin), std::abs(peak.leftMax), std::abs(peak.rightMin), std::abs(peak.rightMax)});
-            if (!summary.cached) { fs::create_directories(directory); stateio::write(file, serialize(identity, result), false); }
-            waveform = std::make_shared<Result>(std::move(result));
-        } catch (const std::exception& e) { summary.error = e.what(); }
-        if (stop.stop_requested()) break;
-        {
-            std::lock_guard lock(mutex);
-            if (!taskToken.stop_requested()) {
-                if (selected == identity) { summary.waveform = std::move(waveform); selectedReady = true; }
-                completed.push_back(std::move(summary));
-            }
-            active.reset();
-        }
-        if (notify) notify();
-    }
 }
 }

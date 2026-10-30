@@ -1,5 +1,6 @@
 #pragma once
 #include "analysis.h"
+#include "analysis_service.h"
 #include "library.h"
 #include <cmath>
 #include <limits>
@@ -67,36 +68,59 @@ inline void analysisTests(const fs::path& root, const Library& fixture, std::ost
     rejects([&] { analysis::measure(root / "missing.wav"); }, "Missing source analysis succeeded.");
     const auto broken = root / "broken-audio.wav"; { std::ofstream file(broken); file << "broken audio"; }
     rejects([&] { analysis::measure(broken); }, "Invalid audio analysis succeeded.");
-    const auto directory = root / "analysis";
-    auto collect = [&](analysis::Worker& worker) {
+    const auto directory = root / "analysis-v2";
+    auto collect = [&](analysis::Service& service, size_t required, bool initial) {
         std::vector<analysis::Summary> results;
-        for (int i = 0; i < 3000 && results.size() < fixture.tracks.size(); ++i) {
-            for (auto& result : worker.collect()) results.push_back(std::move(result));
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        for (int i = 0; i < 6000 && results.size() < required; ++i) {
+            if (initial) {
+                for (auto& entry : service.initialSummaries()) results.push_back(std::move(entry));
+            }
+            for (auto& entry : service.collect()) results.push_back(std::move(entry));
+            if (results.size() < required) std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
-        require(results.size() == fixture.tracks.size(), "Analysis worker stalled.");
+        require(results.size() >= required, "Analysis service did not publish expected completions.");
         return results;
     };
     {
-        analysis::Worker worker(directory); worker.reconcile(fixture); worker.prioritize(fixture.tracks.back());
-        for (const auto& result : collect(worker)) require(result.error.empty() && !result.cached && result.duration > 0, "Fresh analysis worker failed.");
+        analysis::Service service(directory, {2, 1, 128});
+        service.reconcile(fixture); service.prioritize(fixture.tracks.back());
+        for (const auto& result : collect(service, fixture.tracks.size(), false))
+            require(result.error.empty() && !result.cached && result.duration > 0,
+                "Fresh analysis service failed.");
     }
     {
-        analysis::Worker worker(directory); worker.reconcile(fixture);
-        for (const auto& result : collect(worker)) require(result.error.empty() && result.cached, "Analysis worker did not reuse cache.");
+        analysis::Service service(directory, {2, 1, 128}); service.reconcile(fixture);
+        for (const auto& result : collect(service, fixture.tracks.size(), true))
+            require(result.error.empty() && result.cached, "Registry did not reuse cached summary.");
+        const auto trace = service.diagnostics();
+        require(std::none_of(trace.begin(), trace.end(), [](const auto& event) {
+            return event.starts_with("start ");
+        }), "Warm registry started a whole-song decoder.");
     }
     {
-        analysis::Worker worker(directory); worker.reconcile(fixture, true);
-        for (const auto& result : collect(worker)) require(result.error.empty() && !result.cached, "Forced refresh reused analysis.");
-    }
-    stateio::write(analysis::cachePath(directory, identity), "corrupt", false);
-    {
-        analysis::Worker worker(directory); worker.reconcile(fixture);
-        for (const auto& result : collect(worker)) require(result.error.empty() && (result.identity != identity || !result.cached), "Corrupt cache was not rebuilt.");
+        analysis::Service service(directory, {2, 1, 128}); service.reconcile(fixture, true);
+        for (const auto& result : collect(service, fixture.tracks.size(), false))
+            require(result.error.empty() && !result.cached, "Forced refresh reused old analysis.");
     }
     {
-        analysis::Worker worker(root / "cancelled-analysis"); worker.reconcile(fixture);
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        analysis_registry::Entry entry;
+        entry.path = analysis_registry::pathUtf8(identity.path);
+        entry.bytes = identity.bytes; entry.stamp = identity.stamp;
+        stateio::write(directory / analysis_registry::blobName(entry), "corrupt", false);
+        analysis::Service service(directory, {2, 1, 128}); service.reconcile(fixture);
+        // A cached summary is still immediately available even when a
+        // selected waveform is damaged; only that blob is rebuilt.
+        collect(service, fixture.tracks.size(), true);
+        service.prioritize(fixture.tracks.front());
+        auto repairs = collect(service, 1, false);
+        require(!repairs.front().cached && repairs.front().error.empty(),
+            "Missing/corrupt waveform failed to trigger selected-track repair.");
     }
-    log << "PASS analysis streaming/worker: decode, invalid/missing source, cancellation, fresh/cache reuse, corrupt-cache rebuild, shutdown\n";
+    {
+        analysis::Service service(root / "cancelled-analysis-v2", {1, 1, 128});
+        service.reconcile(fixture);
+        // Destructor cancels decoding and joins without detached jobs.
+    }
+    log << "PASS analysis streaming/registry/service: decode/cancel, warm summary reuse, "
+           "forced refresh, corrupt selected blob repair, orderly shutdown\n";
 }
