@@ -262,7 +262,7 @@ void Workspace::importMarkedSource(){
     pendingMark->importLibrary=target;
     const Json body={{"request_id",pendingMark->importRequest},{"operation","source.import"},
         {"payload",{{"path",*path},{"sha256",pendingMark->digest}}}};
-    persist();notice="Registering this recording for editing; the original and selected range are preserved...";
+    persist();notice="Verifying the entire recording for editing. Long recordings can take several minutes; your selected range is preserved...";
     client->submit({"source-import","POST",endpoint(target)+"/commands",body,generation,{}});
 }
 void Workspace::finishMark(const Json& match){

@@ -282,7 +282,11 @@ int runPlayer(HINSTANCE instance) {
         Config settings;
         try {
             settings = readConfig(config);
+            debuglog::instance().configure(stateDirectory/"player-debug.log",settings.debugLog);
+            debuglog::write("app.start","debug_log=true");
+            const auto catalogStart=debuglog::Clock::now();
             loadCatalog(stateDirectory / "player-catalog.bin", settings, library);
+            debuglog::write("catalog.loaded","ms="+std::to_string(debuglog::elapsed(catalogStart))+" tracks="+std::to_string(library.tracks.size()));
         } catch (const std::exception& e) { library.notice = e.what(); }
         audio.open(windowTest);
         audio.setNotify([wake] { wake->notify(UiWake::Audio); });

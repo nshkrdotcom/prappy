@@ -118,6 +118,7 @@ struct Playback {
     void tick() {
         const bool eof = audio.poll();
         if (pending && audio.loadedSerial == pending->serial) {
+            debuglog::write("play.ready","serial="+std::to_string(pending->serial)+" ms="+std::to_string(debuglog::elapsed(audio.loadStarted)));
             const auto completed = *pending; pending.reset();
             unavailable.erase(key(audio.current));
             const auto destination = std::find(history.trail.begin(), history.trail.end(), completed.targetId);
@@ -139,6 +140,7 @@ struct Playback {
             ++generation; file.save(history, true);
         }
         if (pending && !audio.error.empty()) {
+            debuglog::write("play.error","serial="+std::to_string(pending->serial)+" error="+audio.error);
             const auto failed = *pending; pending.reset();
             unavailable.insert(key(audio.current)); notice = audio.error; ++generation;
             if (failed.kind != Kind::Rollback && failed.kind != Kind::Restore) {

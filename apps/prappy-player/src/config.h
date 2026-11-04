@@ -14,6 +14,7 @@ struct Config {
     std::set<std::string> extensions;
     size_t historyLimit = 10000;
     bool addNewListeningHistoryEntryWhenReplayingHistoryItem = false;
+    bool debugLog = true;
     double normalizationTargetLufs = -18, normalizationUnmeasuredFallbackDb = 0;
     unsigned analysisWorkerCount = 0, analysisRemoteConcurrencyLimit = 2;
     unsigned analysisWaveformMemoryMiB = 128;
@@ -46,6 +47,10 @@ inline Config readConfig(const fs::path& file) {
                     throw std::runtime_error("Config: invalid extension.");
                 config.extensions.insert('.' + ext);
             }
+        } else if (name == "debug_log") {
+            value=lower(value);
+            if(value!="true"&&value!="false")throw std::runtime_error("Config: debug_log must be true or false.");
+            config.debugLog=value=="true";
         } else if (name == "add_new_listening_history_entry_when_replaying_history_item") {
             value=lower(value);
             if(value!="true"&&value!="false")throw std::runtime_error("Config: add_new_listening_history_entry_when_replaying_history_item must be true or false.");
@@ -90,7 +95,7 @@ inline void createDefaultConfig(const fs::path& file) {
     std::ofstream out(file);
     out << "# UTF-8. Repeat directory= for more roots. Relative roots resolve beside this file.\n"
         << "directory=" << root << "\nextensions=flac,wav,mp3,opus,m4a,wv,mka,webm,ogg,aac,aiff,wma\n"
-        << "history_limit=10000\nadd_new_listening_history_entry_when_replaying_history_item=false\n"
+        << "history_limit=10000\nadd_new_listening_history_entry_when_replaying_history_item=false\ndebug_log=true\n"
         << "# Loudness matching is enabled/disabled in Options and saved with player-ui.txt.\n"
         << "normalization_target_lufs=-18\nnormalization_unmeasured_fallback_db=0\n"
         << "# 0 = auto: hardware cores minus two, clamped to 1..4.\n"

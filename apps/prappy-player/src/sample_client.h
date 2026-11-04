@@ -9,6 +9,7 @@
 #include <vector>
 #include <array>
 #include <memory>
+#include <chrono>
 namespace sampling {
 using Json = nlohmann::json;
 struct Connection { std::string url = "http://127.0.0.1:8765", token; fs::path credentialFile; bool startWorkstation=false; };
@@ -17,6 +18,8 @@ struct Request {
     Json body;
     uint64_t generation = 0;
     fs::path download;
+    std::chrono::steady_clock::time_point queuedAt{};
+    uint64_t diagnosticId=0;
 };
 struct Reply {
     Request request;

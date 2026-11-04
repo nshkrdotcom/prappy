@@ -1,5 +1,6 @@
 #include "sample_client.h"
 #include "state_io.h"
+#include "debug_log.h"
 #include <winhttp.h>
 #include <objbase.h>
 #include <bcrypt.h>
@@ -13,6 +14,7 @@
 #include <map>
 namespace sampling {
 namespace {
+std::atomic<uint64_t> nextDiagnosticId{0};
 struct Internet {
     HINTERNET value = nullptr;
     explicit Internet(HINTERNET h) : value(h) { if (!h) throw std::runtime_error("HTTP operation failed: "+std::to_string(GetLastError())); }
@@ -57,6 +59,7 @@ std::string readCredential(const fs::path& path,std::stop_token stop) {
     return token;
 }
 void startWorkstationBackend() {
+    debuglog::write("backend.start","distro=ubuntu26-dev");
     std::array<wchar_t,MAX_PATH> system{};
     const auto length=GetSystemDirectoryW(system.data(),static_cast<UINT>(system.size()));
     if(!length || length>=system.size())throw std::runtime_error("Cannot locate Windows WSL launcher.");
@@ -82,7 +85,7 @@ std::string cachedSourceHash(const fs::path& path,std::stop_token stop){
     };
     auto& storage=sourceHashCache();auto& lock=storage.mutex;auto& cache=storage.entries;
     const auto before=stamp();
-    {std::lock_guard guard(lock);const auto found=cache.find(path);if(found!=cache.end()&&found->second.stamp==before)return found->second.hash;}
+    {std::lock_guard guard(lock);const auto found=cache.find(path);if(found!=cache.end()&&found->second.stamp==before){debuglog::write("hash.cache","hit=1");return found->second.hash;}}
     const auto digest=fileHash(path,stop);if(stamp()!=before)throw std::runtime_error("Source changed while hashing. Retry opening it.");
     {std::lock_guard guard(lock);if(cache.size()>=16)cache.erase(cache.begin());cache.insert_or_assign(path,SourceHashCache::Entry{before,digest});}
     return digest;
@@ -94,6 +97,8 @@ std::string uuid() {
     auto s=utf8(fs::path(buffer)); std::erase_if(s,[](char c){return c=='{' || c=='}' || c=='-';}); return s;
 }
 std::string fileHash(const fs::path& path,std::stop_token stop) {
+    const auto began=debuglog::Clock::now();
+    debuglog::write("hash.begin","source="+utf8(path));
     BCRYPT_ALG_HANDLE algorithm=nullptr;
     if (BCryptOpenAlgorithmProvider(&algorithm,BCRYPT_SHA256_ALGORITHM,nullptr,0)<0) throw std::runtime_error("Cannot open SHA256.");
     const auto close=[](void* p){BCryptCloseAlgorithmProvider(p,0);};
@@ -109,10 +114,19 @@ std::string fileHash(const fs::path& path,std::stop_token stop) {
     std::array<unsigned char,32> digest{};
     if (BCryptFinishHash(hash,digest.data(),static_cast<ULONG>(digest.size()),0)<0) throw std::runtime_error("SHA256 failed.");
     const char* digits="0123456789abcdef"; std::string out;
-    for (auto c:digest) {out+=digits[c>>4];out+=digits[c&15];} return out;
+    for (auto c:digest) {out+=digits[c>>4];out+=digits[c&15];}
+    debuglog::write("hash.end","ms="+std::to_string(debuglog::elapsed(began)));
+    return out;
 }
 Reply perform(const Connection& connection,const Request& request,std::stop_token stop) {
     Reply reply; reply.request=request;
+    const auto began=debuglog::Clock::now();
+    const auto identity="req="+std::to_string(request.diagnosticId?request.diagnosticId:++nextDiagnosticId)+" tag="+request.tag+" gen="+std::to_string(request.generation);
+    debuglog::write("http.begin",identity);
+    struct LogCompletion {
+        const Reply& reply;const std::string& identity;debuglog::Clock::time_point began;
+        ~LogCompletion(){debuglog::write("http.end",identity+" ms="+std::to_string(debuglog::elapsed(began))+" status="+std::to_string(reply.status)+" ok="+(reply.error.empty()?"1":"0"));}
+    } completion{reply,identity,began};
     fs::path temporary;
     try {
         if (request.tag=="hash") { reply.body={{"sha256",cachedSourceHash(fs::path(std::u8string(reinterpret_cast<const char8_t*>(request.path.data()),request.path.size())),stop)}}; return reply; }
@@ -124,7 +138,13 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
         if (url.nScheme!=INTERNET_SCHEME_HTTPS && host!=L"127.0.0.1" && host!=L"localhost" && host!=L"::1")
             throw std::runtime_error("Remote servers require HTTPS.");
         Internet session(WinHttpOpen(L"Prappy Sampling/1",WINHTTP_ACCESS_TYPE_NO_PROXY,nullptr,nullptr,0));
-        WinHttpSetTimeouts(session.value,5000,5000,30000,30000);
+        // Registration verifies the entire source; cold PCM requests prepare
+        // canonical audio. Multi-hour recordings can take minutes before any
+        // response headers arrive. These worker requests remain cancellable.
+        const bool preparesAudio=request.tag=="source-import" || request.tag=="pcm" || request.tag=="audition";
+        const int receiveTimeout=preparesAudio?600000:30000;
+        if(!WinHttpSetTimeouts(session.value,5000,5000,30000,receiveTimeout))
+            throw std::runtime_error("Cannot configure backend timeouts.");
         Internet server(WinHttpConnect(session.value,host.c_str(),url.nPort,0));
         const auto method=wide(request.method),path=wide(request.path);
         Internet operation(WinHttpOpenRequest(server.value,method.c_str(),path.c_str(),nullptr,WINHTTP_NO_REFERER,
@@ -141,14 +161,22 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
         if(token.size()<32)throw std::runtime_error("Token file is empty or invalid.");
         DWORD redirectPolicy=WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
         if(!WinHttpSetOption(operation.value,WINHTTP_OPTION_REDIRECT_POLICY,&redirectPolicy,sizeof(redirectPolicy)))throw std::runtime_error("Cannot constrain backend redirects.");
-        auto headers=wide("Authorization: Bearer "+token+"\r\nContent-Type: application/json\r\n");
+        auto headers=wide("Authorization: Bearer "+token+"\r\nContent-Type: application/json\r\nX-Prappy-Request-Id: "+std::to_string(GetCurrentProcessId())+"_"+std::to_string(request.diagnosticId)+"\r\n");
         const auto body=request.method=="GET" || request.body.is_null() ? std::string{} : request.body.dump();
         if (!WinHttpSendRequest(operation.value,headers.c_str(),static_cast<DWORD>(headers.size()),
              body.empty()?WINHTTP_NO_REQUEST_DATA:const_cast<char*>(body.data()),static_cast<DWORD>(body.size()),static_cast<DWORD>(body.size()),0) ||
-            !WinHttpReceiveResponse(operation.value,nullptr)) throw std::runtime_error("Backend connection failed: "+std::to_string(GetLastError()));
+            !WinHttpReceiveResponse(operation.value,nullptr)) {
+            const auto error=GetLastError();
+            debuglog::write("http.failure",identity+" win32="+std::to_string(error));
+            throw std::runtime_error("Backend connection failed: "+std::to_string(error));
+        }
         DWORD status=0,length=sizeof(status);
         WinHttpQueryHeaders(operation.value,WINHTTP_QUERY_STATUS_CODE|WINHTTP_QUERY_FLAG_NUMBER,nullptr,&status,&length,nullptr);
+        debuglog::write("http.headers",identity+" ms="+std::to_string(debuglog::elapsed(began))+" status="+std::to_string(status));
         reply.status=static_cast<int>(status);
+        std::array<wchar_t,256> serverTiming{};DWORD timingSize=sizeof(serverTiming);
+        if(WinHttpQueryHeaders(operation.value,WINHTTP_QUERY_CUSTOM,L"Server-Timing",serverTiming.data(),&timingSize,nullptr))
+            debuglog::write("http.server",identity+" "+utf8(fs::path(serverTiming.data())));
         std::ofstream output;
         if (!request.download.empty() && status==200) {
             fs::create_directories(request.download.parent_path());
@@ -259,6 +287,7 @@ class ClientExecutor {
             }
             const auto stop=state->stop.get_token();
             if(credentials) {
+                const auto credentialsStart=debuglog::Clock::now();
                 std::string error;
                 const auto read=[&] {
                     if(stop.stop_requested())throw std::runtime_error("Credential preparation cancelled.");
@@ -278,10 +307,12 @@ class ClientExecutor {
                         }while(!stop.stop_requested()&&std::chrono::steady_clock::now()<deadline);
                     }catch(const std::exception& e){error=e.what();}
                 }
+                debuglog::write("backend.credentials","ms="+std::to_string(debuglog::elapsed(credentialsStart))+" ok="+(error.empty()?"1":"0"));
                 std::lock_guard guard(mutex);
                 if(!state->retired){state->connection=std::move(connection);state->credentialError=std::move(error);state->credentialsReady=true;}
                 lane.active.reset();wake.notify_all();
             } else {
+                debuglog::write("http.dequeue","req="+std::to_string(request.diagnosticId)+" tag="+request.tag+" queue_ms="+std::to_string(debuglog::elapsed(request.queuedAt)));
                 Reply result;result.request=request;
                 try {
                     if(request.tag!="hash"&&!state->credentialError.empty())result.error=state->credentialError;
@@ -350,6 +381,7 @@ public:
 };
 }
 Client::Client(Connection connection,std::function<void()> notify,Transport transport,CredentialReader reader,Bootstrap bootstrap):state(std::make_shared<ClientState>()) {
+    (void)debuglog::instance(); // Construct before the executor's worker threads.
     state->connection=std::move(connection);state->notify=std::move(notify);
     if(!state->connection.token.empty()) {
         state->credentialsStarted=true;state->credentialsReady=true;
@@ -362,6 +394,7 @@ Client::Client(Connection connection,std::function<void()> notify,Transport tran
 }
 Client::~Client(){ClientExecutor::instance().retire(state);}
 void Client::submit(Request request) {
+    request.queuedAt=debuglog::Clock::now();request.diagnosticId=++nextDiagnosticId;
     auto& executor=ClientExecutor::instance();std::lock_guard guard(executor.mutex);
     if(request.method=="GET"&&request.tag!="download")std::erase_if(state->pending,[&](const auto& old){return old.tag==request.tag&&(request.tag!="collectionMember"||old.path==request.path);});
     if(state->pending.size()>=512)throw std::runtime_error("Backend request queue is full.");

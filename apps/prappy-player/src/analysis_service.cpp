@@ -1,5 +1,6 @@
 #include "analysis_service.h"
 #include "library.h"
+#include "debug_log.h"
 #include <algorithm>
 #include <bit>
 #include <chrono>
@@ -39,6 +40,7 @@ size_t waveformBytes(const Result& result) {
 }
 Service::Service(fs::path cacheDirectory, ServiceSettings limits, std::function<void()> wakeUI)
     : directory(std::move(cacheDirectory)), settings(limits), notify(std::move(wakeUI)) {
+    (void)debuglog::instance();
     if (settings.remoteLimit < 1 || settings.remoteLimit > 4 ||
         (settings.workers > 4) || settings.waveformMemoryMiB < 16 || settings.waveformMemoryMiB > 512)
         throw std::invalid_argument("Invalid analysis service limits");
@@ -77,8 +79,10 @@ void Service::changedLocked() {
 void Service::recordLocked(const std::string& message) {
     if (diagnosticEvents.size() == 128) diagnosticEvents.pop_front();
     diagnosticEvents.push_back(message);
-    if (diagnosticEvents.size() <= 24 || message.find("selected") != std::string::npos || message.find("failed") != std::string::npos)
+    if (diagnosticEvents.size() <= 24 || message.find("selected") != std::string::npos || message.find("failed") != std::string::npos) {
         OutputDebugStringA(("Prappy analysis " + message + "\n").c_str());
+        debuglog::write("analysis",message);
+    }
 }
 void Service::requestLocked(const Identity& identity, analysis_queue::Priority priority, bool force) {
     if (!indexLoaded || readOnly) return;

@@ -13,6 +13,7 @@
 #include "audio_async_tests.h"
 #include "sample_client_cancel_tests.h"
 #include "scan_async_tests.h"
+#include "debug_log_tests.h"
 #include <SDL3/SDL.h>
 #include <cmath>
 #include <fstream>
@@ -304,6 +305,7 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
             "10 tracks \xc2\xb7 2 identical copies hidden \xc2\xb7 Checking duplicates: 4 / 10", "Status sections are not joined with middle dots.");
         const auto root = logPath.parent_path() / ("state-test-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
         fs::create_directories(root);
+        debugLogTests(root,log);
         audio_async_tests::run(log);
         sampleClientCancellationTests(log);
         scanAsyncTests(log);
@@ -429,6 +431,10 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
             std::ofstream out(tuning);
             out << "directory=" << utf8(media) << "\nextensions=wav\n" << setting << '\n';
         };
+        writeTuning("");require(readConfig(tuning).debugLog,"Debug logging must default on for existing configs.");
+        writeTuning("debug_log=false");require(!readConfig(tuning).debugLog,"Debug logging could not be disabled.");
+        writeTuning("debug_log=true");require(readConfig(tuning).debugLog,"Debug logging could not be enabled.");
+        writeTuning("debug_log=invalid");rejects([&]{readConfig(tuning);},"Invalid debug flag was accepted.");
         writeTuning("normalization_target_lufs=-20\nnormalization_unmeasured_fallback_db=-4\n"
             "analysis_worker_count=2\nanalysis_remote_concurrency_limit=1\nanalysis_waveform_memory_mib=64");
         auto tuned = readConfig(tuning);

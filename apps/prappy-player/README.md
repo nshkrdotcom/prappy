@@ -486,6 +486,15 @@ implemented.
 
 ## Verification
 
+Compact diagnostic logging defaults to on. Set `debug_log=false` in `player.ini`
+and restart to disable it. `player-debug.log` beside the executable records
+playback request/load/ready timings, selected analysis events, source hashing,
+backend startup, HTTP queue time, time to response headers and completion.
+Request IDs correlate with the WSL service log. The player writes on a background
+thread with a bounded queue; logs rotate at 1 MiB with one backup (`.1`).
+Credentials and HTTP payloads are excluded. See [diagnostics](docs/diagnostics.md)
+for backend logs and the measured long-recording costs.
+
 The executable includes a headless integration check, using libmpv's null audio
 output. Supply a configuration containing at least two nonempty audio files:
 

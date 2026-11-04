@@ -56,6 +56,9 @@ allow their source directories. Playback/background preparation never imports fi
 The original stays untouched, and the captured source, cue and selected range survive
 connection failures and restart. Retry continues the same registration request;
 returning to the previous draft cancels that pending editor handoff.
+First-time registration and canonical audio preparation of long recordings can
+take several minutes. These requests allow up to ten minutes for the server to
+respond and remain cancellable; ordinary browsing keeps its shorter timeout.
 
 Choose a library, then a recording, saved sample or collection. Search and metadata
 filters use effective recording/sample facts. The browser pages through recordings

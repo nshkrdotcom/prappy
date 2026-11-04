@@ -16,6 +16,7 @@ struct Audio::Async {
     static void copy(Audio& to,const Audio& from) {
         to.error=from.error;to.current=from.current;to.loaded=from.loaded;to.active=from.active;
         to.paused=from.paused;to.pauseRequested=from.pauseRequested;to.waitingStart=from.waitingStart;to.sequentialRetry=from.sequentialRetry;
+        to.logPlayback=from.logPlayback;
         to.desiredEntry=from.desiredEntry;to.eventEntry=from.eventEntry;to.serial=from.serial;to.loadedSerial=from.loadedSerial;
         to.position=from.position;to.duration=from.duration;to.positionTime=from.positionTime;
         to.info=from.info;to.gain=from.gain;to.volume=from.volume;to.meterPeak=from.meterPeak;to.meterAvailable=from.meterAvailable;

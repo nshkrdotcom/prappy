@@ -1,5 +1,6 @@
 #pragma once
 #include "paths.h"
+#include "debug_log.h"
 #include "output_meter.h"
 #include <mpv/client.h>
 #include <array>
@@ -68,8 +69,10 @@ struct Audio {
     std::unique_ptr<OutputMeter> outputMeter;
     bool meterAvailable = false;
     bool sequentialRetry = false;
+    bool logPlayback = false;
     using Clock = std::chrono::steady_clock;
     Clock::time_point positionTime = Clock::now();
+    Clock::time_point loadStarted = Clock::now();
     std::optional<double> queuedSeek, seekPreview;
     uint64_t seekSequence = 0, pendingSeek = 0;
     double displayPosition(Clock::time_point now = Clock::now()) const {
@@ -85,6 +88,8 @@ struct Audio {
         set_wakeup_callback(handle, [](void* context) { auto& audio = *static_cast<Audio*>(context); if (audio.notify) audio.notify(); }, this);
     }
     void open(bool silent = false, std::initializer_list<std::pair<const char*, const char*>> options = {}, bool meter = true) {
+        (void)debuglog::instance(); // Outlive playback actors during static teardown.
+        logPlayback=meter;
         if (handle || dll) throw std::logic_error("Audio is already open.");
         if (meter) checkWorkerCapacity();
         auto path = executableDir() / "libmpv-2.dll";
@@ -130,8 +135,10 @@ struct Audio {
         return utf8(nativePath.is_absolute() ? extendedPath(nativePath) : nativePath);
     }
     bool play(const fs::path& path, bool startPaused = false, double startPosition = 0) {
+        loadStarted=Clock::now();
         if (worker) {
             ++serial; const auto epoch=serial; const auto level=volume;
+            if(logPlayback)debuglog::write("play.request","serial="+std::to_string(serial)+" source="+utf8(path));
             current=path; loaded=false; loadedSerial=0; active=true; waitingStart=true; info={}; cachedTags.clear();
             queuedSeek.reset();seekPreview.reset();pendingSeek=0; gain=0;meterPeak=0;
             position=startPosition;positionTime=Clock::now();duration=0;paused=pauseRequested=startPaused;error.clear();
@@ -146,6 +153,7 @@ struct Audio {
         setGain(0); meterPeak = 0;
         const auto options = std::string(startPaused ? "pause=yes,start=" : "pause=no,start=") + std::to_string(std::max(0.0, startPosition));
         if (!run({"loadfile", file.c_str(), "replace", "-1", options.c_str()})) return false;
+        if(logPlayback)debuglog::write("play.submit","serial="+std::to_string(serial+1)+" ms="+std::to_string(debuglog::elapsed(loadStarted)));
         if (get_property(handle, "playlist/0/id", MPV_FORMAT_INT64, &desiredEntry) < 0) {
             error = "Cannot identify requested playback."; return false;
         }
@@ -280,6 +288,7 @@ struct Audio {
             }
             if (event->event_id == MPV_EVENT_FILE_LOADED && eventEntry == desiredEntry) {
                 loaded = true; active = true; loadedSerial = serial;
+                if(logPlayback)debuglog::write("play.loaded","serial="+std::to_string(serial)+" ms="+std::to_string(debuglog::elapsed(loadStarted)));
                 readInfo();
             }
             if (event->event_id == MPV_EVENT_AUDIO_RECONFIG && loaded && eventEntry == desiredEntry) readInfo();
