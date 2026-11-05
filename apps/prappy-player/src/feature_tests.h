@@ -209,14 +209,13 @@ inline void featureTests(const fs::path& root, const Library& fixture, std::ostr
         stateio::write(prefs,preferences.serialize());
         require(Preferences::load(prefs).session == Preferences::Session{}, "Invalid session was accepted.");
     }
-    stateio::write(prefs,"PRAPPY_UI 3\n1 0 1 390\n\"\"\n0\n0\n37\n");
-    require(Preferences::load(prefs).volume == 37 && Preferences::load(prefs).session == Preferences::Session{}, "Version 3 migration failed.");
-    stateio::write(prefs, "PRAPPY_UI 2\n1 1 1 390\n\"\"\n0\n0\n");
-    const auto legacy = Preferences::load(prefs);
-    require(legacy.volume == 70 && legacy.topmost && legacy.strip && legacy.normalize && legacy.transportHeight == 390,
-        "Legacy preferences did not retain settings with default volume.");
-    for (const auto volume : {"-1", "101", "invalid"}) {
-        stateio::write(prefs, std::string("PRAPPY_UI 3\n0 0 0 390\n\"\"\n0\n0\n") + volume + "\n");
+    for(const auto header:{"PRAPPY_UI 2","PRAPPY_UI 3"}) {
+        stateio::write(prefs,std::string(header)+"\n1 1 1 390\n\"\"\n0\n0\n37\n");
+        require(!Preferences::load(prefs).topmost,"Retired preferences reader remains active.");
+    }
+    preferences.session=validSession;
+    for (const int volume : {-1,101}) {
+        preferences.volume=volume;stateio::write(prefs,preferences.serialize());
         require(Preferences::load(prefs).volume == 70, "Invalid saved volume was accepted.");
     }
     log << "PASS features model: WSL paths, queue/forward trail, retained-history views, ranked search, duration/type/offline filters, gain/headroom, preferences\n" << std::flush;
