@@ -1,6 +1,7 @@
 #pragma once
 #include "config.h"
 #include "state_io.h"
+#include "prepared_catalog.h"
 #include <bcrypt.h>
 #include <array>
 #include <optional>
@@ -9,6 +10,7 @@
 #include <tuple>
 #include <map>
 #include <memory>
+namespace sampling {struct Connection;}
 struct Track {
     fs::path path;
     std::string name, directory, type;
@@ -24,6 +26,7 @@ struct Track {
     size_t searchLabelLength = 0;
     std::string sortName;
     std::optional<double> duration;
+    std::optional<prepared::CatalogSource> prepared;
 };
 struct ScanProgress {
     std::atomic<size_t> found{0}, checked{0}, total{0};
@@ -175,6 +178,7 @@ inline size_t removeDuplicates(std::vector<Track>& tracks, std::stop_token stop,
     return duplicates;
 }
 struct Library {
+    std::shared_ptr<const sampling::Connection> backend;
     std::vector<Track> tracks;
     std::vector<Track> files;
     VerificationCache verified;

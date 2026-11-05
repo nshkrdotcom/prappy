@@ -1,4 +1,5 @@
 #include "prepared_audio.h"
+#include "prepared_catalog.h"
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -36,5 +37,19 @@ int main() {
     require(integerBlock.sample(0,0)==static_cast<double>(integer)/2147483648.0);
     rejects([&]{Block malformed({48000,2,1,SampleType::Float32},0,1,bytes);});
     rejects([&]{block.sample(1,0);});
+    nlohmann::json row={{"library_id",library},{"capture_id",capture},{"asset_key",std::string(64,'c')},
+        {"state","Ready"},{"title","Test song"},{"artist",nullptr},{"codec","opus"},
+        {"library_name","Music"},{"duration_seconds",2.0},{"original_bytes",1200},
+        {"analysis",{{"native_frames",88200},{"native_rate",44100},{"native_channels",1},
+            {"native_sample_format","float64"},{"listening_frames",96000},{"frames",96000},
+            {"sample_rate",48000},{"channels",2},{"loudness_lufs",-23.0},{"sample_peak",.5},
+            {"source_tags",{{"R128_TRACK_GAIN","-512"}}},{"source_codec","opus"}}}};
+    const auto catalog=parseCatalog({{"items",nlohmann::json::array({row})}});
+    require(catalog.size()==1&&catalog[0].source==source&&catalog[0].native.rate==44100);
+    require(catalog[0].native.type==SampleType::Float64&&catalog[0].loudness==-23.0);
+    require(catalog[0].tags[0].first=="R128_TRACK_GAIN");
+    rejects([&]{parseCatalog({{"items",nlohmann::json::array({row,row})}});});
+    row["analysis"]["native_frames"]=1.5;
+    rejects([&]{parseCatalog({{"items",nlohmann::json::array({row})}});});
     std::cout<<"PASS prepared source identity, native timeline, precision and bounded payloads\n";
 }

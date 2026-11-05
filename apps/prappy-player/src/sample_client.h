@@ -1,5 +1,6 @@
 #pragma once
 #include "paths.h"
+#include "prepared_audio.h"
 #include <json.hpp>
 #include <condition_variable>
 #include <deque>
@@ -13,6 +14,7 @@
 namespace sampling {
 using Json = nlohmann::json;
 struct Connection { std::string url = "http://127.0.0.1:8765", token; fs::path credentialFile; bool startWorkstation=false; };
+Connection authorize(Connection,std::stop_token = {});
 struct Request {
     std::string tag, method = "GET", path;
     Json body;
@@ -25,6 +27,7 @@ struct Reply {
     Request request;
     Json body;
     std::vector<float> pcm;
+    std::shared_ptr<const prepared::Block> preparedPcm;
     std::string error;
     int status = 0;
 };

@@ -91,6 +91,11 @@ std::string cachedSourceHash(const fs::path& path,std::stop_token stop){
     return digest;
 }
 }
+Connection authorize(Connection connection,std::stop_token stop) {
+    if(connection.token.empty())connection.token=trim(readCredential(connection.credentialFile,stop));
+    if(connection.token.size()<32)throw std::runtime_error("Token file is empty or invalid.");
+    return connection;
+}
 std::string uuid() {
     GUID id{}; if (FAILED(CoCreateGuid(&id))) throw std::runtime_error("Cannot generate command identity.");
     wchar_t buffer[40]{}; if(!StringFromGUID2(id,buffer,40))throw std::runtime_error("Cannot format command identity.");
@@ -157,8 +162,7 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
         std::stop_callback cancellation(stop,cancel);
 
         if(stop.stop_requested())throw std::runtime_error("Request cancelled.");
-        const auto token=connection.token.empty()?trim(readCredential(connection.credentialFile,stop)):connection.token;
-        if(token.size()<32)throw std::runtime_error("Token file is empty or invalid.");
+        const auto token=authorize(connection,stop).token;
         DWORD redirectPolicy=WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
         if(!WinHttpSetOption(operation.value,WINHTTP_OPTION_REDIRECT_POLICY,&redirectPolicy,sizeof(redirectPolicy)))throw std::runtime_error("Cannot constrain backend redirects.");
         auto headers=wide("Authorization: Bearer "+token+"\r\nContent-Type: application/json\r\nX-Prappy-Request-Id: "+std::to_string(GetCurrentProcessId())+"_"+std::to_string(request.diagnosticId)+"\r\n");
@@ -203,16 +207,12 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
             if(!MoveFileExW(temporary.c_str(),request.download.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))throw std::runtime_error("Cannot publish downloaded audio.");reply.body={{"path",utf8(request.download)}};
         }
         else if (status==202){reply.body=Json::parse(bytes.begin(),bytes.end());}
-        else if (request.tag=="pcm" || request.tag=="audition") {
+        else if (request.tag=="pcm" || request.tag=="audition" || request.tag=="prepared-pcm" || request.tag=="prepared-waveform") {
             const auto header=[&](const wchar_t* name){
                 std::array<wchar_t,256> value{};DWORD size=static_cast<DWORD>(sizeof(value));
                 if(!WinHttpQueryHeaders(operation.value,WINHTTP_QUERY_CUSTOM,name,value.data(),&size,nullptr))throw std::runtime_error("Missing canonical PCM identity.");
                 return utf8(fs::path(value.data()));
             };
-            const auto at=request.path.find("start="),until=request.path.find("&end="),timeline=request.path.find("&timeline=");
-            if(at==std::string::npos||until==std::string::npos||timeline==std::string::npos)throw std::runtime_error("PCM request lacks exact bounds.");
-            const auto start=std::stoll(request.path.substr(at+6,until-at-6)),end=std::stoll(request.path.substr(until+5,timeline-until-5));
-            if(header(L"X-Origin-Frame")!=std::to_string(start)||header(L"X-Frame-Count")!=std::to_string(end-start)||header(L"X-Timeline-Id")!=request.path.substr(timeline+10)||bytes.size()!=static_cast<size_t>(end-start)*8)throw std::runtime_error("Canonical PCM timeline or bounds differ.");
             // Hash through the same Windows provider as downloaded artifacts, without disk I/O.
             BCRYPT_ALG_HANDLE algorithm=nullptr;
             if(BCryptOpenAlgorithmProvider(&algorithm,BCRYPT_SHA256_ALGORITHM,nullptr,0)<0)throw std::runtime_error("Cannot open PCM SHA256.");
@@ -222,10 +222,42 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
             if(hashStatus<0)throw std::runtime_error("PCM SHA256 failed.");
             std::string hash;const char* digits="0123456789abcdef";for(auto c:digest){hash+=digits[c>>4];hash+=digits[c&15];}
             if(hash!=header(L"X-PCM-SHA256"))throw std::runtime_error("Canonical PCM hash differs.");
-            reply.body={{"origin_frame",start},{"frame_count",end-start},{"decode_identity",header(L"X-Decode-Identity")}};
-            if (bytes.empty() || bytes.size()%8) throw std::runtime_error("Invalid stereo PCM response.");
-            reply.pcm.resize(bytes.size()/4);std::memcpy(reply.pcm.data(),bytes.data(),bytes.size());
-            for(auto value:reply.pcm) if(!std::isfinite(value)) throw std::runtime_error("Nonfinite PCM.");
+            if(request.tag=="prepared-pcm" || request.tag=="prepared-waveform") {
+                const auto& expected=request.body;
+                if(header(L"X-Asset-Key")!=expected.at("asset_key").get<std::string>()||
+                   header(L"X-Channels")!=std::to_string(expected.at("channels").get<int64_t>()))
+                    throw std::runtime_error("Prepared response source or channel identity differs.");
+                reply.body=expected;
+                if(request.tag=="prepared-pcm") {
+                    const auto start=expected.at("origin_frame").get<int64_t>(),count=expected.at("frame_count").get<int64_t>();
+                    if(header(L"X-Origin-Frame")!=std::to_string(start)||header(L"X-Frame-Count")!=std::to_string(count)||
+                       header(L"X-Sample-Rate")!=std::to_string(expected.at("sample_rate").get<int64_t>())||
+                       header(L"X-Sample-Format")!=expected.at("sample_format").get<std::string>())
+                        throw std::runtime_error("Prepared PCM timeline or sample type differs.");
+                    prepared::NativeTimeline source{expected.at("sample_rate"),expected.at("channels"),
+                        expected.at("total_frames"),prepared::sampleType(expected.at("sample_format").get<std::string>())};
+                    reply.preparedPcm=std::make_shared<prepared::Block>(source,start,count,std::span(
+                        reinterpret_cast<const std::byte*>(bytes.data()),bytes.size()));
+                } else {
+                    const auto count=expected.at("bin_count").get<int64_t>(),channels=expected.at("channels").get<int64_t>();
+                    if(count<=0||count>8192||channels<=0||channels>32||
+                       header(L"X-Bin-Count")!=std::to_string(count)||
+                       header(L"X-Start-Bin")!=std::to_string(expected.at("start_bin").get<int64_t>())||
+                       header(L"X-Frames-Per-Bin")!=std::to_string(expected.at("frames_per_bin").get<int64_t>())||
+                       bytes.size()!=static_cast<size_t>(count*channels*8))throw std::runtime_error("Prepared waveform bounds differ.");
+                    reply.pcm.resize(bytes.size()/4);std::memcpy(reply.pcm.data(),bytes.data(),bytes.size());
+                    for(auto value:reply.pcm)if(!std::isfinite(value))throw std::runtime_error("Nonfinite waveform.");
+                }
+            } else {
+                const auto at=request.path.find("start="),until=request.path.find("&end="),timeline=request.path.find("&timeline=");
+                if(at==std::string::npos||until==std::string::npos||timeline==std::string::npos)throw std::runtime_error("PCM request lacks exact bounds.");
+                const auto start=std::stoll(request.path.substr(at+6,until-at-6)),end=std::stoll(request.path.substr(until+5,timeline-until-5));
+                if(header(L"X-Origin-Frame")!=std::to_string(start)||header(L"X-Frame-Count")!=std::to_string(end-start)||header(L"X-Timeline-Id")!=request.path.substr(timeline+10)||bytes.size()!=static_cast<size_t>(end-start)*8)throw std::runtime_error("Canonical PCM timeline or bounds differ.");
+                reply.body={{"origin_frame",start},{"frame_count",end-start},{"decode_identity",header(L"X-Decode-Identity")}};
+                if(bytes.empty()||bytes.size()%8)throw std::runtime_error("Invalid stereo PCM response.");
+                reply.pcm.resize(bytes.size()/4);std::memcpy(reply.pcm.data(),bytes.data(),bytes.size());
+                for(auto value:reply.pcm)if(!std::isfinite(value))throw std::runtime_error("Nonfinite PCM.");
+            }
         } else {
             reply.body=Json::parse(bytes.begin(),bytes.end());
         }
@@ -250,7 +282,7 @@ struct ClientState {
 };
 namespace {
 size_t requestLane(const Request& request) {
-    if(request.tag=="audition" || request.tag=="pcm")return 0;
+    if(request.tag=="audition" || request.tag=="pcm" || request.tag=="prepared-pcm" || request.tag=="prepared-waveform")return 0;
     if(request.tag=="libraries"||request.tag=="hash"||request.tag=="resolve"||request.method!="GET")return 1;
     return 2;
 }
