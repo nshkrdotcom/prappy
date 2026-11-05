@@ -404,7 +404,14 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
         CloseHandle(lock); require(refused && stateio::read(lockedPath) == "original", "Failed write destroyed old state.");
         log << "PASS storage: checked replacement, backups, recovery, future-version preservation, failed writes\n";
 
-        Library fixture; require(fixture.refresh(configPath) && fixture.tracks.size() >= 2, "State tests need two valid distinct tracks.");
+        Library fixture;
+        for(const auto name:{"first.wav","second.wav"}){
+            Track track;track.path=fs::absolute(configPath.parent_path()/name);track.id=key(track.path);
+            require(fs::is_regular_file(track.path),"State test audio fixture is missing.");
+            track.name=track.label=name;track.type="wav";track.sourceRoot=track.path.parent_path();
+            fixture.tracks.push_back(std::move(track));
+        }
+        fixture.rebuildSearch();
         const auto media = root / "media"; fs::create_directories(media);
         const auto first = media / "a.wav", copy = media / "b.wav", other = media / "c.wav";
         fs::copy_file(fixture.tracks[0].path, first, fs::copy_options::overwrite_existing);
@@ -422,17 +429,17 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
             log<<"PASS playback history selection: default reuse and opt-in new visit\n";
         }
         const auto localConfig = root / "player.ini";
-        { std::ofstream config(localConfig); config << "directory=" << utf8(media) << "\nextensions=wav\nhistory_limit=23\n"; }
+        { std::ofstream config(localConfig); config << "history_limit=23\n"; }
         auto settings = readConfig(localConfig); require(settings.historyLimit == 23 && !settings.addNewListeningHistoryEntryWhenReplayingHistoryItem, "Configured history defaults failed.");
         {std::ofstream out(localConfig,std::ios::app);out<<"add_new_listening_history_entry_when_replaying_history_item=true\n";}
         settings=readConfig(localConfig);require(settings.addNewListeningHistoryEntryWhenReplayingHistoryItem,"History replay option failed.");
         const auto badConfig = root / "invalid.ini";
-        { std::ofstream config(badConfig); config << "directory=" << utf8(media) << "\nextensions=wav\nhistory_limit=-1\n"; }
+        { std::ofstream config(badConfig); config << "history_limit=-1\n"; }
         rejects([&] { readConfig(badConfig); }, "Invalid history limit accepted.");
         const auto tuning = root / "analysis-tuning.ini";
         const auto writeTuning = [&](const std::string& setting) {
             std::ofstream out(tuning);
-            out << "directory=" << utf8(media) << "\nextensions=wav\n" << setting << '\n';
+            out << setting << '\n';
         };
         writeTuning("");require(readConfig(tuning).debugLog,"Debug logging must default on for existing configs.");
         writeTuning("debug_log=false");require(!readConfig(tuning).debugLog,"Debug logging could not be disabled.");
@@ -451,191 +458,9 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
             rejects([&] { readConfig(tuning); }, "Invalid analysis configuration was accepted.");
         }
         log << "PASS advanced analysis configuration: valid values, finite/range strictness\n";
-        Library catalog; ScanProgress initial;
-        require(catalog.refresh(localConfig, {}, &initial) && catalog.tracks.size() == 2 && initial.hashReads > 0, "Catalog initial duplicate verification failed.");
-        const auto catalogPath = root / "catalog.bin"; saveCatalog(catalogPath, catalog);
-        Library cached; settings.historyLimit = 99;
-        require(loadCatalog(catalogPath, settings, cached) && cached.tracks.size() == 2 && cached.historyLimit == 99, "Catalog cache incorrectly depends on session settings.");
-        ScanProgress reused;
-        require(cached.refresh(localConfig, {}, &reused) && reused.hashReads == 0 && reused.hashReused > 0, "Unchanged files were rehashed.");
-        auto bytes = catalogBytes(catalog); bytes.back() ^= 1;
-        rejects([&] { parseCatalog(bytes, settings); }, "Catalog checksum damage accepted.");
-        bytes = catalogBytes(catalog); bytes[8] = 2;
-        rejects([&] { parseCatalog(bytes, settings); }, "Incompatible catalog accepted.");
-        auto different = settings; different.extensions.insert(".mp3");
-        rejects([&] { parseCatalog(catalogBytes(catalog), different); }, "Changed catalog configuration accepted.");
-        { std::fstream changed(copy, std::ios::in | std::ios::out | std::ios::binary); changed.seekg(16384); char byte = 0; changed.read(&byte, 1); byte ^= 2; changed.seekp(16384); changed.write(&byte, 1); }
-        fs::last_write_time(copy, fs::last_write_time(copy) + std::chrono::seconds(2));
-        ScanProgress changed;
-        require(cached.refresh(localConfig, {}, &changed) && cached.tracks.size() == 3 && changed.hashReads > 0, "Changed content reused stale verification.");
-        cached.verified.clear(); cached.forceVerification = true; ScanProgress forced;
-        require(cached.refresh(localConfig, {}, &forced) && forced.hashReads > 0, "Forced duplicate revalidation was skipped.");
-        fs::remove(copy);
-        require(cached.refresh(localConfig) && cached.tracks.size() == 2, "Deleted file retained while root online.");
-        fs::create_hard_link(first, media / "hard-link.wav");
-        require(cached.refresh(localConfig) && cached.tracks.size() == 2, "Hard-link fixture was not grouped.");
-        fs::rename(media, root / "offline-media");
-        require(cached.refresh(localConfig) && cached.tracks.size() == 2 && std::all_of(cached.tracks.begin(), cached.tracks.end(), [](const auto& track) { return track.offline; }), "Offline root lost catalog entries.");
-        fs::rename(root / "offline-media", media);
-        require(cached.refresh(localConfig) && std::none_of(cached.tracks.begin(), cached.tracks.end(), [](const auto& track) { return track.offline; }), "Returning root stayed offline.");
-        auto aliased = cached;
-        const auto missingAlias = root / "missing-configured-alias";
-        for (auto& file : aliased.files) file.sourceRoot = missingAlias;
-        aliased.roots = {missingAlias};
-        const auto aliasConfig = root / "alias.ini";
-        { std::ofstream config(aliasConfig); config << "directory=" << utf8(missingAlias) << "\nextensions=wav\n"; }
-        require(aliased.refresh(aliasConfig) && aliased.tracks.size() == cached.tracks.size(), "Offline configured alias lost canonical target paths.");
-        stateio::write(catalogPath, catalogBytes(cached));
-        { std::ofstream corrupt(catalogPath, std::ios::binary); corrupt << "bad"; }
-        require(loadCatalog(catalogPath, settings, catalog), "Catalog backup recovery failed.");
-        log << "PASS catalog: independent version, checksum, config matching, unchanged-hash reuse, changed/deleted files, offline roots, backup recovery\n";
-
         playbackStateTests(root, fixture, log);
         featureTests(root, fixture, log);
         log << "ALL PASS\n";
-        return 0;
-    } catch (const std::exception& e) { log << "FAIL " << e.what() << '\n'; return 1; }
-}
-int selfTest(const fs::path& config, const fs::path& logFile) {
-    std::ofstream log(logFile);
-    try {
-        Library searchLibrary;
-        Track lead; lead.label = "library\\Jazz\\Night Bus.flac"; lead.name = "Night Bus.flac";
-        lead.directory = "Jazz"; lead.type = "flac"; lead.id = L"night";
-        lead.copies = {L"C:/scraper/library/Alternate Take.opus"};
-        Track other; other.label = "library\\Jazz\\Morning.flac"; other.name = "Morning.flac";
-        other.directory = "Jazz"; other.type = "flac"; other.id = L"morning";
-        Track unicode; unicode.label = "library\\Beyoncé\\Live.m4a"; unicode.name = "Live.m4a";
-        unicode.directory = "Beyoncé"; unicode.type = "m4a"; unicode.id = L"live";
-        searchLibrary.tracks = {lead, other, unicode};
-        searchLibrary.rebuildSearch();
-        for (int order = 0; order < 3; ++order) {
-            searchLibrary.order = order; searchLibrary.sort();
-            for (const char* query : {"NIGHT jazz", "jazz/night", "alternate OPUS"}) {
-                const auto matches = Browse{}.select(searchLibrary, query);
-                if (matches.size() != 1 || searchLibrary.tracks[matches[0]].id != L"night")
-                    throw std::runtime_error("Search lost track identity or failed word/path/alias matching.");
-            }
-        }
-        if (Browse{}.select(searchLibrary, "BEYONCÉ").size() != 1 || Browse{}.select(searchLibrary, "  ").size() != 3 ||
-            !Browse{}.select(searchLibrary, "no-such-track").empty() || searchLibrary.tracks.size() != 3)
-            throw std::runtime_error("Search failed Unicode, clear or no-match behavior.");
-        log << "PASS search: words / case / Unicode / paths / copies / sorting / clear / no matches\n";
-        Library library;
-        if (!library.refresh(config) || library.tracks.empty()) throw std::runtime_error(library.notice);
-        if (library.tracks.size() < 2) throw std::runtime_error("Self-test needs at least two tracks.");
-        log << "Scan: " << library.notice << '\n';
-        Audio audio; audio.open(true);
-        std::set<std::string> formats;
-        const auto testTracks = library.tracks;
-        for (auto track : testTracks) {
-            if (!formats.insert(track.type).second) continue;
-            log << "Testing " << track.label << std::endl;
-            if (!audio.play(track.path)) throw std::runtime_error(audio.error);
-            auto waitLoaded = [&] {
-                for (int i = 0; i < 500; ++i) { audio.poll(); if (audio.loaded) return; if (!audio.error.empty()) throw std::runtime_error(audio.error); SDL_Delay(10); }
-                throw std::runtime_error("Playback load timeout: " + track.name);
-            };
-            waitLoaded(); SDL_Delay(120); audio.poll();
-            if (audio.duration <= 0) throw std::runtime_error("No duration: " + track.name);
-            audio.pause(); audio.waitIdle(); audio.poll();
-            int paused = 0; audio.get_property(audio.handle, "pause", MPV_FORMAT_FLAG, &paused);
-            if (!paused) throw std::runtime_error("Pause failed.");
-            double seek = std::min(1.0, audio.duration / 2); audio.seek(seek);
-            for (int i = 0; i < 100; ++i) {
-                SDL_Delay(10); audio.poll();
-                if (std::abs(audio.position - seek) <= .25) break;
-            }
-            // mpv reports audible position, including the paused audio output buffer.
-            if (std::abs(audio.position - seek) > .25) throw std::runtime_error("Seek failed: wanted " + std::to_string(seek) + ", got " + std::to_string(audio.position) + ": " + audio.error);
-            audio.setVolume(37); audio.waitIdle(); double volume = 0; audio.get_property(audio.handle, "volume", MPV_FORMAT_DOUBLE, &volume);
-            if (std::abs(volume - 37) > .1) throw std::runtime_error("Volume failed.");
-            auto id = key(audio.current);
-            for (int order = 0; order < 3; ++order) { library.order = order; library.sort(); if (key(audio.current) != id) throw std::runtime_error("Sort changed current track."); }
-            if (!library.refresh(config) || key(audio.current) != id) throw std::runtime_error("Refresh changed current track.");
-            audio.pause(); log << "PASS " << track.type << ": decode / duration / pause / seek / volume / sort / refresh\n";
-        }
-        History navigation; HistoryFile navigationFile(config.parent_path() / "selftest-history.txt");
-        Playback playback(audio, library, navigation, navigationFile,fixturePlayback(audio));
-        const auto waitPlayback = [&] {
-            for (int i = 0; i < 1000; ++i) {
-                playback.tick();
-                if (audio.loaded && !playback.pending) return;
-                SDL_Delay(5);
-            }
-            throw std::runtime_error("Navigation timeout: " + playback.notice);
-        };
-        if (!playback.request(audio.current)) throw std::runtime_error("Cannot initialize navigation.");
-        waitPlayback();
-        for (const auto& track : testTracks) {
-            if (track.copies.empty()) continue;
-            const auto copy = track.copies.front();
-            playback.request(copy); waitPlayback();
-            if (!library.refresh(config)) throw std::runtime_error("Alias refresh failed.");
-            const auto id = key(copy);
-            auto current = std::find_if(library.tracks.begin(), library.tracks.end(), [&](auto& t) { return Library::matches(t, id); });
-            if (current == library.tracks.end()) throw std::runtime_error("Refresh lost alternate-copy identity.");
-            auto nextIndex = (static_cast<size_t>(current - library.tracks.begin()) + 1) % library.tracks.size();
-            if (!playback.navigate(1) || !Library::matches(library.tracks[nextIndex], key(audio.current)))
-                throw std::runtime_error("Next from alternate copy failed.");
-            waitPlayback();
-            log << "PASS alternate-copy identity across refresh and next\n";
-            break;
-        }
-        if (!playback.navigate(1)) throw std::runtime_error("Next failed.");
-        waitPlayback();
-        auto next = key(audio.current);
-        if (!playback.navigate(-1) || key(audio.current) == next) throw std::runtime_error("Previous failed.");
-        waitPlayback();
-        log << "PASS next / previous\n";
-        library.order = 0; library.sort();
-        playback.request(library.tracks.front().path); waitPlayback();
-        audio.seek(std::max(0.0, audio.duration - .15));
-        const auto beforeEof = audio.serial;
-        for (int i = 0; i < 500 && audio.serial == beforeEof; ++i) { playback.tick(); SDL_Delay(10); }
-        if (audio.serial == beforeEof || key(audio.current) != library.tracks[1].id)
-            throw std::runtime_error("Automatic progression failed.");
-        waitPlayback();
-        log << "PASS end-of-track progression\n";
-        audio.play(config.parent_path() / L"missing-audio.flac");
-        for (int i = 0; i < 300 && audio.error.empty(); ++i) { audio.poll(); SDL_Delay(10); }
-        if (audio.error.empty()) throw std::runtime_error("Playback error was not surfaced.");
-        log << "PASS visible playback error state: " << audio.error << '\n';
-        // Check a real Windows output without producing a test tone in the room.
-        Audio output; output.open(); output.setVolume(0); output.play(testTracks.front().path);
-        std::string outputDriver;
-        for (int i = 0; i < 300; ++i) {
-            output.poll();
-            char* driver = nullptr;
-            if (output.get_property(output.handle, "current-ao", MPV_FORMAT_STRING, &driver) >= 0 && driver) {
-                outputDriver = driver; output.free(driver);
-            }
-            if (!outputDriver.empty()) break;
-            if (!output.error.empty()) throw std::runtime_error(output.error);
-            SDL_Delay(10);
-        }
-        if (outputDriver.empty() || outputDriver == "null") throw std::runtime_error("Windows audio output did not initialize.");
-        log << "PASS Windows audio output initialized (muted): " << outputDriver << '\n';
-        const auto id = key(audio.current);
-        const auto count = library.tracks.size();
-        if (library.refresh(logFile.parent_path() / "nonexistent-player-config.ini") || library.tracks.size() != count || key(audio.current) != id)
-            throw std::runtime_error("Bad config did not preserve playback/library.");
-        log << "PASS missing config preserves library and playback\n";
-        for (int cycle = 0; cycle < 12; ++cycle) {
-            Audio repeated; repeated.open(true);
-            if (!repeated.play(testTracks[static_cast<size_t>(cycle) % testTracks.size()].path))
-                throw std::runtime_error(repeated.error);
-            for (int i = 0; i < 300 && !repeated.loaded; ++i) {
-                repeated.poll();
-                if (!repeated.error.empty()) throw std::runtime_error(repeated.error);
-                SDL_Delay(10);
-            }
-            if (!repeated.loaded) throw std::runtime_error("Repeated playback load timeout.");
-            if (!library.refresh(config)) throw std::runtime_error("Repeated refresh failed.");
-            Scan cancelled; cancelled.begin(config, cycle % 3);
-            // Destruction retires a cancelled scan; provider IO never joins here.
-        }
-        log << "PASS 12 playback create/load/destroy, refresh and scan cancellation cycles\nALL PASS\n";
         return 0;
     } catch (const std::exception& e) { log << "FAIL " << e.what() << '\n'; return 1; }
 }

@@ -54,12 +54,12 @@ bool refreshPreparedCatalog(Library& library,const fs::path& config,std::stop_to
             track.prepared=std::move(source);tracks.push_back(std::move(track));
             ++progress.found;
         }
-        library.tracks=std::move(tracks);library.files=library.tracks;
+        library.tracks=std::move(tracks);
         library.roots.assign(roots.begin(),roots.end());library.extensions=std::move(extensions);
         library.labels=std::move(labels);
         library.backendDistribution=reply.body.value("wsl_distribution",sampling::Json()).is_string()?
             reply.body.at("wsl_distribution").get<std::string>():std::string{};
-        library.verified.clear();library.backend=std::make_shared<sampling::Connection>(std::move(connection));
+        library.backend=std::make_shared<sampling::Connection>(std::move(connection));
         library.historyLimit=settings.historyLimit;
         library.addNewListeningHistoryEntryWhenReplayingHistoryItem=settings.addNewListeningHistoryEntryWhenReplayingHistoryItem;
         library.rebuildSearch();library.sort();library.notice.clear();

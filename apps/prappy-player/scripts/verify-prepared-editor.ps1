@@ -1,12 +1,12 @@
 param([Parameter(Mandatory)][string]$Manifest,[string]$BuildVariant='Release',
-    [ValidateRange(1,100)][int]$Iterations=1,[switch]$EvictPreparedPages,[switch]$InjectNotReady,[switch]$InjectCatalogNotReady)
+    [ValidateRange(1,100)][int]$Iterations=1,[switch]$EvictPreparedPages,[switch]$InjectNotReady,[switch]$InjectCatalogNotReady,[switch]$VerifySaveExport)
 $ErrorActionPreference='Stop'
 $app=Split-Path $PSScriptRoot -Parent
 $fixture=Get-Content -LiteralPath $Manifest -Raw|ConvertFrom-Json
 $state=Join-Path $app ('build/prepared-editor-'+[guid]::NewGuid().ToString('N'))
 $null=New-Item -ItemType Directory $state
 $encoding=[Text.UTF8Encoding]::new($false)
-[IO.File]::WriteAllText("$state/player.ini","directory=$state/unused`nextensions=wav`ndebug_log=true",$encoding)
+[IO.File]::WriteAllText("$state/player.ini","debug_log=true",$encoding)
 [IO.File]::WriteAllText("$state/sampling-connection.json",(@{url=$fixture.url;token_file=$fixture.token_file;library=$fixture.library_id}|ConvertTo-Json),$encoding)
 $script:sequence=0
 $process=$null
@@ -58,6 +58,14 @@ function Click-At([string]$Name,[double]$X,[double]$Y){
 function Start-Player {
  $script:process=Start-Process "$app/build/$BuildVariant/PrappyPlayer.exe" -ArgumentList '--window-test',('"'+$state+'"') -WindowStyle Hidden -PassThru
 }
+function Scroll-Editor([int]$Amount){
+ $ui=Read-Ui
+ $name=@('sample-export','sample-save','sample-redo','sample-in-plus','sample-follow','sample-play')|Where-Object {$ui.Controls.ContainsKey($_)}|Select-Object -First 1
+ if(!$name){throw 'No visible editor control for scrolling.'}
+ $anchor=$ui.Controls[$name]
+ Send-Input ('MOVE '+[int]$anchor.X+' '+[int]$anchor.Y)
+ Send-Input ('WHEEL '+$Amount)
+}
 function Stop-Player {
  if($process -and !$process.HasExited){$null=$process.CloseMainWindow();if(!$process.WaitForExit(5000)){Stop-Process -Id $process.Id}}
 }
@@ -78,7 +86,7 @@ try {
  $measurements=[Collections.Generic.List[long]]::new()
  $measurements.Add($openMs)
  $rate=[long]$fixture.mark_capture.timeline.sample_rate
- if($ready.Sample.end-ne $rate*4 -or $ready.Catalog.source_hash_reads-ne 0 -or $ready.Sample.notice.Contains('exception')){throw 'Native editor source/rate or waveform failed.'}
+ if($ready.Sample.end-ne $rate*4 -or $ready.Sample.notice.Contains('exception')){throw 'Native editor source/rate or waveform failed.'}
  $random=[Random]::new(43)
  for($iteration=1;$iteration-lt $Iterations;$iteration++){
   Click sample-return
@@ -93,13 +101,35 @@ try {
   $ready=Wait-Ui {param($ui)$ui.Width-ge 1100 -and $ui.Height-ge 850 -and $ui.Sample.capture -and $ui.Sample.waveform_exact_pcm -and !$ui.Sample.mark_pending} 'random-position native detail'
   $measurements.Add($clock.ElapsedMilliseconds)
  }
+ if($VerifySaveExport){
+  Click sample-new
+  $draft=Wait-Ui {param($ui)$ui.Sample.active_draft -and $ui.Sample.selection_defined} 'explicit sample draft'
+  Click sample-in-plus
+  $null=Wait-Ui {param($ui)$ui.Sample.start-eq $draft.Sample.start+1} 'native one-frame trim'
+  Click sample-undo
+  $null=Wait-Ui {param($ui)$ui.Sample.start-eq $draft.Sample.start} 'native trim undo'
+  Click sample-redo
+  $null=Wait-Ui {param($ui)$ui.Sample.start-eq $draft.Sample.start+1} 'native trim redo'
+  Scroll-Editor -8
+  Click sample-save
+  $saved=Wait-Ui {param($ui)$ui.Sample.region.id -and $ui.Sample.pending-eq 0} 'native region save acknowledgment'
+  if($saved.Sample.region.timeline_id-ne $fixture.mark_capture.timeline_id){throw 'Saved region changed native timeline.'}
+  if($saved.Sample.region.span.start_frame-ne $saved.Sample.start -or $saved.Sample.region.span.end_frame-ne $saved.Sample.end){throw 'Saved region changed native boundaries.'}
+  Click sample-export
+  $null=Wait-Ui {param($ui)$ui.Sample.notice.StartsWith('Exported: ')} 'verified native export' 30
+  $exports=@(Get-ChildItem -LiteralPath "$state/exports" -File)
+  $extension=if($fixture.mark_capture.timeline.sample_format-eq 'float64'){'.w64'}else{'.wv'}
+  if($exports.Count-ne 1 -or $exports[0].Length-le 0 -or $exports[0].Extension-ne $extension){throw 'Native export file/precision format is incorrect.'}
+  $ready=$saved
+  Scroll-Editor 8
+ }
  Click sample-listen
  $playing=Wait-Ui {param($ui)$ui.Sample.playback_chunks-ge 2 -and $ui.Sample.audio_frames_submitted-gt 0} 'prepared listening audition and prefetch'
  if($playing.Sample.playhead-lt 0 -or $playing.Sample.playhead-gt $fixture.mark_capture.timeline.frame_count){throw 'Audition cursor left the native timeline.'}
  Stop-Player
  $script:sequence=0
  Start-Player
- $restored=Wait-Ui {param($ui)$ui.Sample.capture-eq $ready.Sample.capture -and $ui.Sample.waveform_exact_pcm} 'native editor restart'
+ $restored=Wait-Ui {param($ui)$ui.Sample.capture-eq $ready.Sample.capture -and ($ui.Sample.waveform_exact_pcm -or (!$ready.Sample.waveform_exact_pcm -and $ui.Sample.waveform_bins-gt 0))} 'native editor restart'
  if($restored.Sample.end-ne $ready.Sample.end){throw 'Editor restart changed native selection frames.'}
  $log=Get-Content "$state/player-debug.log" -Raw
  if($InjectCatalogNotReady -and ($log-notmatch 'play.preparing ' -or $log-notmatch 'play.prepared ')){throw 'Pending prepared playback was not exercised.'}

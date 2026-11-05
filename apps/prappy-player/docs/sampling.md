@@ -1,232 +1,118 @@
-# Sampling recordings with audioharvest
+# Sampling prepared recordings
 
-Prappy Player stays native Windows. The audioharvest HTTP service runs in WSL.
-It exposes only explicitly configured library roots and requires a private token.
-No library registry, original audio or collection process is changed by connecting.
+Prappy stays native Windows; audioharvest serves explicit libraries from WSL.
+Original recordings, permanent working masters and listening renders are separate.
 
-## Start using it
+## Open and select
 
-While listening, **right-click the main waveform**:
+While listening, right-click the main waveform:
 
-- **Open song in sample editor (Ctrl+M)** opens this song and reveals the listening position.
-- **Select sample on waveform (Ctrl+E)** shows two edges. Drag a range, adjust either
-  edge, or move the band. Click **Open selection in editor (Enter)** when ready.
-- **Samples from this song (Ctrl+Alt+M)** opens its existing samples.
-- **Cancel selection (Esc)** returns to ordinary seeking. Escape during a drag first
-  restores the range from before that drag.
+- **Open song in sample editor (Ctrl+M)** opens the loaded source at its cue.
+- **Select sample on waveform (Ctrl+E)** shows two range edges. Drag the edges
+  or move the band, then **Enter** to open it.
+- **Samples from this song (Ctrl+Alt+M)** opens its saved samples and drafts.
+- **Escape** cancels selection; during a drag it first restores the prior range.
 
-Selecting a passage leaves the song playing. Confirming the handoff pauses it;
-editor Play loops that exact range initially. **Edit samples** beside the waveform
-and **More > Open current song in sample editor** provide the direct route too.
-Compact mode offers the same menu and expands for range selection.
-Opening a song alone does not create a saved sample: choose **New sample at cue**
-for an explicit four-second draft, or use an existing sample.
+Confirming a handoff pauses listening. Editor playback initially loops the
+selected range. Opening a source alone does not save a sample. Use **New sample
+at cue**, or choose a saved sample. Return to player preserves editor work.
 
-**Songs in editor** contains one workspace per canonical source. Its **Samples from
-this song** pane combines saved regions and local drafts; overlapping cuts are allowed.
-New selections create independent drafts; the same range reopens existing work.
-**Save sample** creates or updates one versioned region; **Save as new sample** is an
-explicit independent variant. Switching songs and restarting retain each song's
-active sample, other drafts, viewport and editing preferences.
-Prappy starts the local WSL backend if needed and connects automatically.
-**You do not need a terminal, server options, or connection settings.**
-The server and token-file fields are prefilled for Workstation.
+Every source carries its library/capture IDs, prepared asset and immutable
+native timeline. Opening a Ready source reads metadata, stored peaks and short
+native sample ranges. It does not register, hash or decode the original song.
+A temporary not-ready response retains the cue/range and retries. Returning
+or choosing a newer source cancels the superseded handoff.
 
-For standalone backend use, run just this from the scraper checkout:
+## Native editing and listening
+
+In/Out boundaries are half-open native frames: In is included, Out excluded.
+The source's sample rate determines seconds. Mono, stereo and multichannel
+masters retain every channel; integer32 and float64 are not silently quantized.
+Wide views read stored min/max levels. Fine detail reads bounded typed samples.
+
+Audition plays the separate 48-kHz stereo float32 listening domain, converting
+positions explicitly to/from native frames. Source identity and playback gain
+remain pinned while library preparation creates newer profiles. A saved region
+continues to identify its exact native timeline.
+
+The editor provides zoom, precise boundaries, undo/redo, beat/onset snapping,
+loop audition, metadata corrections and verified lossless export. Machine
+classifications, timing anchors and suggested regions remain proposals.
+
+**Songs in editor** retains a workspace per source. Saved regions and local
+drafts can overlap. New selections create independent drafts; reopening the
+same range finds existing work. **Save sample** updates one versioned region;
+**Save as new sample** creates an independent cut. Each source retains its
+active draft, cursor, viewport and editing preferences across restart.
+
+Native exports preserve source rate, channel count and supported precision:
+WavPack for float32/integer32, Wave64 for float64. Default exports stream bounded
+blocks and verify sample bits before publication. Project rendering explicitly
+uses the prepared 48-kHz stereo domain and retains native source maps.
+
+## Backend and preparation
+
+In the scraper checkout, `~/.config/audioharvest/workstation.json` names explicit
+`libraries` and `source_roots` arrays of absolute paths. The HTTP service and
+independent preparer share it. Set `working_root` in
+`~/.config/audioharvest/storage.json` to an adequately sized permanent volume.
 
 ```bash
+./scripts/install-preparation-service.sh
 ./prappy.sh
 ```
 
-That script takes no options. It uses the existing library at
-`~/.local/share/audioharvest/phase-02-library`, the private token at
-`~/.config/audioharvest/server.token`, and localhost port 8765. Concurrent launches
-share one server. The backend stays available after closing the player; startup
-errors are logged in `~/.local/state/audioharvest/prappy-server.log` in WSL.
-No models or packages are downloaded. No Windows security settings are changed.
-The Connection dialog is available only if you intentionally use another server;
-normal local use requires no edits there.
-The launcher also exposes the existing artist-search library when present. Ctrl+M
-resolves the playing file across all configured libraries and switches to its
-registered source automatically; it does not depend on the browser's chosen library.
-If the source is not registered yet, explicitly opening it in the editor registers
-a verified copy in the selected library. The local launcher allows sources beneath
-the scraper's `library/` and the phase-02 library; standalone servers must explicitly
-allow their source directories. Playback/background preparation never imports files.
-The original stays untouched, and the captured source, cue and selected range survive
-connection failures and restart. Retry continues the same registration request;
-returning to the previous draft cancels that pending editor handoff.
-First-time registration and canonical audio preparation of long recordings can
-take several minutes. These requests allow up to ten minutes for the server to
-respond and remain cancellable; ordinary browsing keeps its shorter timeout.
+The user preparation service keeps working after HTTP/player shutdown and
+restarts after failure. It observes the configured libraries, persists jobs,
+checks original identity, prepares/verifies audio and peaks, then publishes Ready.
+Jobs reserve working space before encoding. CapacityBlocked and Offline are
+explicit states; complete-corpus readiness requires sufficient storage and
+successful preparation of every required source.
 
-Choose a library, then a recording, saved sample or collection. Search and metadata
-filters use effective recording/sample facts. The browser pages through recordings
-and samples. **Ctrl+M** pauses the listening song and resolves its full file hash
-across connected libraries, even while the editor is connecting. The position is
-captured when you press the shortcut. Unregistered or ambiguous files require explicit
-source selection/import; the player never silently invents provenance.
-
-The green In and gold Out handles select canonical 48,000 Hz stereo frames. Out
-is exclusive. Zoom and pan the detail plot, double-click the overview to focus,
-type exact frame coordinates, or nudge by one frame. One drag is one undo step.
-**Zoom to selection (F)** above the waveform fills the horizontal view with the
-selected sample and 10% padding on each side (clipped at the recording edges).
-It changes only the time view; typing F in a text field does not trigger it.
-Snap supports onsets, beats, sixteenth notes and zero crossings; Alt bypasses it.
-Audition a selection, its boundaries, or a loop using the canonical float PCM also
-used by preparation. Preview gain affects audition independently of song gain.
-
-### Editor playback
-
-The editor has its own transport, and pauses ordinary song playback while open.
-**Selection** is the default when choosing a recording or saved sample, with
-**Loop enabled initially**. The selected region is shaded green. A white playhead
-in both waveforms shows playback position; the status row identifies Playing,
-Paused, Loading, Buffering or Stopped, the scope, elapsed/duration and source time.
-
-- **Selection:** play between In and Out. The loop toggle takes effect immediately.
-- **Context:** include one second before and after the selected region, clamped
-  to the recording. The surrounding playback range is tinted blue.
-- **Recording:** play the source from the playhead. Long recordings stream in
-  bounded background chunks rather than requiring a whole-song download.
-
-**Play/Pause/Resume** and **Space** control this editor transport. Space does not
-interrupt typing. **Stop** resets the playhead to the scope's beginning. Click the
-detail waveform to position/seek the playhead within the chosen scope; dragging
-time or amplitude views never changes playback boundaries. **Follow playhead**
-scrolls when playback moves outside the view; leave it off to inspect freely.
-
-While auditioning Selection or Context, boundary edits apply after releasing the
-handle, with an explicit loading state while the revised cut is fetched. Undo/redo
-and numeric edits update that audition too. **Hear start/end** are labeled one-shot
-boundary checks; they do not inherit looping. Switching recordings stops playback.
-Loop, scope and follow preferences persist, but reopening never starts sound itself.
-
-The **Display** row above stereo detail controls waveform amplitude visually:
-
-- **Actual level:** fixed full-scale reference.
-- **Fit visible:** fit the visible time range, updating after zooming or panning
-  settles. Stereo channels share a scale, preserving their relative levels.
-- **Manual:** keep the current scale as you navigate.
-- **Fit now:** fit the visible range once and hold that scale in Manual.
-
-Drag the left amplitude ruler **up to enlarge**, **down to shrink**. Dragging switches
-to Manual without jumping. Double-click it to reset Actual level. Ruler ticks show
-source dBFS; the Display row shows magnification and its dB equivalent. Each channel
-stays centered on zero; enlarged drawing is clipped inside its own lane.
-**This never changes playback volume, sample boundaries, source PCM or exports.**
-Mode and magnification survive closing/reopening. Silence uses unity scale and
-enlargement is bounded. The overview keeps its reference scale for context.
-Fitting uses exact PCM when it covers the visible range, otherwise conservative
-overlapping overview peaks until precise PCM arrives. Envelopes are cached when
-the viewport/data changes rather than rescanned every rendered frame.
-Fractional zoom/pan bounds request every intersecting sample using the same frame
-range as drawing. While detail is loading, a label distinguishes the overview
-from precise PCM; views over sixty seconds indicate that zooming reveals detail.
-
-**Classify / detect beats** submits a durable CPU job. Energy, tempo, onsets and
-beats are estimates with processor/evidence identities. They never move a cut or
-become human acceptance automatically. Correct beat frames/downbeats explicitly
-and save the corrected grid. Existing Beat This evidence is displayed when present;
-its separately installed model worker remains an explicitly operated backend tool.
-No semantic/key/instrument model is downloaded or claimed to have run.
-
-Recording corrections apply to the recording across registration updates. Sample
-facts belong to an exact region revision, inherit recording context, and override
-only explicit facets. Human corrections outrank imports and machine proposals;
-clearing an edited field records explicit rejection. Evidence remains inspectable.
-
-Save creates or advances a sample revision with optimistic concurrency. Collections
-pin exact revisions. **Export sample** downloads a SHA-256-verified lossless WavPack
-artifact preserving float PCM; the backend retains its source map and preparation.
-Export uses the saved revision. Save local edits before exporting those edits.
-
-Drafts and pending command UUIDs persist in `sample-workspaces.json`, together with
-metadata context, browser filters/page, viewport, snap, gain and loop. Retrying a
-request returns its original committed revision. Conflicts preserve local edits:
-reload the saved sample or fork an independent cut. A pending save must be resolved
-before another save. Source switches and late replies do not overwrite newer drafts.
-
-Resource limits include a 1 MiB command body, ten-minute PCM requests, 180-second
-CPU analysis windows, and a 24 GiB derived PCM cache. Cache corruption is rebuilt;
-changed/missing originals are rejected. Original files are never modified.
-
-The normal build is `build/Release/PrappyPlayer.exe`, which is also the existing
-pinned shortcut target. Sampling-suffixed variants are isolated test builds;
-validated changes must also be rebuilt into the normal Release destination. See [development-signing.md](development-signing.md)
-for the measured, intermittent Windows launch behavior; signature validation alone
-does not guarantee Smart App Control acceptance.
-
-Validation against an isolated running server:
-
-```powershell
-./scripts/verify-sampling.ps1 -Manifest ./build/sampling-integration.json -BuildVariant Release-Sampling
-```
-
-For an initially unregistered source in a disposable library, add
-`-WorkflowOnly -RegisterSource -AudioLoopback`. This verifies that background
-preparation stays read-only, explicit registration preserves the original hash,
-and the exact selected range plays, saves and survives source switching/restart.
-
-The manifest supplies `url`, `token_file` and `library_id`. The GUI test writes
-only isolated player state and explicit test samples in that configured library;
-use a disposable library, never an existing user's music library.
-
-
-Playback requests run independently of library browsing and waveform requests.
-An expensive browse cannot hold Play in Loading. Catalog browse/search uses one
-verified read snapshot per request; unfiltered pages only decorate visible rows.
-The Ctrl+M regression (`verify-sampling.ps1 -MarkOnly -Manifest ...`) exercises
-cold/warm connection, then presses editor Play and checks SDL-submitted audio
-frames and the advancing selection playhead within five seconds. Run it against
-an isolated server with delayed recording-list responses to verify independence.
-
-
-After initial playback starts, background preparation resolves source identity,
-loads its sample summaries and warms a bounded eight-second window of verified
-cached PCM. Its state is shown in the Edit samples tooltip. It never launches
-classification or a speculative whole-song decode; unavailable/busy PCM is labeled
-“audio prepared on demand.” Explicit editor requests prepare cold audio normally.
-File hash reuse checks Windows file identity, size, write and change times. Warm
-requests are fenced on loaded-song generation and do not open or modify drafts.
-
-Source workspaces use library/capture/timeline IDs, not filenames or playlist rows.
-Pending sample saves retain their original payload and request ID across source
-switches and restart. Late acknowledgments advance the right region while retaining
-newer edits. A conflict stays local until explicitly resolved. Corrupt workspace
-state is preserved and shown as a recovery error instead of overwritten.
-
-Restart opens the last saved player or editor view. Editor source, active draft,
-range, cursor, viewport and transport preferences restore before the server replies.
-`sample-preview.bin` is a disposable local cache of the last verified overview and
-up to thirty seconds of canonical stereo PCM, bound to library/capture/timeline,
-original blob hash and total frames. A checksum, size/finite-value checks and backup
-recovery protect the cache. Cache reads/writes run on a worker; a missing or invalid
-preview leaves saved drafts intact and loads details in the background. Saved
-samples covered by the preview can play while the server starts. Uncached sections
-wait for canonical audio without blocking navigation or returning to the player.
-
-Playback's libmpv calls run on a serial owner, keeping UI input independent of slow
-source opens. Gain selection still occurs on paused FILE_LOADED readiness before
-the ordered gain/unpause commands. Sampling clients share three bounded IO lanes;
-retiring a connection cancels it without joining credential or network reads on
-the UI thread. The metadata lane prepares credentials once per connection and can
-bootstrap the local service/token on first use. Speculative preparation retires
-while editing so it cannot hold the foreground connection lane unnecessarily.
-
-The controlled cold-start fixture is separate from the production server:
+The local player connects automatically to localhost:8765 using the existing
+private token file. A custom server uses `sampling-connection.json` beside the
+executable, containing `url`, `token_file` and `library`. Credentials remain in
+the private token file. Standalone explicit-root serving remains available:
 
 ```bash
-# From the WSL scraper checkout using its existing pinned environment:
-PYTHONPATH=src .venv-studio/bin/python /mnt/c/Users/Home/projects/prappy/apps/prappy-player/tests/create_cold_start_fixture.py --port 18782 --manifest /mnt/c/Users/Home/projects/prappy/apps/prappy-player/build/cold-start-fixture.json
+./scripts/serve.sh --root /absolute/library --source-root /absolute/originals \
+  --working-root /absolute/working --token-file /absolute/private-token
 ```
+
+Source acquisition/import is explicit background/operator work. Editor opening
+never starts an original-file import. Import authorization checks the opened
+Linux descriptor against configured source roots before reading bytes.
+
+## Persistence, saves and errors
+
+`sample-workspaces.json` beside the executable retains drafts, native references,
+viewport/cursor, pending saves and handoffs. Checked atomic writes preserve the
+prior file and backup on failure. Original audio is not stored in this file.
+
+Commands have stable request IDs. Repeated acknowledgments do not duplicate
+saves. Revision conflicts retain local changes; reload or fork explicitly.
+Switching sources or editing while a request runs cannot apply its acknowledgment
+to a different draft. Human metadata corrections remain scoped to their target;
+recording-level and sample-level facts are distinct.
+
+Compact logging defaults to on: `player-debug.log` records preparation waits,
+HTTP timing and bounded request IDs without credentials/payloads. WSL HTTP logs
+are under `~/.local/state/audioharvest/`; preparation logs use
+`journalctl --user -u audioharvest-preparation.service`.
+
+## Isolated verification
+
+`tests/create_cold_start_fixture.py --port PORT --manifest PATH` runs through the
+scraper's pinned studio Python and creates a disposable library/server. Optional
+rate/channel/subtype arguments cover native precision. `--source` imports a
+read-only copy of a chosen original into that isolated fixture.
 
 ```powershell
-./scripts/verify-sampling.ps1 -Manifest ./build/cold-start-fixture.json -WorkflowOnly -ColdRestart -AudioLoopback
+pwsh scripts/verify-prepared-editor.ps1 -Manifest C:\absolute\fixture.json
+pwsh scripts/verify-prepared-editor.ps1 -Manifest C:\absolute\fixture.json -InjectNotReady
+pwsh scripts/verify-prepared-editor.ps1 -Manifest C:\absolute\fixture.json -InjectCatalogNotReady
 ```
 
-The fixture blocks every backend response behind an authenticated test-only gate.
-The test checks cached editor play, return to player, a second restart into player
-mode, player transport and clean shutdown **before** releasing the gate. These
-endpoints exist only in the fixture wrapper; the product server has none.
+The verifier checks native opening, audition prefetch and restart. Use
+`-Iterations 100` for random-position measurements. `-EvictPreparedPages`
+requests advisory page eviction of that fixture's converted audio only.

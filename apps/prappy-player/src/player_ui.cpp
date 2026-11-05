@@ -1,6 +1,6 @@
 // UI setup follows Dear ImGui's MIT-licensed example_sdl3_sdlrenderer3.
 #include "player_ui.h"
-#include "analysis.h"
+#include "analysis_dsp.h"
 #include "remote_catalog.h"
 #include "remote_waveform.h"
 #include "gain_policy.h"
@@ -231,7 +231,6 @@ int runPlayer(HINSTANCE instance) {
     if (!argv) throw std::runtime_error("Cannot read player command line.");
     const std::unique_ptr<void, decltype(&LocalFree)> arguments(argv, LocalFree);
     std::vector<std::wstring> args; for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
-    if (args.size() == 3 && args[0] == L"--self-test") return selfTest(args[1], args[2]);
     if (args.size() == 3 && args[0] == L"--state-test") return stateTests(args[1], args[2]);
     if (args.size() == 3 && args[0] == L"--meter-test") return outputMeterTests(args[1], args[2]);
     if (args.size() == 3 && args[0] == L"--sampling-test") return sampling::integrationTest(args[1],args[2]);
@@ -526,7 +525,7 @@ int runPlayer(HINSTANCE instance) {
         std::set<SDL_Keycode> heldKeys, imeKeys;
         Uint64 imeUntil = 0;
         uint64_t probeSequence = 0;
-        size_t scanFound = 0, scanChecked = 0;
+        size_t scanFound = 0;
         Uint64 inputTimestamp = 0;
         bool samplingWasOpen=false;
         int listeningWidth=Width,listeningHeight=MinHeight;
@@ -640,8 +639,8 @@ int runPlayer(HINSTANCE instance) {
                 if (historyView) filterDirty = true;
             }
             if (scan.running()) {
-                const auto found = scan.progress.found.load(), checked = scan.progress.checked.load();
-                if (found != scanFound || checked != scanChecked) { scanFound = found; scanChecked = checked; schedule.request(); }
+                const auto found = scan.progress.found.load();
+                if (found != scanFound) { scanFound = found; schedule.request(); }
             }
             if (windowTest) {
                 uiProbe.input(stateDirectory, false);
@@ -1132,8 +1131,7 @@ int runPlayer(HINSTANCE instance) {
                 uiProbe.telemetry += "\nTEXT " + std::to_string(textStats.shaped) + " " + std::to_string(textStats.rasterized) + " " + std::to_string(textStats.bytes);
                 uiProbe.telemetry += "\nPLAYBACK_ERROR " + (audio.error.empty() ? playback.notice : audio.error);
                 uiProbe.telemetry += "\nCATALOG "+sampling::Json{{"sources",library.tracks.size()},
-                    {"notice",library.notice},{"refreshing",scan.running()},
-                    {"source_hash_reads",scan.progress.hashReads.load()}}.dump();
+                    {"notice",library.notice},{"refreshing",scan.running()}}.dump();
                 uiProbe.telemetry += "\nSAMPLER " + sampleWorkspace.diagnostics();
                 uiProbe.telemetry += "\nPLAYER_SELECTION " + sampling::Json{{"active",waveformSelection.active},{"start",waveformSelection.start},{"end",waveformSelection.end}}.dump();
                 std::ostringstream status;

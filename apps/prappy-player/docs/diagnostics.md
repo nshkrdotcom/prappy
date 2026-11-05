@@ -1,70 +1,72 @@
 # Player diagnostics
 
-`debug_log=true` is the default, including existing `player.ini` files that omit
-the key. Set it to `false` and restart to disable logging. The normal destination
-is `build/Release/player-debug.log`; each isolated window test uses its own state
-directory. The current file and `.1` backup each stay within 1 MiB. Records have
-UTC time, elapsed milliseconds and PID. A bounded background writer keeps file
-I/O off the window thread. Missing/unwritable destinations do not fail playback.
+`debug_log=true` defaults on. Set it to false and restart to disable logging.
+`player-debug.log` beside the executable rotates at 1 MiB with one backup.
+Records contain UTC time, elapsed milliseconds and PID. A bounded background
+writer keeps log IO off the window thread. Credentials and request bodies are
+excluded.
 
 Useful events:
 
-- `play.request`, `play.submit`, `play.loaded`, `play.ready`: distinguish user
-  intent, the decoder call, matching FILE_LOADED, and the UI committing playback.
-  `serial` identifies the playback request; ready includes time waiting for the UI.
-- `hash.begin/end`, `hash.cache`: source identity reads and reuse.
-- `backend.credentials`, `backend.start`: credential wait and WSL launch.
-- `http.dequeue`: time waiting in the client's request lane.
+- `play.request/submit/loaded/ready`: user intent, decoder submission, matching
+  FILE_LOADED and acknowledged playback. Serial IDs reject superseded loads.
+- `play.preparing/prepared`: retained not-ready intent and its preparation wait.
+- `catalog.ready/error`: catalog request duration, source count or failure.
+- `backend.credentials/start`: token-file wait and local WSL backend launch.
+- `http.dequeue`: request-lane queue delay.
 - `http.begin/headers/server/end`: service wait, server duration, transfer and
-  processing completion, status and success. `http.failure` includes Windows
-  transport error numbers. Detailed HTTP errors remain in the UI, outside logs.
-- `analysis`: bounded startup/selected/error diagnostics, including existing
-  queue and decode timings. Routine background playback opens are omitted.
+  processing, status and success. `http.failure` includes Windows error codes.
+- `artifact.verify.begin/end`: SHA-256 verification of a downloaded export.
+  This event is unrelated to original-source verification.
 
-The WSL service writes `~/.local/state/audioharvest/prappy-debug.log`, also
-1 MiB plus one backup. `--no-debug-log` disables it. Its request ID is the player's
-PID and `req` separated by an underscore; source registration also records the
-durable command UUID. `source.copy`, `source.decode.begin/end`, `source.verify`,
-`pcm.lock`, `pcm.cache`, `pcm.verify`, and `pcm.decode.begin/end` identify the
-backend work. `prappy-server.log` remains the launcher/stderr log. Credentials,
-command payloads and media bytes are excluded from diagnostics.
+Ready player/editor opens read no original audio and perform no source hash.
+Background import/preparation logs carry the heavy original-file work. WSL HTTP
+logs live at `~/.local/state/audioharvest/prappy-debug.log` and
+`prappy-server.log`. `--no-debug-log` disables HTTP performance logging.
+Preparation service logs use:
 
-## Measurements, 2026-11-04
+```bash
+journalctl --user -u audioharvest-preparation.service
+```
 
-On the existing 147,407,042-byte Opus/Matroska recording, duration 8,023.806 seconds
-(2 h 14 min), with WSL already running and filesystem caches warm:
+HTTP request IDs correlate the player's PID/request counter with the backend.
+Explicit imports log `source.copy`, `source.decode.begin/end` and `source.verify`.
+The normal import hashes while copying once, verifies stable file identity and
+reuses that verified staging evidence. An exceptional changed descriptor can
+require an additional hash. Background preparation independently checks its
+registered original digest before rebuilding an asset.
 
-| Stage | Measured time |
-| --- | ---: |
-| WSL source SHA-256 | 73 ms |
-| Windows libmpv init + FILE_LOADED, WSL UNC | 36 ms |
-| Same bytes copied to Windows, init + FILE_LOADED | 19 ms |
-| Full registration verification decode | 17.24 s |
-| Normal app restore, decoder submit to FILE_LOADED | 76 ms |
-| Normal app restore, request to UI playback-ready | 274 ms |
-| Normal app catalog load, 7,186 tracks | 68 ms |
+## Actual long-recording evidence
 
-These warm measurements do not reproduce or explain a historical 15-second
-ordinary playback open. Future logs separate source/decoder waits from UI and
-backend waits; playback history cannot recover those timings retrospectively.
+Source: 147,407,042-byte original, 8,023.806 seconds (2 h 13 min). Its permanent
+native 48-kHz stereo WavPack master occupies 1,802,733,782 bytes. Complete
+background preparation/verification took 79.622 seconds in the measured store.
+Those costs occur before Ready publication.
 
-Registration verifies the entire recording to establish its exact 48 kHz
-timeline. The HTTP import now retains that decoded PCM in the existing canonical
-cache, so first editor preparation does not decode the whole recording again.
-The cache uses the same byte hash, timeline, decoder identity, finite-value
-checks, 24 GiB budget and lock as ordinary preparation. Busy/unavailable optional
-cache storage falls back to normal registration. Existing verified identical
-sources skip another verification decode while retaining source/blob hash checks.
+At the native pipeline checkpoint, 100 random-position Windows editor opens:
 
-Measured on the same recording with fresh, isolated catalogs:
+| Condition | p50 / p95 / p99, milliseconds |
+|---|---:|
+| Warm | 126 / 185 / 218 |
+| Advisory converted-file page eviction | 134 / 216 / 353 |
+| Concurrent complete background conversion | 127 / 188 / 312 |
 
-| Operation | Before | After |
-| --- | ---: | ---: |
-| First registration | 19.03 s | 19.08 s |
-| Registration through first editor PCM | 37.90 s | 19.08 s |
-| Re-register already verified identical source | previously decoded again | 278 ms |
+Each opening includes four scripted input acknowledgments, roughly 100 ms total.
+Page eviction uses `posix_fadvise(DONTNEED)` on isolated converted files; this
+is not a physically cold-disk or cold-WSL guarantee. Concurrent conversion was
+real work and took 79.390 seconds. Windows HTTP/native-reader random three-second
+reads measured 15.61 / 23.65 / 32.08 ms when warm.
 
-The full generated PCM SHA-256 and requested preview SHA-256 match between both
-paths. This removes the redundant decode; it does not make initial verification
-instant. Larger pipes, one decoder thread, disabled packet flushing, null output
-and changing the Opus decoder did not improve this recording's verification.
+The editor verifier also reproduces temporary not-ready responses, automatic
+queued playback, native one-frame trim/undo/redo, save/export, audition and
+restart. Detailed receipts, limitations and representative corpus sizing are in
+`~/jb/docs/20261104/prappy_scraper/04-implementation-and-validation.md`.
+
+## Earlier registration diagnosis
+
+Before the redesign, registering this recording took 19.03 seconds; reaching
+first editor PCM took 37.90 seconds because it decoded the complete source
+again. Reusing the verification output removed the duplicate pass (19.08
+seconds through first PCM; verified duplicate registration 278 ms).
+That historical cache implementation has since been deleted. Its measurements
+explain the original bottleneck; they do not describe the current Ready path.

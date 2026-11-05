@@ -13,12 +13,12 @@ int main(int argc,char** argv) {
         const auto directory=fs::temp_directory_path()/("prappy-prepared-client-"+sampling::uuid());
         fs::create_directory(directory);
         const auto config=directory/"player.ini";
-        stateio::write(config,"directory=C:/intentionally-missing-do-not-scan\nextensions=opus\n");
+        stateio::write(config,"debug_log=true\n");
         stateio::write(directory/"sampling-connection.json",sampling::Json{
             {"url",fixture.at("url")},{"token_file",fixture.at("token_file")}}.dump());
         Library library;ScanProgress progress;
         if(!refreshPreparedCatalog(library,config,{},progress))throw std::runtime_error(library.notice);
-        if(library.tracks.size()!=2||progress.hashReads!=0||!library.backend)
+        if(library.tracks.size()!=2||!library.backend)
             throw std::runtime_error("Catalog did not come from the prepared service.");
         for(const auto& track:library.tracks)
             if(!track.prepared||!track.prepared->ready())

@@ -79,7 +79,7 @@ std::string uuid() {
 }
 static std::string fileHash(const fs::path& path,std::stop_token stop) {
     const auto began=debuglog::Clock::now();
-    debuglog::write("hash.begin","source="+utf8(path));
+    debuglog::write("artifact.verify.begin","file="+utf8(path.filename()));
     BCRYPT_ALG_HANDLE algorithm=nullptr;
     if (BCryptOpenAlgorithmProvider(&algorithm,BCRYPT_SHA256_ALGORITHM,nullptr,0)<0) throw std::runtime_error("Cannot open SHA256.");
     const auto close=[](void* p){BCryptCloseAlgorithmProvider(p,0);};
@@ -96,7 +96,7 @@ static std::string fileHash(const fs::path& path,std::stop_token stop) {
     if (BCryptFinishHash(hash,digest.data(),static_cast<ULONG>(digest.size()),0)<0) throw std::runtime_error("SHA256 failed.");
     const char* digits="0123456789abcdef"; std::string out;
     for (auto c:digest) {out+=digits[c>>4];out+=digits[c&15];}
-    debuglog::write("hash.end","ms="+std::to_string(debuglog::elapsed(began)));
+    debuglog::write("artifact.verify.end","ms="+std::to_string(debuglog::elapsed(began)));
     return out;
 }
 Reply perform(const Connection& connection,const Request& request,std::stop_token stop) {

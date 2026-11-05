@@ -1,13 +1,14 @@
-param([string]$Variant='Release',[string]$Label='before',[int]$Seconds=8,[switch]$NativeWait)
+param([Parameter(Mandatory)][string]$Manifest,[string]$Variant='Release',[string]$Label='before',[int]$Seconds=8,[switch]$NativeWait)
 $ErrorActionPreference='Stop'
 $app=Split-Path $PSScriptRoot -Parent
 $buildRoot=Join-Path $app 'build'
 $state=Join-Path $buildRoot ('idle-'+$Label+'-'+[Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory "$state/media" -Force | Out-Null
-Copy-Item "$buildRoot/dedup-test/scraper/library/a/same.wav" "$state/media/a.wav"
-Copy-Item "$buildRoot/dedup-test/scraper/library/b/same.wav" "$state/media/b.wav"
-@("directory=$state/media",'extensions=wav') | Set-Content "$state/player.ini" -Encoding utf8
-$media=('"{0}"' -f "$state/media/a.wav".Replace('\','\\'))
+$fixture=Get-Content -LiteralPath $Manifest -Raw|ConvertFrom-Json
+'debug_log=true' | Set-Content "$state/player.ini" -Encoding utf8
+@{url=$fixture.url;token_file=$fixture.token_file;library=$fixture.library_id}|ConvertTo-Json|Set-Content "$state/sampling-connection.json"
+$sourcePath=Join-Path $state ('sources/'+$fixture.library_id+'/'+$fixture.previous_capture.id+'.source')
+$media=('"{0}"' -f $sourcePath.Replace('\','\\'))
 @('PRAPPY_HISTORY 1','NEXT_ID 2','REPEAT 2',"ENTRY 1 1700000000 0.5 $media",'TRAIL 1','CURSOR 1') | Set-Content "$state/player-history.txt" -Encoding utf8NoBOM
 Add-Type @'
 using System;using System.Runtime.InteropServices;
@@ -24,8 +25,9 @@ try {
     do {
         $process.Refresh()
         $ready=Test-Path "$state/ui-status.txt"
-        $caches=@(Get-ChildItem "$state/player-analysis-v2/wave-*.bin" -ErrorAction SilentlyContinue).Count
-        if($ready -and $caches -eq 2 -and $process.MainWindowHandle -ne [IntPtr]::Zero){break}
+        $snapshot=if($ready){Get-Content "$state/ui-status.txt" -Raw}else{''}
+        $featureLine=[regex]::Match($snapshot,'(?m)^FEATURES .*$').Value
+        if($featureLine -and [double](($featureLine-split ' ')[6])-gt 1 -and $process.MainWindowHandle -ne [IntPtr]::Zero){break}
         if($timer.Elapsed.TotalSeconds -gt 20 -or $process.HasExited){throw 'Benchmark startup failed.'}
         Start-Sleep -Milliseconds 25
     }while($true)

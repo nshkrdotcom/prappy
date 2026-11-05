@@ -1,5 +1,5 @@
 #Requires -Version 7.0
-param([switch]$SkipBuild, [ValidateRange(1,10)][int]$Repetitions=2,
+param([Parameter(Mandatory)][string]$Manifest,[switch]$SkipBuild, [ValidateRange(1,10)][int]$Repetitions=2,
     [ValidatePattern('^[A-Za-z0-9-]*$')][string]$VariantSuffix='')
 $ErrorActionPreference='Stop'
 $app = Split-Path $PSScriptRoot -Parent
@@ -26,16 +26,12 @@ try {
         for ($cycle=1; $cycle -le $Repetitions; $cycle++) {
             $report = Join-Path $out "$variant-playback-$cycle-$([Guid]::NewGuid().ToString('N')).log"
             $env:PRAPPY_LEAK_REPORT = $report
-            & "$PSScriptRoot/test-dedup.ps1" -BuildVariant $buildVariant
+            & "$PSScriptRoot/test-state.ps1" -BuildVariant $buildVariant
             if ($variant -eq 'Debug') { Require-LeakReport $report }
         }
-        $report = Join-Path $out "$variant-state-$([Guid]::NewGuid().ToString('N')).log"
-        $env:PRAPPY_LEAK_REPORT = $report
-        & "$PSScriptRoot/test-state.ps1" -BuildVariant $buildVariant
-        if ($variant -eq 'Debug') { Require-LeakReport $report }
         $report = Join-Path $out "$variant-ui-$([Guid]::NewGuid().ToString('N')).log"
         $env:PRAPPY_LEAK_REPORT = $report
-        & "$PSScriptRoot/verify-features.ps1" -BuildVariant $buildVariant
+        & "$PSScriptRoot/verify-prepared-editor.ps1" -Manifest $Manifest -BuildVariant $buildVariant -VerifySaveExport
         if ($variant -eq 'Debug') { Require-LeakReport $report }
         $report = Join-Path $out "$variant-window-$([Guid]::NewGuid().ToString('N')).log"
         $env:PRAPPY_LEAK_REPORT = $report

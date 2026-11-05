@@ -1,7 +1,6 @@
 #pragma once
 #include "library.h"
 #include "history.h"
-#include "analysis.h"
 #include "directory_filter.h"
 #include <cmath>
 #include <cwctype>

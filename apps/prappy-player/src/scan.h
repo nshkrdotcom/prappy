@@ -1,6 +1,7 @@
 #pragma once
-#include "catalog.h"
+#include "library.h"
 #include <condition_variable>
+#include <future>
 namespace scan_detail {
 using Action=std::function<bool(Library&,const fs::path&,std::stop_token,ScanProgress&)>;
 struct State {
@@ -16,7 +17,6 @@ struct Task {
     Library next;
     std::stop_source cancel;
     std::promise<std::pair<Library,bool>> promise;
-    bool persist=false;
     void complete(bool success) {
         promise.set_value(std::make_pair(std::move(next),success));
         std::lock_guard guard(state->notificationMutex);
@@ -45,12 +45,8 @@ class Executor {
                 // a late stop can never cancel another scan's filesystem read.
                 std::stop_callback cancellation(stop,[this]{CancelSynchronousIo(worker.native_handle());});
                 try {
-                    if(!stop.stop_requested())success=task->action?task->action(task->next,task->config,stop,task->state->progress):task->next.refresh(task->config,stop,&task->state->progress);
+                    if(!stop.stop_requested())success=task->action(task->next,task->config,stop,task->state->progress);
                     if(stop.stop_requested())success=false;
-                    if(success&&task->persist) {
-                        try{saveCatalog(task->config.parent_path()/"player-catalog.bin",task->next);task->next.catalogBackup=true;}
-                        catch(const std::exception& error){task->next.notice+=" | Catalog save failed: "+std::string(error.what());}
-                    }
                     if(stop.stop_requested())success=false;
                 }catch(const std::exception& error){task->next.notice=error.what();}
             }
@@ -88,7 +84,7 @@ public:
     using Action=scan_detail::Action;
     Action action;
     ScanProgress& progress;
-    explicit Scan(Action scanAction = {}):action(std::move(scanAction)),progress(state->progress){}
+    explicit Scan(Action scanAction):action(std::move(scanAction)),progress(state->progress){}
     std::stop_source cancel;
     std::future<std::pair<Library, bool>> job;
     std::function<void()> notify;
@@ -97,14 +93,13 @@ public:
         cancel.request_stop();if(job.valid())scan_detail::Executor::instance().retire(state);
     }
     bool running() const { return job.valid(); }
-    void begin(const fs::path& config, int order, const Library* previous = nullptr, bool persist = false) {
+    void begin(const fs::path& config, int order, const Library* previous = nullptr) {
         if (running()) return;
-        progress.found = progress.checked = progress.total = 0; progress.dedup = false;
-        progress.hashReads = progress.hashReused = 0;
+        progress.found = 0;
         cancel = std::stop_source{};
         Library baseline; if (previous) baseline = *previous;
         auto task=std::make_shared<scan_detail::Task>();task->state=state;task->action=action;task->config=config;
-        task->next=std::move(baseline);task->next.order=order;task->cancel=cancel;task->persist=persist;
+        task->next=std::move(baseline);task->next.order=order;task->cancel=cancel;
         {std::lock_guard guard(state->notificationMutex);state->notify=notify;}
         job=task->promise.get_future();scan_detail::Executor::instance().submit(std::move(task));
     }
@@ -116,7 +111,6 @@ public:
         return success;
     }
     std::string status() const {
-        if (progress.dedup) return "Checking duplicates: " + std::to_string(progress.checked.load()) + " / " + std::to_string(progress.total.load());
-        return "Scanning music: " + std::to_string(progress.found.load()) + " files";
+        return "Loading library: " + std::to_string(progress.found.load()) + " recordings";
     }
 };

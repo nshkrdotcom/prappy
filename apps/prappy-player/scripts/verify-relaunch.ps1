@@ -1,12 +1,12 @@
 #Requires -Version 7.0
-param([string]$BuildVariant='Release-Unicode')
+param([string]$BuildVariant='Release')
 $ErrorActionPreference='Stop'
 $app=Split-Path $PSScriptRoot -Parent
 $state=Join-Path $app ('build/relaunch-'+[Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force "$state/gate" | Out-Null
-$fixture=Join-Path $app 'build/dedup-test/scraper/library/a/same.wav'
-Copy-Item -LiteralPath $fixture -Destination "$state/tone.wav"
-@("directory=$state",'extensions=wav') | Set-Content "$state/player.ini" -Encoding utf8NoBOM
+'debug_log=true' | Set-Content "$state/player.ini" -Encoding utf8NoBOM
+('x'*32)|Set-Content "$state/token"
+@{url='http://127.0.0.1:1';token_file="$state/token";library=''}|ConvertTo-Json|Set-Content "$state/sampling-connection.json"
 Set-Content "$state/gate/hold" 'hold'
 $env:PRAPPY_TEST_INSTANCE='Local\PrappyPlayer.Relaunch.'+[Guid]::NewGuid().ToString('N')
 $env:PRAPPY_TEST_EXIT_GATE="$state/gate"

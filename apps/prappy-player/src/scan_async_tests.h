@@ -39,9 +39,9 @@ inline void scanAsyncTests(std::ostream& log) {
             auto pending=std::make_unique<Scan>([&](Library&,const fs::path&,std::stop_token,ScanProgress&){++supersededRuns;return true;});
             pending->begin({},0);superseded.push_back(std::move(pending));
         }
-        Library baseline;baseline.verified.emplace(L"cached-source",Verification{43,19,{},{}});
+        Library baseline;baseline.labels.emplace(L"source","Prepared source");
         Scan latest([](Library& next,const fs::path&,std::stop_token,ScanProgress&){
-            if(next.order!=2||!next.verified.contains(L"cached-source"))throw std::runtime_error("Scan dropped its baseline order or source verification cache.");
+            if(next.order!=2||!next.labels.contains(L"source"))throw std::runtime_error("Refresh dropped its baseline order or source labels.");
             Track a,b;a.id=L"a";a.sortName="a";a.duration=30.;b.id=L"b";b.sortName="b";b.duration=10.;next.tracks={a,b};return true;
         });
         latest.notify=[&]{finished.set_value();};latest.begin({},2,&baseline);
@@ -53,7 +53,7 @@ inline void scanAsyncTests(std::ostream& log) {
         }
         Library library;library.order=3;releaseActive.set_value();
         require(finished.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready,"Latest pending scan did not run after provider release.");
-        require(latest.update(library)&&!latest.running()&&library.order==3&&library.tracks[0].id==L"b"&&library.verified.contains(L"cached-source"),"Successful scan failed to preserve current sort order or verification cache.");
+        require(latest.update(library)&&!latest.running()&&library.order==3&&library.tracks[0].id==L"b"&&library.labels.contains(L"source"),"Successful refresh failed to preserve current sort order or source labels.");
         require(active.job.wait_for(std::chrono::seconds(0))==std::future_status::ready&&!active.update(unchanged)&&unchanged.tracks[0].id==L"retained","Cancelled active scan replaced the current library.");
         require(supersededRuns==0,"Coalesced scan executed stale pending work.");
     }

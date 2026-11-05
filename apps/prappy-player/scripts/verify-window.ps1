@@ -5,7 +5,9 @@ $app = Split-Path $PSScriptRoot -Parent
 $out = Join-Path $app 'build'
 $state=Join-Path $out ('window-ui/'+$BuildVariant+'-'+[Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force "$state/media" | Out-Null
-@("directory=$state/media",'extensions=wav') | Set-Content "$state/player.ini" -Encoding utf8NoBOM
+'debug_log=true' | Set-Content "$state/player.ini" -Encoding utf8NoBOM
+('x'*32)|Set-Content "$state/token"
+@{url='http://127.0.0.1:1';token_file="$state/token";library=''}|ConvertTo-Json|Set-Content "$state/sampling-connection.json"
 Add-Type -AssemblyName System.Drawing
 Add-Type @'
 using System;

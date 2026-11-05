@@ -68,45 +68,6 @@ inline void write(const fs::path& path, const std::string& bytes, bool backup = 
         throw std::runtime_error("Cannot save " + pathText(path.filename()) + " (Windows " + std::to_string(code) + ").");
     }
 }
-inline uint64_t checksum(std::string_view bytes) {
-    uint64_t hash = 14695981039346656037ULL;
-    for (unsigned char byte : bytes) { hash ^= byte; hash *= 1099511628211ULL; }
-    return hash;
-}
-struct BinaryWriter {
-    std::string bytes;
-    void number(uint64_t value) {
-        if (bytes.size() > MaxFile - 8) throw std::runtime_error("Catalog exceeds size limit.");
-        for (int i = 0; i < 8; ++i) { bytes.push_back(static_cast<char>(value & 255)); value >>= 8; }
-    }
-    void text(const std::string& value) {
-        if (value.size() > MaxString) throw std::runtime_error("Catalog string is too long.");
-        number(value.size());
-        if (value.size() > MaxFile - bytes.size()) throw std::runtime_error("Catalog exceeds size limit.");
-        bytes += value;
-    }
-};
-struct BinaryReader {
-    std::string_view bytes;
-    size_t offset = 0;
-    uint64_t number() {
-        if (bytes.size() - offset < 8) throw std::runtime_error("Truncated catalog.");
-        uint64_t value = 0;
-        for (int i = 0; i < 8; ++i) value |= static_cast<uint64_t>(static_cast<unsigned char>(bytes[offset++])) << (i * 8);
-        return value;
-    }
-    size_t count(size_t maximum = MaxRecords) {
-        const auto value = number();
-        if (value > maximum) throw std::runtime_error("Invalid catalog length.");
-        return static_cast<size_t>(value);
-    }
-    std::string text() {
-        const auto length = count(MaxString);
-        if (length > bytes.size() - offset) throw std::runtime_error("Truncated catalog string.");
-        auto value = std::string(bytes.substr(offset, length)); offset += length; return value;
-    }
-    void finish() const { if (offset != bytes.size()) throw std::runtime_error("Unexpected catalog data."); }
-};
 // One immutable snapshot at a time; callers coalesce dirty revisions while busy.
 struct Writer {
     std::future<std::string> job;

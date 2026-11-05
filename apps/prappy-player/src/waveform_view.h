@@ -1,5 +1,5 @@
 #pragma once
-#include "analysis.h"
+#include "analysis_dsp.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "implot.h"

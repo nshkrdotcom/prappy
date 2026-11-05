@@ -1,5 +1,4 @@
 #pragma once
-#include "analysis.h"
 #include "waveform_view.h"
 #include "browse.h"
 #include "imgui.h"
