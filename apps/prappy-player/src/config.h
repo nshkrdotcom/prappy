@@ -16,8 +16,6 @@ struct Config {
     bool addNewListeningHistoryEntryWhenReplayingHistoryItem = false;
     bool debugLog = true;
     double normalizationTargetLufs = -18, normalizationUnmeasuredFallbackDb = 0;
-    unsigned analysisWorkerCount = 0, analysisRemoteConcurrencyLimit = 2;
-    unsigned analysisWaveformMemoryMiB = 128;
 };
 inline Config readConfig(const fs::path& file) {
     std::ifstream input(file);
@@ -64,17 +62,6 @@ inline Config readConfig(const fs::path& file) {
                 throw std::runtime_error("Config: invalid " + name + " (target -36..-5 LUFS; fallback -24..12 dB).");
             if (target) config.normalizationTargetLufs = number;
             else config.normalizationUnmeasuredFallbackDb = number;
-        } else if (name == "analysis_worker_count" || name == "analysis_remote_concurrency_limit" || name == "analysis_waveform_memory_mib") {
-            unsigned number = 0;
-            const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), number);
-            if (error != std::errc{} || end != value.data() + value.size() ||
-                (name == "analysis_worker_count" && number > 4) ||
-                (name == "analysis_remote_concurrency_limit" && (number < 1 || number > 4)) ||
-                (name == "analysis_waveform_memory_mib" && (number < 16 || number > 512)))
-                throw std::runtime_error("Config: invalid " + name + " (workers 0..4, remote 1..4, memory 16..512 MiB).");
-            if (name == "analysis_worker_count") config.analysisWorkerCount = number;
-            else if (name == "analysis_remote_concurrency_limit") config.analysisRemoteConcurrencyLimit = number;
-            else config.analysisWaveformMemoryMiB = number;
         } else if (name == "history_limit") {
             size_t limit = 0;
             const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), limit);

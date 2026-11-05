@@ -1,5 +1,5 @@
 #include "tests.h"
-#include "analysis_tests.h"
+#include "analysis.h"
 #include "playback.h"
 #include "scan.h"
 #include "status.h"
@@ -77,7 +77,7 @@ static void playbackStateTests(const fs::path& root, Library& fixture, std::ostr
             int paused = 0;
             require(audio.get_property(audio.handle, "pause", MPV_FORMAT_FLAG, &paused) >= 0 && paused,
                 "Gain selection ran after playback unpaused.");
-            return gain::choose(serial, analysis_registry::pathUtf8(path), {true, -18, 0}, {},
+            return gain::choose(serial, utf8(path), {true, -18, 0}, {},
                 {availableLufs, 0.1});
         };
         const auto actualGain = [&] {
@@ -436,15 +436,13 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
         writeTuning("debug_log=true");require(readConfig(tuning).debugLog,"Debug logging could not be enabled.");
         writeTuning("debug_log=invalid");rejects([&]{readConfig(tuning);},"Invalid debug flag was accepted.");
         writeTuning("normalization_target_lufs=-20\nnormalization_unmeasured_fallback_db=-4\n"
-            "analysis_worker_count=2\nanalysis_remote_concurrency_limit=1\nanalysis_waveform_memory_mib=64");
+            "debug_log=true");
         auto tuned = readConfig(tuning);
-        require(tuned.normalizationTargetLufs == -20 && tuned.normalizationUnmeasuredFallbackDb == -4 &&
-            tuned.analysisWorkerCount == 2 && tuned.analysisRemoteConcurrencyLimit == 1 &&
-            tuned.analysisWaveformMemoryMiB == 64, "Advanced analysis configuration did not round trip.");
+        require(tuned.normalizationTargetLufs == -20 && tuned.normalizationUnmeasuredFallbackDb == -4,
+            "Normalization configuration did not round trip.");
         for (const auto& invalid : {
             "normalization_target_lufs=NaN", "normalization_target_lufs=-37",
-            "normalization_unmeasured_fallback_db=12.5", "analysis_worker_count=5",
-            "analysis_remote_concurrency_limit=0", "analysis_waveform_memory_mib=8"
+            "normalization_unmeasured_fallback_db=12.5"
         }) {
             writeTuning(invalid);
             rejects([&] { readConfig(tuning); }, "Invalid analysis configuration was accepted.");
@@ -490,7 +488,6 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
         log << "PASS catalog: independent version, checksum, config matching, unchanged-hash reuse, changed/deleted files, offline roots, backup recovery\n";
 
         playbackStateTests(root, fixture, log);
-        analysisTests(root, fixture, log);
         featureTests(root, fixture, log);
         log << "ALL PASS\n";
         return 0;

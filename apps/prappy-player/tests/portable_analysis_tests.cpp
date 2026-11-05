@@ -1,6 +1,6 @@
 #include "gain_policy.h"
-#include "analysis_registry.h"
-#include "analysis_queue.h"
+
+
 #include "analysis_dsp.h"
 #include <algorithm>
 #include <atomic>
@@ -100,144 +100,6 @@ static void gainTests() {
     check(lock.current()->appliedDb == 0, "User explicit disable");
     std::cout << "PASS gain: serial lock, fallback, tag precedence, R128, RG, cap, explicit toggle, unsupported Sound Check\n";
 }
-static void registryTests() {
-    namespace ar = analysis_registry;
-    ar::Entries entries;
-    for (size_t i = 0; i < 7159; ++i) {
-        ar::Entry entry;
-        entry.path = "/music/track" + std::to_string(i) + ".flac";
-        entry.bytes = 50000 + i; entry.stamp = 90000 + i;
-        entry.state = ar::State::Ready;
-        entry.frames = 48000 * 180; entry.duration = 180;
-        entry.loudness = -21.4; entry.samplePeak = 0.3;
-        entry.waveform = ar::blobName(entry);
-        entries.emplace(entry.path, std::move(entry));
-    }
-    // A probed track tag and its distinct reference survive persistence.
-    auto& tagged = entries.begin()->second;
-    tagged.tagsProbed = true;
-    tagged.tags = gain::parseTags({{"R128_TRACK_GAIN", "-512"}}, true);
-    auto encoded = ar::encode(entries);
-    check(encoded.size() < 5*1024*1024, "Registry not compact");
-    auto restored = ar::decode(encoded);
-    check(restored.size() == entries.size() && restored.begin()->second.waveform == entries.begin()->second.waveform,
-          "Registry round-trip");
-    check(restored.begin()->second.tagsProbed && restored.begin()->second.tags.selected &&
-          restored.begin()->second.tags.selected->origin == gain::Origin::R128 &&
-          restored.begin()->second.tags.selected->referenceLufs == -23, "Tag provenance lost on restart");
-    auto future = entries;
-    future.begin()->second.algorithm = ar::Algorithm + 1;
-    rejects([&] { ar::decode(ar::encode(future)); }, "Future analysis algorithm was not preserved");
-    auto broken = encoded; broken.back() ^= 0x44;
-    rejects([&] { ar::decode(broken); }, "Damaged registry checksum accepted");
-    broken = encoded; broken[8] = 3;
-    rejects([&] { ar::decode(broken); }, "Unknown registry version accepted");
-    namespace fs = std::filesystem;
-    auto root = fs::temp_directory_path() / "prappy-portable-test-registry";
-    fs::create_directories(root);
-    try {
-        ar::atomicWrite(root / "summaries.bin", encoded);
-        auto reopened = ar::decode(ar::readFile(root / "summaries.bin"));
-        check(reopened.size() == entries.size(), "Restart lost registry summaries");
-        // There are intentionally NO waveform blobs at all: opening the
-        // registry, including 7159 entries, cannot depend on waveform reads.
-        check(!fs::exists(root / reopened.begin()->second.waveform), "Unexpected waveform artifact");
-        ar::atomicWrite(root / "summaries.bin", encoded);
-        check(ar::decode(ar::readFile(root / "summaries.bin")).size() == entries.size(), "Atomic rewrite failed");
-    } catch (...) { fs::remove_all(root); throw; }
-    fs::remove_all(root);
-    std::cout << "PASS registry: 7159 ready records, restart without blobs, atomic rewrite, version/checksum guards\n";
-}
-static void schedulerTests() {
-    using namespace analysis_queue;
-    check(automaticWorkers(0) == 1 && automaticWorkers(1) == 1 && automaticWorkers(2) == 1 &&
-          automaticWorkers(3) == 1 && automaticWorkers(64) == 4, "Worker auto limit");
-    Queue queue;
-    Job a{"a", 1, 1, Priority::Background, true}, b{"b", 1, 1, Priority::Background, true};
-    Job c{"c", 1, 1, Priority::Selected, true};
-    queue.offer(a); queue.offer(b);
-    auto runA = queue.take(2); auto runB = queue.take(2);
-    check(runA && runB && queue.running() == 2 && queue.remoteRunning() == 2, "Worker/remote saturation");
-    queue.offer(c); check(!queue.hasRunnable(2), "Remote limit ignored");
-    check(queue.preemptFor(c, 2, 2) && (runA->second.stop_requested() || runB->second.stop_requested()),
-          "Foreground did not cancel background at saturation");
-    auto victim = runA->second.stop_requested() ? runA->first : runB->first;
-    queue.complete(victim, true, true);
-    auto admitted = queue.take(2);
-    check(admitted && admitted->first.key == "c" && queue.running() == 2,
-          "Foreground was not admitted immediately after cancelled slot released");
-    check(!queue.preemptFor(admitted->first, 2, 2),
-          "Running foreground demand preempted unrelated work");
-    Queue one;
-    one.offer(a); auto running = one.take(1);
-    one.offer(c); check(one.preemptFor(c,1,1) && running->second.stop_requested(), "Single-worker preemption");
-    one.complete(running->first, true, true);
-    auto foreground = one.take(1); check(foreground && foreground->first.key == "c", "Single-worker admission");
-    Queue dup;
-    dup.offer(a); dup.offer(a); check(dup.waiting() == 1, "Pending dedup");
-    dup.offer(Job{"a", 1, 1, Priority::Selected, true});
-    check(dup.take(2)->first.priority == Priority::Selected, "Priority upgrade");
-    Queue changed;
-    changed.offer(a);
-    changed.offer(Job{"a", 2, 2, Priority::Background, true});
-    check(changed.waiting() == 1 && changed.take(1)->first.bytes == 2,
-          "A changed source identity was not invalidated");
-    Queue removed;
-    removed.offer(a); removed.offer(b);
-    removed.retain({"b"});
-    check(removed.waiting() == 1 && removed.take(1)->first.key == "b",
-          "Incremental offline/remove reconciliation retained stale work");
-    // A fake blocking decoder, synchronized by barriers and stop-aware
-    // condition variables, proves admission without waiting for any whole
-    // background job to complete. No arbitrary scheduling sleeps.
-    Queue concurrent;
-    concurrent.offer(a); concurrent.offer(b);
-    auto first = concurrent.take(2), second = concurrent.take(2);
-    check(first && second, "Fake decoder setup");
-    std::mutex stateMutex, queueMutex;
-    std::condition_variable stateWake;
-    std::condition_variable_any decoderWake;
-    std::barrier arrived(3);
-    int stopped = 0;
-    auto launch = [&](std::pair<Job,std::stop_token> acquired) {
-        return std::jthread([&, acquired](std::stop_token) {
-            arrived.arrive_and_wait();
-            std::mutex decoderMutex;
-            std::unique_lock decoderLock(decoderMutex);
-            decoderWake.wait(decoderLock, acquired.second, [] { return false; });
-            {
-                std::lock_guard queueLock(queueMutex);
-                concurrent.complete(acquired.first, true, true);
-            }
-            {
-                std::lock_guard stateLock(stateMutex);
-                ++stopped;
-            }
-            stateWake.notify_all();
-        });
-    };
-    auto threadA = launch(*first), threadB = launch(*second);
-    arrived.arrive_and_wait();
-    {
-        std::lock_guard queueLock(queueMutex);
-        concurrent.offer(c);
-        check(concurrent.preemptFor(c,2,2), "Fake decoder preemption not initiated");
-    }
-    {
-        std::unique_lock stateLock(stateMutex);
-        check(stateWake.wait_for(stateLock, 5s, [&] { return stopped > 0; }),
-              "Cancellable background decoder failed to yield its slot");
-    }
-    {
-        std::lock_guard queueLock(queueMutex);
-        auto foregroundJob = concurrent.take(2);
-        check(foregroundJob && foregroundJob->first.key == "c", "Foreground missed freed slot");
-        concurrent.cancelAll();
-    }
-    decoderWake.notify_all();
-    threadA.join(); threadB.join();
-    std::cout << "PASS scheduler: 1/2 workers, remote saturation, preemption, fake blocked decoders, dedup, upgrades\n";
-}
 static void dspTests() {
     std::vector<float> pcm(48000*2*3);
     const double amp = std::pow(10., -23./20);
@@ -257,8 +119,8 @@ static void dspTests() {
     std::cout << "PASS DSP: reference -23 LUFS tone, -6.02 dB scale, silence and invalid frames\n";
 }
 int main() {
-    std::cout << "Running portable gain, registry, scheduler and DSP checks\n" << std::flush;
-    try { gainTests(); registryTests(); schedulerTests(); dspTests(); }
+    std::cout << "Running portable gain and DSP checks\n" << std::flush;
+    try { gainTests(); dspTests(); }
     catch (const std::exception& e) { std::cerr << "FAIL: " << e.what() << '\n'; return 1; }
     std::cout << "ALL PORTABLE ANALYSIS TESTS PASS\n";
 }

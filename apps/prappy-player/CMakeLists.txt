@@ -21,7 +21,7 @@ add_test(NAME prepared_audio COMMAND prappy_prepared_audio_tests)
 if(NOT WIN32)
   add_executable(prappy_analysis_portable_tests
     tests/portable_analysis_tests.cpp src/gain_policy.cpp
-    src/analysis_registry.cpp src/analysis_queue.cpp src/analysis_dsp.cpp)
+      src/analysis_dsp.cpp)
   target_include_directories(prappy_analysis_portable_tests PRIVATE src)
   target_compile_options(prappy_analysis_portable_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
   add_test(NAME portable_analysis COMMAND prappy_analysis_portable_tests)
@@ -43,15 +43,15 @@ endif()
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_executable(prappy_analysis_portable_tests
   tests/portable_analysis_tests.cpp tests/analysis_tests.rc src/gain_policy.cpp
-  src/analysis_registry.cpp src/analysis_queue.cpp src/analysis_dsp.cpp)
+    src/analysis_dsp.cpp)
 target_include_directories(prappy_analysis_portable_tests PRIVATE src)
 target_compile_definitions(prappy_analysis_portable_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(prappy_analysis_portable_tests PRIVATE /W4 /WX /permissive- /utf-8 /EHsc /Zi)
 target_link_options(prappy_analysis_portable_tests PRIVATE /DEBUG /INCREMENTAL:NO)
 add_test(NAME portable_analysis COMMAND prappy_analysis_portable_tests)
 add_executable(prappy_analysis_windows_tests tests/windows_analysis_tests.cpp tests/analysis_tests.rc
-  src/analysis.cpp src/analysis_dsp.cpp src/analysis_service.cpp src/analysis_registry.cpp
-  src/analysis_queue.cpp src/gain_policy.cpp src/output_meter.cpp)
+  src/analysis.cpp src/analysis_dsp.cpp  
+   src/gain_policy.cpp src/output_meter.cpp)
 target_include_directories(prappy_analysis_windows_tests PRIVATE src)
 target_include_directories(prappy_analysis_windows_tests SYSTEM PRIVATE third_party/mpv/include)
 target_include_directories(prappy_analysis_windows_tests SYSTEM PRIVATE third_party/json)
@@ -97,7 +97,7 @@ target_link_libraries(imgui PUBLIC SDL3::SDL3-static freetype)
 add_library(implot STATIC third_party/implot/implot.cpp third_party/implot/implot_items.cpp)
 target_include_directories(implot SYSTEM PUBLIC third_party/implot)
 target_link_libraries(implot PUBLIC imgui)
-add_executable(prappy_player WIN32 src/main.cpp src/output_meter.cpp src/player_ui.cpp src/analysis.cpp src/analysis_dsp.cpp src/analysis_registry.cpp src/analysis_queue.cpp src/analysis_service.cpp src/gain_policy.cpp src/text.cpp src/tests.cpp src/sample_client.cpp src/sample_workspace.cpp src/remote_catalog.cpp src/remote_waveform.cpp assets/player.rc)
+add_executable(prappy_player WIN32 src/main.cpp src/output_meter.cpp src/player_ui.cpp src/analysis.cpp src/analysis_dsp.cpp    src/gain_policy.cpp src/text.cpp src/tests.cpp src/sample_client.cpp src/sample_workspace.cpp src/remote_catalog.cpp src/remote_waveform.cpp assets/player.rc)
 # The Debug regression TU instantiates the JSON-backed persistence/IO fixtures.
 # MSVC's standard COFF section count is insufficient without optimization.
 set_property(SOURCE src/tests.cpp APPEND PROPERTY COMPILE_OPTIONS /bigobj)
