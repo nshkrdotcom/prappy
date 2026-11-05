@@ -7,12 +7,14 @@
 #include <functional>
 // Playback intents are committed by matching successful mpv playlist entry IDs.
 struct Playback {
+    using Loader=std::function<bool(const fs::path&,bool,double)>;
     enum class Kind { NewVisit, HistoryVisit, Traverse, Restore, Restart, Rollback };
     struct Pending { Kind kind; uint64_t serial; uint64_t targetId; bool oldPaused; double position; bool paused; };
     Audio& audio;
     Library& library;
     History& history;
     HistoryFile& file;
+    Loader load;
     std::optional<Pending> pending;
     std::set<std::wstring> unavailable;
     std::string notice;
@@ -21,8 +23,8 @@ struct Playback {
     gain::Lock gainDecision;
     // Invoked on matching FILE_LOADED, before unpausing or restoring position.
     std::function<gain::Decision(const fs::path&, uint64_t)> decideGain;
-    Playback(Audio& source, Library& catalog, History& visits, HistoryFile& storage)
-        : audio(source), library(catalog), history(visits), file(storage) {}
+    Playback(Audio& source, Library& catalog, History& visits, HistoryFile& storage,Loader loader)
+        : audio(source), library(catalog), history(visits), file(storage),load(std::move(loader)) {}
     ~Playback() { try { finish(); } catch (const std::exception& e) { OutputDebugStringA(e.what()); } }
     void checkpoint(bool complete = false) {
         const auto entry = history.current();
@@ -35,7 +37,9 @@ struct Playback {
         const uint64_t targetId = kind != Kind::NewVisit && target < history.trail.size() ? history.trail[target] : 0;
         // Load paused, then honor the latest play/pause intent after committing.
         // This also prevents a brief audible start when restoring a saved session.
-        if (!audio.play(path, true, kind == Kind::Restore ? 0 : position)) { notice = audio.error; return false; }
+        try {
+            if(!load(path,true,kind==Kind::Restore?0:position)){notice=audio.error;return false;}
+        } catch(const std::exception& error){notice=error.what();return false;}
         pending = Pending{kind, audio.serial, targetId, oldPaused, position, paused};
         notice.clear(); ++generation; return true;
     }

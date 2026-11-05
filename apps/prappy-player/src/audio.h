@@ -134,7 +134,8 @@ struct Audio {
         // extended path so valid Windows/WSL filenames can exceed MAX_PATH.
         return utf8(nativePath.is_absolute() ? extendedPath(nativePath) : nativePath);
     }
-    bool play(const fs::path& path, bool startPaused = false, double startPosition = 0) {
+    bool play(const fs::path& path, bool startPaused = false, double startPosition = 0,
+              const std::string& streamUrl = {},const std::string& bearerToken = {}) {
         loadStarted=Clock::now();
         if (worker) {
             ++serial; const auto epoch=serial; const auto level=volume;
@@ -142,11 +143,15 @@ struct Audio {
             current=path; loaded=false; loadedSerial=0; active=true; waitingStart=true; info={}; cachedTags.clear();
             queuedSeek.reset();seekPreview.reset();pendingSeek=0; gain=0;meterPeak=0;
             position=startPosition;positionTime=Clock::now();duration=0;paused=pauseRequested=startPaused;error.clear();
-            enqueue(0,[path,startPaused,startPosition,epoch,level](Audio& core){core.serial=epoch-1;core.setVolume(level); if(!core.play(path,startPaused,startPosition)){core.serial=epoch;core.current=path;core.active=core.loaded=false;core.loadedSerial=0;core.waitingStart=false;}},true);
+            enqueue(0,[path,startPaused,startPosition,epoch,level,streamUrl,bearerToken](Audio& core){core.serial=epoch-1;core.setVolume(level); if(!core.play(path,startPaused,startPosition,streamUrl,bearerToken)){core.serial=epoch;core.current=path;core.active=core.loaded=false;core.loadedSerial=0;core.waitingStart=false;}},true);
             return true;
         }
         poll(); // Consume the previous track's events before replacing its identity.
-        const auto file = decoderFile(path);
+        const auto file = streamUrl.empty()?decoderFile(path):streamUrl;
+        const auto header=bearerToken.empty()?std::string{}:"Authorization: Bearer "+bearerToken;
+        const char* headerValue=header.c_str();
+        const auto headerStatus=set_property(handle,"http-header-fields",MPV_FORMAT_STRING,&headerValue);
+        if(headerStatus<0){error=error_string(headerStatus);return false;}
         int pauseValue = startPaused ? 1 : 0;
         const int result = set_property(handle, "pause", MPV_FORMAT_FLAG, &pauseValue);
         if (result < 0) { error = error_string(result); return false; }

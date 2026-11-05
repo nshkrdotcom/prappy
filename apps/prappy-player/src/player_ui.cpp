@@ -1,8 +1,8 @@
 // UI setup follows Dear ImGui's MIT-licensed example_sdl3_sdlrenderer3.
 #include "player_ui.h"
 #include "analysis.h"
-#include "analysis_service.h"
-#include "analysis_identity.h"
+#include "remote_catalog.h"
+#include "remote_waveform.h"
 #include "gain_policy.h"
 #include "playback.h"
 #include "scan.h"
@@ -276,7 +276,7 @@ int runPlayer(HINSTANCE instance) {
         std::chrono::steady_clock::time_point nextPreferenceSave{};
         Library library; Audio audio;
         audio.volume = preferences.volume;
-        Scan scan;
+        Scan scan(refreshPreparedCatalog);
         scan.notify = notify;
         try { createDefaultConfig(config); } catch (const std::exception& e) { library.notice = e.what(); }
         Config settings;
@@ -284,30 +284,18 @@ int runPlayer(HINSTANCE instance) {
             settings = readConfig(config);
             debuglog::instance().configure(stateDirectory/"player-debug.log",settings.debugLog);
             debuglog::write("app.start","debug_log=true");
-            const auto catalogStart=debuglog::Clock::now();
-            loadCatalog(stateDirectory / "player-catalog.bin", settings, library);
-            debuglog::write("catalog.loaded","ms="+std::to_string(debuglog::elapsed(catalogStart))+" tracks="+std::to_string(library.tracks.size()));
         } catch (const std::exception& e) { library.notice = e.what(); }
         audio.open(windowTest);
         audio.setNotify([wake] { wake->notify(UiWake::Audio); });
         HistoryFile historyFile(stateDirectory / "player-history.txt");
         historyFile.writer.notify = notify;
         auto history = historyFile.load(settings.historyLimit);
-        Playback playback(audio, library, history, historyFile);
+        Playback playback(audio,library,history,historyFile,preparedPlaybackLoader(audio,library,notify));
         playback.folder = preferences.folder;
-        // Separate v2 analysis namespace: old disposable waveform files remain
-        // untouched and are rebuilt once into the persistent summary registry.
-        analysis::Service analyzer(stateDirectory / "player-analysis-v2",
-            {settings.analysisWorkerCount, settings.analysisRemoteConcurrencyLimit,
-             settings.analysisWaveformMemoryMiB}, notify);
-        std::map<std::wstring, analysis::Summary> analyses;
+        RemoteWaveform preparedWaveform(notify);
         uint64_t analysisGeneration = 0;
-        bool forceAnalysis = false;
-        bool durationSortDirty = false;
-        std::wstring currentAnalysisId;
-        std::wstring waveformId;
         std::shared_ptr<const analysis::Result> waveform;
-        std::optional<analysis::Identity> waveformIdentity;
+        bool restorePlayback=true;
         Browse browser;
         browser.view = static_cast<Browse::View>(preferences.session.view);
         browser.availability = preferences.session.availability;
@@ -330,34 +318,14 @@ int runPlayer(HINSTANCE instance) {
             return std::find_if(library.tracks.begin(), library.tracks.end(),
                 [&](const auto& track) { return Library::matches(track, id); });
         };
-        const auto identityForPath = [&](const fs::path& path,bool savedPreview=false) {
-            return analysis::catalogIdentity(library,path,savedPreview);
-        };
         const auto gainForPath = [&](const fs::path& path, uint64_t serial) {
             gain::Measurement measured;
             gain::Tags tags;
-            const auto identity = identityForPath(path);
-            if (identity) {
-                if (auto cached = analyzer.snapshot(*identity)) {
-                    measured.loudness = cached->loudness;
-                    if (std::isfinite(cached->samplePeak) && cached->samplePeak > 0)
-                        measured.samplePeak = cached->samplePeak;
-                }
-                if (auto recorded = analyzer.tagsFor(*identity)) tags = *recorded;
-            }
-            // FILE_LOADED metadata is already in libmpv; this is not a source
-            // probe or synchronous waveform read. The codec's mandatory output
-            // gain is already present in the measured PCM domain.
-            if (audio.loaded && audio.loadedSerial == serial) {
-                const auto metadata = audio.loadedTags();
-                if (!metadata.empty()) {
-                    tags = gain::parseTags(metadata, lower(audio.info.codec).find("opus") != std::string::npos);
-                    if (identity) analyzer.rememberTags(*identity, tags);
-                } else if (identity && !analyzer.tagsFor(*identity)) {
-                    // Missing metadata is also an outcome; avoid repeatedly
-                    // scheduling asynchronous tag-only discovery.
-                    analyzer.rememberTags(*identity, tags);
-                }
+            const auto track=matchingTrack(path);
+            if(track!=library.tracks.end()&&track->prepared&&track->prepared->ready()) {
+                const auto& source=*track->prepared;
+                measured.loudness=source.loudness;measured.samplePeak=source.peak;
+                tags=gain::parseTags(source.tags,lower(source.codec).find("opus")!=std::string::npos);
             }
             return gain::choose(serial, analysis_registry::pathUtf8(path),
                 {preferences.normalize, settings.normalizationTargetLufs,
@@ -378,44 +346,10 @@ int runPlayer(HINSTANCE instance) {
         };
         const auto prioritizeCurrent = [&] {
             const auto track = matchingTrack(audio.current);
-            currentAnalysisId = key(audio.current);
-            // A last-known offline flag must not hide a local saved waveform
-            // while cold roots are checked. This lookup does not authorize gain.
-            const auto identity = identityForPath(audio.current,true);
-            if (waveformId != currentAnalysisId || (waveformIdentity &&
-                (!identity || *waveformIdentity != *identity))) {
-                waveform.reset(); waveformIdentity.reset(); waveformId = currentAnalysisId;
-            }
-            if (identity) analyzer.prioritize(*identity);
-            // Predict next tracks from navigation/history without changing the
-            // listening trail. The service deduplicates these hints.
-            std::vector<analysis::Identity> next;
-            const auto pushNext = [&](const fs::path& path) {
-                const auto candidate = matchingTrack(path);
-                if (candidate != library.tracks.end() && !candidate->offline &&
-                    (track == library.tracks.end() || candidate->id != track->id) &&
-                    std::none_of(next.begin(), next.end(), [&](const auto& queued) { return key(queued.path) == key(path); })) {
-                    if (auto id = identityForPath(path)) next.push_back(*id);
-                }
-            };
-            const auto begin = history.current() ? history.cursor + 1 : 0;
-            for (size_t i = begin; i < history.trail.size() && next.size() < 3; ++i)
-                if (const auto* entry = history.find(history.trail[i])) pushNext(entry->path);
-            if (next.size() < 3) {
-                const auto upcoming = playback.destination(1);
-                pushNext(upcoming);
-                const auto first = matchingTrack(upcoming);
-                if (first != library.tracks.end()) {
-                    for (auto it = first + 1; it != library.tracks.end() && next.size() < 3; ++it)
-                        pushNext(it->path);
-                }
-            }
-            analyzer.lookahead(next);
+            if(track!=library.tracks.end()&&library.backend)preparedWaveform.select(*track,*library.backend);
+            else preparedWaveform.clear();
+            waveform=preparedWaveform.value();
         };
-        if (const auto* restored = history.current())
-            if (auto identity = identityForPath(restored->path)) analyzer.prioritize(*identity);
-        analyzer.reconcile(library);
-        playback.restore();
         constexpr int StripHeight = 86;
         window = SDL_CreateWindow("Prappy Player", preferences.session.width, preferences.strip ? StripHeight : std::max(MinHeight,preferences.session.height),
             SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE);
@@ -463,7 +397,8 @@ int runPlayer(HINSTANCE instance) {
         } else SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
         if (preferences.session.maximized && !preferences.strip) SDL_MaximizeWindow(window);
         SDL_ShowWindow(window);
-        scan.begin(config, library.order, &library, true);
+        scan.begin(config, library.order, &library);
+        auto nextCatalogRefresh=UiSchedule::Clock::now()+std::chrono::seconds(5);
         bool done = false, expanded = preferences.session.expanded;
         bool historyView = preferences.session.history;
         uint64_t historyGeneration = 0;
@@ -499,14 +434,19 @@ int runPlayer(HINSTANCE instance) {
             const bool chosen = ImGui::MenuItem(label, nullptr, false, enabled); uiProbe.observe(probe, chosen); return chosen;
         };
         const auto pathMenu = [&](const fs::path& path) {
-            if (menuItem("Copy full path", "copy-path")) {
-                if (!SDL_SetClipboardText(utf8(displayPath(path)).c_str())) library.notice = SDL_GetError();
+            const auto track=matchingTrack(path);
+            const auto original=track!=library.tracks.end()&&track->prepared?
+                preparedOriginalLocation(*track,library):std::optional<fs::path>{path};
+            if (menuItem("Copy original file path", "copy-path",original.has_value())) {
+                if (!SDL_SetClipboardText(utf8(displayPath(*original)).c_str())) library.notice = SDL_GetError();
             }
-            const auto linux = wslLinuxPath(path);
+            const auto linux=track!=library.tracks.end()&&track->prepared?
+                std::optional<std::string>{track->prepared->originalPath}:wslLinuxPath(path);
             if (menuItem("Copy WSL Linux path", "copy-wsl", linux.has_value())) {
                 if (!SDL_SetClipboardText(linux->c_str())) library.notice = SDL_GetError();
             }
-            if (menuItem("Reveal in Explorer", "reveal")) if (!revealFile(hwnd, path)) library.notice = "Cannot reveal this file in Explorer.";
+            if (menuItem("Reveal original in Explorer", "reveal",original.has_value()))
+                if (!revealFile(hwnd,*original)) library.notice="Cannot reveal this original in Explorer.";
             ImGui::Separator();
             if (menuItem("Show only this folder", "directory-only-folder")) { browser.directories.only(path.parent_path()); filterDirty = resetListScroll = true; }
             if (menuItem("Include this folder", "directory-add-folder")) { DirectoryFilter::set(browser.directories.included, path.parent_path(), true); filterDirty = resetListScroll = true; }
@@ -546,9 +486,10 @@ int runPlayer(HINSTANCE instance) {
                     ImGui::Text("Applied: %+.1f dB (%s)", locked->appliedDb, gain::name(locked->origin));
                     if (locked->unknownPeakCapped) ImGui::TextDisabled("Unknown peak: positive boost held at 0 dB");
                 }
-                if (auto identity = identityForPath(audio.current)) {
-                    ImGui::TextWrapped("Selected: %s", analyzer.status(*identity).c_str());
-                    if (ImGui::SmallButton("Retry selected analysis")) analyzer.retry(*identity);
+                if(const auto track=matchingTrack(audio.current);track!=library.tracks.end()&&track->prepared) {
+                    ImGui::TextWrapped("Selected: %s",track->prepared->state.c_str());
+                    if(ImGui::SmallButton("Reload prepared waveform")&&library.backend)
+                        preparedWaveform.select(*track,*library.backend,true);
                 }
                 if (!playback.folder.empty()) {
                     ImGui::TextWrapped("Folder: %s", utf8(playback.folder).c_str());
@@ -609,6 +550,7 @@ int runPlayer(HINSTANCE instance) {
             if (history.revision != historyFile.saved && !historyFile.writer.busy() && historyFile.writable)
                 persistence = historyFile.urgent && historyFile.writer.error.empty() ? now : historyFile.nextSave;
             if (preferenceRevision != savedPreferences && !preferenceWriter.busy()) persistence = std::min(persistence, nextPreferenceSave);
+            if(!scan.running())persistence=std::min(persistence,nextCatalogRefresh);
             SDL_Event event{};
             bool received = SDL_WaitEventTimeout(&event, schedule.wait(now, visibleWindow, animate, windowTest && uiProbe.pollCommands, scan.running(), persistence));
             if (received) ++schedule.wakeups;
@@ -659,6 +601,10 @@ int runPlayer(HINSTANCE instance) {
             const auto previousPosition = audio.position, previousDuration = audio.duration;
             const auto previousSeekPreview = audio.seekPreview;
             playback.tick();
+            if(now>=nextCatalogRefresh&&!scan.running()) {
+                scan.begin(config,library.order,&library);
+                nextCatalogRefresh=now+std::chrono::seconds(5);
+            }
             if (previousSeekPreview != audio.seekPreview) schedule.request();
             if (previousGeneration != playback.generation || previousPause != audio.paused || previousActive != audio.active) schedule.request(2);
             if (audio.paused && (previousPosition != audio.position || previousDuration != audio.duration)) schedule.request();
@@ -666,19 +612,9 @@ int runPlayer(HINSTANCE instance) {
                 schedule.request(2);
                 directoryIndex.rebuild(library); directoryIndex.prioritize(preferences.pinnedDirectories);
                 history.setLimit(library.historyLimit); filterDirty = true;
-                analyzer.reconcile(library, forceAnalysis); forceAnalysis = false;
-                // Retain unchanged summaries and the displayed waveform.
-                std::map<std::wstring, analysis::Identity> validSources;
-                for (const auto& file : library.files) if (!file.offline)
-                    validSources.insert_or_assign(file.id, analysis::Identity{file.path, file.bytes, file.stamp});
-                for (const auto& track : library.tracks) if (!track.offline)
-                    validSources.insert_or_assign(track.id, analysis::Identity{track.path, track.bytes, track.stamp});
-                std::erase_if(analyses, [&](const auto& pair) {
-                    const auto it = validSources.find(pair.first);
-                    return it == validSources.end() || it->second != pair.second.identity;
-                });
                 browseVisits = UINT64_MAX; browseCatalogDirty = true;
                 prioritizeCurrent();
+                if(restorePlayback){restorePlayback=false;playback.restore();}
             }
             // Establish selection before draining a fast warm-cache completion.
             // Otherwise a startup waveform can be discarded while the service
@@ -686,37 +622,7 @@ int runPlayer(HINSTANCE instance) {
             if (analysisGeneration != playback.generation) {
                 analysisGeneration = playback.generation; prioritizeCurrent();
             }
-            auto newAnalysis = analyzer.initialSummaries();
-            auto updates = analyzer.collect();
-            for (auto& update : updates) newAnalysis.push_back(std::move(update));
-            std::map<std::wstring, Track*> analysisById;
-            if (!newAnalysis.empty())
-                for (auto& track : library.tracks) {
-                    analysisById.emplace(track.id, &track);
-                    for (const auto& copy : track.copies) analysisById.emplace(key(copy), &track);
-                }
-            for (auto& result : newAnalysis) {
-                schedule.request(2);
-                const auto id = key(result.identity.path);
-                const auto foundTrack = analysisById.find(id);
-                Track* track = foundTrack == analysisById.end() ? nullptr : foundTrack->second;
-                const auto sourceIdentity = identityForPath(result.identity.path,result.cached&&id==currentAnalysisId);
-                if (track && sourceIdentity && *sourceIdentity == result.identity) {
-                    if (result.waveform && id == currentAnalysisId) {
-                        waveform = result.waveform; waveformId = id;
-                        waveformIdentity = result.identity;
-                    }
-                    result.waveform.reset();
-                    if (result.error.empty() && (id == track->id || id == currentAnalysisId))
-                        track->duration = result.duration;
-                    analyses.insert_or_assign(id, std::move(result));
-                    if (!historyView && (browser.minimum > 0 || browser.maximum > 0 || browser.measuredOnly)) filterDirty = true;
-                    if (library.order == 3) durationSortDirty = true;
-                }
-            }
-            if (durationSortDirty && library.order == 3 && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
-                library.sort(); durationSortDirty = false; filterDirty = true;
-            }
+            if(preparedWaveform.collect()){waveform=preparedWaveform.value();schedule.request(2);}
             if (browseVisits != history.visitsRevision) {
                 browseVisits = history.visitsRevision; browser.rebuild(library, history, browseCatalogDirty); browseCatalogDirty = false; filterDirty = true;
             }
@@ -772,10 +678,10 @@ int runPlayer(HINSTANCE instance) {
             ImGui::SetNextWindowPos({0, 0}); ImGui::SetNextWindowSize({static_cast<float>(width), static_cast<float>(height)});
             ImGui::Begin("Player", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
             const auto listeningPosition=playback.pending&&playback.pending->kind==Playback::Kind::Restore?playback.pending->position:audio.displayPosition();
-            const auto listeningDuration=audio.duration>0?audio.duration:waveform&&waveformId==currentAnalysisId?waveform->duration():0.;
+            const auto listeningDuration=audio.duration>0?audio.duration:waveform?waveform->duration():0.;
             const auto drawPlayerWaveform=[&](ImVec2 size){
                 double seek=listeningPosition;
-                if(waveformSeek(waveformImage,waveformId==currentAnalysisId?waveform:nullptr,seek,listeningDuration,size,!waveformSelection.active))audio.seek(seek);
+                if(waveformSeek(waveformImage,waveform,seek,listeningDuration,size,!waveformSelection.active))audio.seek(seek);
                 const auto min=ImGui::GetItemRectMin(),max=ImGui::GetItemRectMax();uiProbe.observe("seek",ImGui::IsItemActivated());rememberControl();
                 waveformSelection.draw(min,max,audio.displayPosition(),audio.duration,preferences.strip,
                     [&](std::optional<sampling::SecondsSpan> span,sampling::OpenSource action){sampleWorkspace.mark(audio,span,action);waveformSelection.active=false;},
@@ -1085,22 +991,11 @@ int runPlayer(HINSTANCE instance) {
                     if (locked->peakLimited) details += " (sample-peak capped)";
                     if (locked->unknownPeakCapped) details += " (unknown peak: no boost)";
                 }
-                const auto analyzed = analyses.find(currentAnalysisId);
-                if (analyzed != analyses.end()) {
-                    const auto& result = analyzed->second;
-                    if (!result.error.empty()) details += "\nAnalysis: " + result.error;
-                    else {
-                        details += "\nStereo analysis: " + timeText(result.duration);
-                        if (result.loudness) {
-                            char value[64]; std::snprintf(value, sizeof(value), " · %.1f LUFS", *result.loudness); details += value;
-                            if (playback.gainDecision.current() && playback.gainDecision.current()->serial == audio.loadedSerial &&
-                                playback.gainDecision.current()->origin == gain::Origin::Fallback)
-                                details += "\nMeasurement ready; applies on next playback";
-                        } else details += " · loudness unavailable (silence or under 400 ms)";
+                if(const auto track=matchingTrack(audio.current);track!=library.tracks.end()&&track->prepared) {
+                    details+="\nPreparation: "+track->prepared->state;
+                    if(track->prepared->loudness) {
+                        char value[64];std::snprintf(value,sizeof(value)," | %.1f LUFS",*track->prepared->loudness);details+=value;
                     }
-                } else {
-                    if (auto identity = identityForPath(audio.current)) details += "\n" + analyzer.status(*identity);
-                    else details += "\nStereo analysis pending";
                 }
             }
             tooltip(details);
@@ -1167,13 +1062,11 @@ int runPlayer(HINSTANCE instance) {
             ImGui::SetCursorPos({refreshX, transportRowY});
             ImGui::BeginDisabled(scan.running());
             if (centeredButton(scan.running() ? "Scanning" : "Refresh", {refreshWidth, buttonHeight}, "refresh")) {
-                forceAnalysis = ImGui::GetIO().KeyShift;
-                if (ImGui::GetIO().KeyShift) { library.verified.clear(); library.forceVerification = true; }
-                scan.begin(config, library.order, &library, true);
+                scan.begin(config, library.order, &library);
             }
             rememberControl();
             ImGui::EndDisabled();
-            tooltip("Refresh the catalog. Hold Shift to reverify duplicate contents and rebuild audio analysis.");
+            tooltip("Refresh the prepared library and processing status.");
             draw->AddRect({0, 0}, {static_cast<float>(width - 1), static_cast<float>(height - 1)}, IM_COL32(90, 99, 99, 255));
             }
             ImGui::End();
@@ -1240,6 +1133,9 @@ int runPlayer(HINSTANCE instance) {
                 uiProbe.telemetry += "\nFRAME " + std::to_string(timing.build) + " " + std::to_string(timing.draw) + " " + std::to_string(timing.present) + " " + std::to_string(timing.total) + " " + std::to_string(timing.input);
                 uiProbe.telemetry += "\nTEXT " + std::to_string(textStats.shaped) + " " + std::to_string(textStats.rasterized) + " " + std::to_string(textStats.bytes);
                 uiProbe.telemetry += "\nPLAYBACK_ERROR " + (audio.error.empty() ? playback.notice : audio.error);
+                uiProbe.telemetry += "\nCATALOG "+sampling::Json{{"sources",library.tracks.size()},
+                    {"notice",library.notice},{"refreshing",scan.running()},
+                    {"source_hash_reads",scan.progress.hashReads.load()}}.dump();
                 uiProbe.telemetry += "\nSAMPLER " + sampleWorkspace.diagnostics();
                 uiProbe.telemetry += "\nPLAYER_SELECTION " + sampling::Json{{"active",waveformSelection.active},{"start",waveformSelection.start},{"end",waveformSelection.end}}.dump();
                 std::ostringstream status;

@@ -68,7 +68,10 @@ struct DirectoryIndex {
         std::set<std::pair<std::wstring, std::wstring>> edges;
         const auto add = [&](const fs::path& path) -> Node& {
             const auto id = directoryKey(path); auto [it, fresh] = nodes.try_emplace(id);
-            if (fresh) it->second = {path, id, utf8(path.filename().empty() ? path : path.filename()), 0, {}};
+            if (fresh) {
+                const auto label=library.labels.find(key(path));
+                it->second={path,id,label==library.labels.end()?utf8(path.filename().empty()?path:path.filename()):label->second,0,{}};
+            }
             return it->second;
         };
         for (const auto& track : library.tracks) {

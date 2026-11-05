@@ -5,6 +5,9 @@
 #include "grouped_list.h"
 #include "compact_row.h"
 #include <SDL3/SDL.h>
+inline Playback::Loader fixturePlayback(Audio& audio) {
+    return [&audio](const fs::path& path,bool paused,double position){return audio.play(path,paused,position);};
+}
 
 inline void featureTests(const fs::path& root, const Library& fixture, std::ostream& log) {
     const auto require = [](bool value, const char* message) { if (!value) throw std::runtime_error(message); };
@@ -200,7 +203,7 @@ inline void featureTests(const fs::path& root, const Library& fixture, std::ostr
     }
     log << "PASS features model: WSL paths, queue/forward trail, retained-history views, ranked search, duration/type/offline filters, gain/headroom, preferences\n" << std::flush;
 
-    Audio audio; audio.open(true); History history; HistoryFile file(root / "feature-playback.txt"); Playback player(audio, library, history, file);
+    Audio audio; audio.open(true); History history; HistoryFile file(root / "feature-playback.txt"); Playback player(audio, library, history, file,fixturePlayback(audio));
     const auto wait = [&] {
         for (int i = 0; i < 1000; ++i) { player.tick(); if (audio.loaded && !player.pending) return; SDL_Delay(5); }
         throw std::runtime_error("Feature playback timeout: " + player.notice + " " + audio.error);

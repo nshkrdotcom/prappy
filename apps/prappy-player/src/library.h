@@ -179,6 +179,8 @@ inline size_t removeDuplicates(std::vector<Track>& tracks, std::stop_token stop,
 }
 struct Library {
     std::shared_ptr<const sampling::Connection> backend;
+    std::string backendDistribution;
+    std::map<std::wstring,std::string> labels;
     std::vector<Track> tracks;
     std::vector<Track> files;
     VerificationCache verified;
@@ -190,7 +192,9 @@ struct Library {
     bool forceVerification = false;
     int order = 0;
     std::string notice;
-    std::string pathLabel(const fs::path& path) const { return readablePath(path, roots); }
+    std::string pathLabel(const fs::path& path) const {
+        const auto found=labels.find(key(path));return found==labels.end()?readablePath(path,roots):found->second;
+    }
     static bool matches(const Track& track, const std::wstring& id) {
         return track.id == id || std::any_of(track.copies.begin(), track.copies.end(), [&](auto& p) { return key(p) == id; });
     }

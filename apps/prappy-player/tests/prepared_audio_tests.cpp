@@ -39,7 +39,7 @@ int main() {
     rejects([&]{block.sample(1,0);});
     nlohmann::json row={{"library_id",library},{"capture_id",capture},{"asset_key",std::string(64,'c')},
         {"state","Ready"},{"title","Test song"},{"artist",nullptr},{"codec","opus"},
-        {"library_name","Music"},{"duration_seconds",2.0},{"original_bytes",1200},
+        {"library_name","Music"},{"duration_seconds",2.0},{"original_bytes",1200},{"original_path","/original/music"},
         {"analysis",{{"native_frames",88200},{"native_rate",44100},{"native_channels",1},
             {"native_sample_format","float64"},{"listening_frames",96000},{"frames",96000},
             {"sample_rate",48000},{"channels",2},{"loudness_lufs",-23.0},{"sample_peak",.5},

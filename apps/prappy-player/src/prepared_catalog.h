@@ -8,7 +8,7 @@
 namespace prepared {
 struct CatalogSource {
     SourceRef source;
-    std::string asset,state,title,artist,codec,libraryName;
+    std::string asset,state,title,artist,codec,libraryName,originalPath;
     uint64_t originalBytes=0;
     double duration=0;
     NativeTimeline native,listening;
@@ -40,6 +40,9 @@ inline std::vector<CatalogSource> parseCatalog(const nlohmann::json& snapshot) {
            source.state!="Offline"&&source.state!="Stale"&&source.state!="CapacityBlocked")
             throw std::runtime_error("Unknown preparation state.");
         source.title=row.at("title");
+        source.originalPath=row.at("original_path");
+        if(!source.originalPath.starts_with('/')||source.originalPath.find('\0')!=std::string::npos)
+            throw std::runtime_error("Invalid original recording location.");
         source.artist=row.at("artist").is_null()?std::string{}:row.at("artist").get<std::string>();
         source.codec=row.at("codec");source.libraryName=row.at("library_name");
         const auto bytes=integer(row.at("original_bytes"));

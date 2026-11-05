@@ -1,5 +1,6 @@
 #include "remote_catalog.h"
 #include "remote_waveform.h"
+#include "audio.h"
 #include <iostream>
 
 int main(int argc,char** argv) {
@@ -35,6 +36,14 @@ int main(int argc,char** argv) {
         }
         if(!waveform.value()||waveform.value()->frames!=720000||waveform.value()->levels[0].empty())
             throw std::runtime_error("Prepared waveform failed: "+waveform.status());
+        Audio audio;audio.open(true,{},false);
+        const auto load=preparedPlaybackLoader(audio,library,[]{});
+        if(!load(library.tracks.front().path,true,0))
+            throw std::runtime_error(audio.error);
+        const auto loadDeadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(!audio.loaded&&audio.error.empty()&&std::chrono::steady_clock::now()<loadDeadline){audio.poll();Sleep(5);}
+        if(!audio.loaded||!audio.paused||audio.duration<14.9)
+            throw std::runtime_error("Prepared playback failed: "+audio.error);
         std::cout<<"PASS Windows prepared catalog: two Ready sources, no source scan or hashes\n";
         return 0;
     } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}

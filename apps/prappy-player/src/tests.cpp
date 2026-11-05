@@ -71,7 +71,7 @@ int outputMeterTests(const fs::path& signal, const fs::path& logPath) {
 static void playbackStateTests(const fs::path& root, Library& fixture, std::ostream& log) {
     const auto require = [](bool value, const char* message) { if (!value) throw std::runtime_error(message); };
         Audio audio; audio.open(true);
-        History visits; HistoryFile sessionFile(root / "session.txt"); Playback player(audio, fixture, visits, sessionFile);
+        History visits; HistoryFile sessionFile(root / "session.txt"); Playback player(audio, fixture, visits, sessionFile,fixturePlayback(audio));
         double availableLufs = -24;
         player.decideGain = [&](const fs::path& path, uint64_t serial) {
             int paused = 0;
@@ -158,7 +158,7 @@ static void playbackStateTests(const fs::path& root, Library& fixture, std::ostr
             "Seek preview hid an incorrect decoder position.");
         player.checkpoint(); visits.repeat = RepeatMode::One; ++visits.revision; player.finish();
         HistoryFile restoredFile(root / "session.txt"); auto restoredHistory = restoredFile.load(10000);
-        Audio restoredAudio; restoredAudio.open(true); Playback restored(restoredAudio, fixture, restoredHistory, restoredFile);
+        Audio restoredAudio; restoredAudio.open(true); Playback restored(restoredAudio, fixture, restoredHistory, restoredFile,fixturePlayback(restoredAudio));
         restored.restore(); wait(restored, restoredAudio);
         require(restoredAudio.paused && restoredHistory.entries.size() == visits.entries.size() && restoredAudio.position > .5 && restoredHistory.repeat == RepeatMode::One, "Session did not restore paused without adding visits.");
         restoredAudio.waitIdle();int paused = 0; restoredAudio.get_property(restoredAudio.handle, "pause", MPV_FORMAT_FLAG, &paused);
@@ -195,12 +195,12 @@ static void playbackStateTests(const fs::path& root, Library& fixture, std::ostr
         require(restoredHistory.entries.size() == 1 && restoredHistory.current(), "Pruned pending target caused invalid navigation.");
         Library one; one.tracks.push_back(fixture.tracks.front());
         History oneHistory; oneHistory.repeat = RepeatMode::All;
-        HistoryFile oneFile(root / "one.txt"); Audio oneAudio; oneAudio.open(true); Playback onePlayer(oneAudio, one, oneHistory, oneFile);
+        HistoryFile oneFile(root / "one.txt"); Audio oneAudio; oneAudio.open(true); Playback onePlayer(oneAudio, one, oneHistory, oneFile,fixturePlayback(oneAudio));
         require(onePlayer.navigate(1), "Single-track start failed."); wait(onePlayer, oneAudio);
         oneAudio.seek(oneAudio.duration - .12); const auto beforeOne = oneAudio.serial;
         awaitEofAction(onePlayer, oneAudio, beforeOne);
         require(oneHistory.entries.size() == 2 && key(oneAudio.current) == one.tracks.front().id, "Single-track Repeat All failed.");
-        Library empty; History noHistory; HistoryFile noFile(root / "empty.txt"); Playback noPlayer(oneAudio, empty, noHistory, noFile);
+        Library empty; History noHistory; HistoryFile noFile(root / "empty.txt"); Playback noPlayer(oneAudio, empty, noHistory, noFile,fixturePlayback(oneAudio));
         require(!noPlayer.navigate(1), "Empty library should not start/retry playback.");
         restored.finish(); onePlayer.finish(); player.finish();
         log << "PASS repeat: One preserves visits/manual navigation; All wraps; Off stops; one-track and empty libraries\n";
@@ -322,7 +322,7 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
             const auto nextClip = root / "next-short.flac"; fs::copy_file(clip,nextClip);
             track.path = nextClip; track.id = key(nextClip); clips.tracks.push_back(track);
             History visits; visits.add(clip); HistoryFile storage(root / "short-history.txt");
-            Audio source; source.open(true); Playback session(source,clips,visits,storage); session.restore();
+            Audio source; source.open(true); Playback session(source,clips,visits,storage,fixturePlayback(source)); session.restore();
             int64_t outputRate = 0;
             for (int i = 0; i < 400; ++i) {
                 session.tick();
@@ -408,7 +408,7 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
         fs::copy_file(fixture.tracks[0].path, copy, fs::copy_options::overwrite_existing);
         fs::copy_file(fixture.tracks[1].path, other, fs::copy_options::overwrite_existing);
         {
-            Audio source;source.open(true);Library empty;History visits;HistoryFile storage(root/"history-selection.txt");Playback session(source,empty,visits,storage);
+            Audio source;source.open(true);Library empty;History visits;HistoryFile storage(root/"history-selection.txt");Playback session(source,empty,visits,storage,fixturePlayback(source));
             const auto loaded=[&]{for(int i=0;i<1000;++i){session.tick();if(!session.pending&&source.loaded)return;SDL_Delay(5);}throw std::runtime_error("History replay load timed out.");};
             require(session.request(first),"History fixture failed.");loaded();const auto id=visits.current()->id;
             require(session.request(other),"Second history fixture failed.");loaded();
@@ -556,7 +556,7 @@ int selfTest(const fs::path& config, const fs::path& logFile) {
             audio.pause(); log << "PASS " << track.type << ": decode / duration / pause / seek / volume / sort / refresh\n";
         }
         History navigation; HistoryFile navigationFile(config.parent_path() / "selftest-history.txt");
-        Playback playback(audio, library, navigation, navigationFile);
+        Playback playback(audio, library, navigation, navigationFile,fixturePlayback(audio));
         const auto waitPlayback = [&] {
             for (int i = 0; i < 1000; ++i) {
                 playback.tick();
