@@ -197,7 +197,8 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
             {
                 const auto& expected=request.body;
                 if(header(L"X-Asset-Key")!=expected.at("asset_key").get<std::string>()||
-                   header(L"X-Channels")!=std::to_string(expected.at("channels").get<int64_t>()))
+                   header(L"X-Channels")!=std::to_string(expected.at("channels").get<int64_t>())||
+                   header(L"X-Timeline-Id")!=expected.at("timeline_id").get<std::string>())
                     throw std::runtime_error("Prepared response source or channel identity differs.");
                 if(request.tag=="prepared-pcm"&&header(L"X-Audio-Domain")!=expected.at("domain").get<std::string>())
                     throw std::runtime_error("Prepared response audio domain differs.");

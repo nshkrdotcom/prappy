@@ -34,7 +34,7 @@ int main(int argc,char** argv) {
         if(!reply.error.empty()||!reply.preparedPcm||reply.preparedPcm->frames()!=1000)
             throw std::runtime_error("Prepared PCM failed: "+reply.error);
         RemoteWaveform waveform([]{});
-        waveform.select(library.tracks.front(),*library.backend);
+        waveform.select(source,*library.backend);
         const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
         while(!waveform.value()&&std::chrono::steady_clock::now()<deadline) {
             waveform.collect();Sleep(5);

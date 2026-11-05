@@ -39,7 +39,7 @@ int main() {
     require(integerBlock.sample(0,0)==static_cast<double>(integer)/2147483648.0);
     rejects([&]{Block malformed({48000,2,1,SampleType::Float32},0,1,bytes);});
     rejects([&]{block.sample(1,0);});
-    nlohmann::json row={{"library_id",library},{"capture_id",capture},{"asset_key",std::string(64,'c')},
+    nlohmann::json row={{"library_id",library},{"capture_id",capture},{"timeline_id","tl_"+std::string(32,'d')},{"asset_key",std::string(64,'c')},
         {"state","Ready"},{"title","Test song"},{"artist",nullptr},{"codec","opus"},
         {"library_name","Music"},{"duration_seconds",2.0},{"original_bytes",1200},{"original_path","/original/music"},
         {"analysis",{{"native_frames",88200},{"native_rate",44100},{"native_channels",1},
@@ -58,7 +58,7 @@ int main() {
     const auto resolved=handoff.resolve(intent.ticket,{library,capture,"tl_"+std::string(32,'d')},88200,44100);
     require(resolved&&resolved->selection&&resolved->selection->start==22050&&resolved->selection->end==66150);
     nlohmann::json manifest={{"key",std::string(64,'a')},{"sample_rate",192000},{"channels",32},
-        {"frames",1920000},{"sample_format","float64"}};
+        {"frames",1920000},{"sample_format","float64"},{"capture",{{"timeline_id","tl_"+std::string(32,'d')}}}};
     require(pcmContext(manifest,13,100).at("channels")==32);
     rejects([&]{pcmContext(manifest,0,1920000);});
     rejects([&]{pcmContext(manifest,1920000,1);});

@@ -100,7 +100,7 @@ std::function<bool(const fs::path&,bool,double)> preparedPlaybackLoader(Audio& a
             throw std::runtime_error("Recording preparation: "+source.state);
         }
         const auto loaded=audio.play(path,paused,position,library.backend->url+source.source.endpoint()+
-                                    "/playback?asset="+source.asset,library.backend->token);
+                                    "/playback?asset="+source.asset+"&timeline="+source.timeline,library.backend->token);
         if(loaded)audio.preparedSource=std::make_shared<prepared::CatalogSource>(source);
         return loaded;
     };

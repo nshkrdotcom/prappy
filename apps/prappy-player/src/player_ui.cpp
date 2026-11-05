@@ -326,7 +326,7 @@ int runPlayer(HINSTANCE instance) {
                 measured.loudness=source.loudness;measured.samplePeak=source.peak;
                 tags=gain::parseTags(source.tags,lower(source.codec).find("opus")!=std::string::npos);
             }
-            return gain::choose(serial, analysis_registry::pathUtf8(path),
+            return gain::choose(serial, playback.sourceIdentity(path),
                 {preferences.normalize, settings.normalizationTargetLufs,
                  settings.normalizationUnmeasuredFallbackDb}, tags, measured);
         };
@@ -344,8 +344,7 @@ int runPlayer(HINSTANCE instance) {
                 std::to_string(decision.appliedDb) + "\n").c_str());
         };
         const auto prioritizeCurrent = [&] {
-            const auto track = matchingTrack(audio.current);
-            if(track!=library.tracks.end()&&library.backend)preparedWaveform.select(*track,*library.backend);
+            if(audio.preparedSource&&library.backend)preparedWaveform.select(*audio.preparedSource,*library.backend);
             else preparedWaveform.clear();
             waveform=preparedWaveform.value();
         };
@@ -487,8 +486,8 @@ int runPlayer(HINSTANCE instance) {
                 }
                 if(const auto track=matchingTrack(audio.current);track!=library.tracks.end()&&track->prepared) {
                     ImGui::TextWrapped("Selected: %s",track->prepared->state.c_str());
-                    if(ImGui::SmallButton("Reload prepared waveform")&&library.backend)
-                        preparedWaveform.select(*track,*library.backend,true);
+                    if(ImGui::SmallButton("Reload prepared waveform")&&library.backend&&audio.preparedSource)
+                        preparedWaveform.select(*audio.preparedSource,*library.backend,true);
                 }
                 if (!playback.folder.empty()) {
                     ImGui::TextWrapped("Folder: %s", utf8(playback.folder).c_str());

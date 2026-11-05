@@ -1,16 +1,14 @@
 #include "remote_waveform.h"
 
-void RemoteWaveform::select(const Track& track,const sampling::Connection& backend,bool force) {
-    if(!track.prepared){clear();return;}
-    const auto& selected=*track.prepared;
-    const auto next=selected.source.library+"/"+selected.source.capture+"/"+selected.asset+"/"+selected.state;
+void RemoteWaveform::select(const prepared::CatalogSource& selected,const sampling::Connection& backend,bool force) {
+    const auto next=selected.source.library+"/"+selected.source.capture+"/"+selected.asset+"/"+selected.timeline+"/"+selected.state;
     if(!force&&identity==next)return;
     identity=next;source=selected;++generation;waveform.reset();message=source.state;
     if(!source.ready())return;
     if(!client||connection.url!=backend.url||connection.token!=backend.token) {
         connection=backend;client=std::make_unique<sampling::Client>(connection,notify);
     }
-    sampling::Request request;request.tag="prepared-manifest";request.path=source.source.endpoint();
+    sampling::Request request;request.tag="prepared-manifest";request.path=source.source.endpoint()+"?asset="+source.asset+"&timeline="+source.timeline;
     request.generation=generation;client->submit(std::move(request));message="Reading prepared waveform";
 }
 
@@ -42,9 +40,9 @@ bool RemoteWaveform::collect() {
                 if(stride<=0||count<=0||count>8192||count!=source.listening.frames/stride+(source.listening.frames%stride?1:0))
                     throw std::runtime_error("Prepared waveform bins differ from the listening timeline.");
                 sampling::Request request;request.tag="prepared-waveform";request.generation=generation;
-                request.path=source.source.endpoint()+"/waveform?asset="+source.asset+"&domain=listening&level="+
+                request.path=source.source.endpoint()+"/waveform?asset="+source.asset+"&timeline="+source.timeline+"&domain=listening&level="+
                     std::to_string(level)+"&start=0&count="+std::to_string(count);
-                request.body={{"asset_key",source.asset},{"channels",2},{"start_bin",0},
+                request.body={{"asset_key",source.asset},{"timeline_id",source.timeline},{"channels",2},{"start_bin",0},
                               {"bin_count",count},{"frames_per_bin",stride}};
                 client->submit(std::move(request));
             } else if(reply.request.tag=="prepared-waveform") {

@@ -19,11 +19,13 @@ inline void sampleLibraryTests(const std::filesystem::path& directory,std::ostre
     require(library.all().size()==3&&library.at(a).drafts.size()==2,"Source/timeline workspaces collided.");
     library.at(a).view={{"viewport_start",900},{"viewport_end",2200},{"amplitude_mode",2}};
     const auto command=[&](std::string request,Span span,std::optional<RegionRef> ref={}){
-        LibraryJson payload={{"capture_id",a.capture},{"name",ref?"Edited while saving":"First"},{"kind","unknown"},{"span",{{"start_frame",span.start},{"end_frame",span.end}}}};
+        LibraryJson payload={{"capture_id",a.capture},{"timeline_id",a.timeline},{"name",ref?"Edited while saving":"First"},{"kind","unknown"},{"span",{{"start_frame",span.start},{"end_frame",span.end}}}};
         if(ref){payload["id"]=ref->id;payload["expected"]=ref->revision;}
         return LibraryJson{{"request_id",request},{"operation","region.save"},{"payload",payload}};
     };
     const auto savedRegion=[&](int revision,Span span){return LibraryJson{{"id","reg_"+std::string(32,'f')},{"revision",revision},{"capture_id",a.capture},{"timeline_id",a.timeline},{"span",{{"start_frame",span.start},{"end_frame",span.end}}}};};
+    auto wrongTimeline=command("wrong-timeline",first.span);wrongTimeline["payload"]["timeline_id"]=b.timeline;
+    rejects([&]{library.beginSave(a,one,wrongTimeline);});
     const auto frozen=library.beginSave(a,one,command("request-1",first.span));
     library.edit(a,one,{{1001,2001},{{"name","Edited while saving"}}});
     require(library.beginSave(a,one,command("request-new",{1001,2001}))==frozen,"Retry replaced an in-flight payload.");

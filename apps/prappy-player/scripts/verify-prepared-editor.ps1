@@ -1,5 +1,5 @@
 param([Parameter(Mandatory)][string]$Manifest,[string]$BuildVariant='Release',
-    [ValidateRange(1,100)][int]$Iterations=1,[switch]$EvictPreparedPages)
+    [ValidateRange(1,100)][int]$Iterations=1,[switch]$EvictPreparedPages,[switch]$InjectNotReady)
 $ErrorActionPreference='Stop'
 $app=Split-Path $PSScriptRoot -Parent
 $fixture=Get-Content -LiteralPath $Manifest -Raw|ConvertFrom-Json
@@ -67,7 +67,8 @@ try {
  Click list;Click library-0
  $song=Wait-Ui {param($ui)$ui.Duration-gt 14.9} 'prepared listening playback'
  $playerWidth=$song.Width;$playerHeight=$song.Height
- $headers=if($EvictPreparedPages){@{Authorization='Bearer '+[IO.File]::ReadAllText($fixture.token_file).Trim()}}else{@{}}
+ $headers=if($EvictPreparedPages -or $InjectNotReady){@{Authorization='Bearer '+[IO.File]::ReadAllText($fixture.token_file).Trim()}}else{@{}}
+ if($InjectNotReady){$null=Invoke-RestMethod -Method Post -Headers $headers -Uri ($fixture.gate_url+'/not-ready?count=2')}
  if($EvictPreparedPages){$null=Invoke-RestMethod -Method Post -Headers $headers -Uri ($fixture.gate_url+'/evict?asset='+$fixture.mark_capture.timeline.working_asset_key)}
  $clock=[Diagnostics.Stopwatch]::StartNew()
  Send-Input 'KEY CTRL 1';Send-Input 'KEY M 1';Send-Input 'KEY M 0';Send-Input 'KEY CTRL 0'

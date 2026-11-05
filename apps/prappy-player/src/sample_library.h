@@ -73,7 +73,7 @@ class SampleLibrary {
     }
     static void checkCommand(const SourceRef& source,const SampleDraft& draft,const DraftSave& save){
         const auto& c=save.command;const auto& p=c.at("payload");
-        if(c.at("request_id")!=save.request||c.at("operation")!="region.save"||p.at("capture_id")!=source.capture||
+        if(c.at("request_id")!=save.request||c.at("operation")!="region.save"||p.at("capture_id")!=source.capture||p.at("timeline_id")!=source.timeline||
            p.at("span").at("start_frame")!=save.submitted.span.start||p.at("span").at("end_frame")!=save.submitted.span.end)
             throw std::runtime_error("Save command does not describe this draft.");
         for(const auto* field:{"name","kind"})if(save.submitted.attributes.contains(field)&&p.at(field)!=save.submitted.attributes.at(field))

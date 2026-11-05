@@ -53,6 +53,7 @@ def gated_app(config):
     gate = asyncio.Event()
     gate.set()
     held_requests = waiting_requests = cancelled_requests = cancellation_epoch = 0
+    not_ready = {}
 
     def state():
         return {'ready': True, 'pid': os.getpid(), 'library_id': config['library_id'],
@@ -80,7 +81,18 @@ def gated_app(config):
                 cancelled_requests += 1
                 return JSONResponse({'error': {'code': 'fixture_cancelled',
                                               'message': 'Held fixture request cancelled'}}, status_code=503)
+        route = request.url.path
+        kind = 'manifest' if route.endswith('/prepared') else 'pcm' if route.endswith('/prepared/pcm') else 'waveform' if route.endswith('/prepared/waveform') else None
+        if kind and not_ready.get(kind, 0) and hmac.compare_digest(request.headers.get('Authorization', ''), 'Bearer ' + token):
+            not_ready[kind] -= 1
+            return JSONResponse({'state': 'Queued', 'error': None}, status_code=202)
         return await call_next(request)
+
+    @app.post('/_fixture/not-ready', dependencies=[Depends(authenticate)])
+    async def inject_not_ready(count: int = 2):
+        if not 0 <= count <= 10:raise HTTPException(400, 'invalid fixture count')
+        not_ready.update(manifest=count, pcm=count, waveform=count)
+        return dict(not_ready)
 
     @app.get('/_fixture/state', dependencies=[Depends(authenticate)])
     async def inspect_gate():

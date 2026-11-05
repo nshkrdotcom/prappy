@@ -12,7 +12,7 @@ inline nlohmann::json pcmContext(const nlohmann::json& manifest,Frame start,Fram
     if(start<0||count<1||start>=timeline.frames||count>timeline.frames-start||
        static_cast<uint64_t>(count)>64*1024*1024/(timeline.channels*sampleBytes(timeline.type)))
         throw std::runtime_error("Prepared request exceeds source bounds or memory budget.");
-    return {{"asset_key",manifest.at("key")},{"origin_frame",start},{"frame_count",count},
+    return {{"asset_key",manifest.at("key")},{"timeline_id",manifest.at("capture").at("timeline_id")},{"origin_frame",start},{"frame_count",count},
         {"sample_rate",timeline.rate},{"channels",timeline.channels},{"sample_format",domain.at("sample_format")},
         {"total_frames",timeline.frames},{"domain",listening?"listening":"native"}};
 }

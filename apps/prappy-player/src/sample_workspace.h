@@ -9,9 +9,10 @@
 #include "prepared_catalog.h"
 #include <array>
 #include <set>
+#include <map>
 namespace sampling {
 class Workspace {
-    struct PlayingSongMark {prepared::SourceRef source;std::string asset;Frame rate,frame;uint64_t ticket;bool submitted=false,failed=false;};
+    struct PlayingSongMark {prepared::SourceRef source;std::string asset,timeline;Frame rate,frame;uint64_t ticket;bool submitted=false,failed=false;};
     std::optional<PlayingSongMark> pendingMark;
     Json preparedManifest;
     Frame rate=Rate;
@@ -42,6 +43,8 @@ class Workspace {
     std::string pcmPath,detailPath;
     bool connectionReady=false;
     std::optional<Request> waitingAudition;
+    std::map<std::string,Request> preparedRetries;
+    std::chrono::steady_clock::time_point preparedRetryDue{};
     std::string serverUrl="http://127.0.0.1:8765",tokenFile;
     std::string metadataTarget,browsePath,auditionPath,analysisJob;
     std::chrono::steady_clock::time_point jobDue{};
@@ -97,6 +100,7 @@ class Workspace {
     void seekTransport(Audio&,Frame);
     void playbackOverlay();
     void process();
+    bool current(const Request&)const;
     void waveform(Audio&,const std::function<void(const char*,bool)>&);
 public:
     bool open=false;

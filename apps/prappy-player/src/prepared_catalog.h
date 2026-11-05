@@ -8,7 +8,7 @@
 namespace prepared {
 struct CatalogSource {
     SourceRef source;
-    std::string asset,state,title,artist,codec,libraryName,originalPath;
+    std::string asset,timeline,state,title,artist,codec,libraryName,originalPath;
     uint64_t originalBytes=0;
     double duration=0;
     NativeTimeline native,listening;
@@ -51,6 +51,8 @@ inline std::vector<CatalogSource> parseCatalog(const nlohmann::json& snapshot) {
         source.duration=row.at("duration_seconds");
         if(!std::isfinite(source.duration)||source.duration<=0)throw std::runtime_error("Invalid source duration.");
         if(source.ready()) {
+            source.timeline=row.at("timeline_id");
+            if(!SourceRef::valid(source.timeline,"tl_"))throw std::runtime_error("Invalid prepared timeline identity.");
             const auto& analysis=row.at("analysis");
             source.native={integer(analysis.at("native_rate")),integer(analysis.at("native_channels")),
                 integer(analysis.at("native_frames")),sampleType(analysis.at("native_sample_format").get<std::string>())};

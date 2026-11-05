@@ -1,5 +1,5 @@
 #pragma once
-#include "library.h"
+#include "prepared_catalog.h"
 #include "sample_client.h"
 #include "analysis_dsp.h"
 
@@ -13,7 +13,7 @@ class RemoteWaveform {
     std::shared_ptr<const analysis::Result> waveform;
 public:
     explicit RemoteWaveform(std::function<void()> wake):notify(std::move(wake)){}
-    void select(const Track&,const sampling::Connection&,bool force=false);
+    void select(const prepared::CatalogSource&,const sampling::Connection&,bool force=false);
     bool collect();
     void clear(){++generation;identity.clear();waveform.reset();message.clear();}
     const auto& value()const{return waveform;}
