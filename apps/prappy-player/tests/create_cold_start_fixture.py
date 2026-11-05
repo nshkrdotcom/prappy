@@ -48,6 +48,7 @@ def gated_app(config):
 
     token = Path(config['token_file']).read_text().strip()
     app = create_app([Path(config['library'])], token,
+                     working_root=Path(config['directory']) / 'working',
                      source_roots=[Path(config['directory']) / 'media'])
     gate = asyncio.Event()
     gate.set()
@@ -118,6 +119,7 @@ def create(port, manifest, directory):
     from audioharvest.catalog.commits import Catalog
     from audioharvest.catalog.config import init_library
     from audioharvest.services.sources import SourceService
+    from audioharvest.library_preparation import LibraryPreparation
 
     if port == 8765 or not 1024 <= port <= 65535:
         raise ValueError('choose a disposable port from 1024 through 65535, excluding production port 8765')
@@ -145,6 +147,10 @@ def create(port, manifest, directory):
     service = SourceService(library)
     previous = service.import_file(media / 'previous.wav', complete=True, title='Previous 440 Hz')
     marked = service.import_file(media / 'mark.wav', complete=True, title='Marked 660 Hz')
+    preparation = LibraryPreparation([library], directory / 'working')
+    preparation.refresh()
+    while preparation.prepare_one():
+        pass
     library_id = Catalog(library).config.id
     token = secrets.token_urlsafe(48)
     token_file = directory / 'server.token'
