@@ -40,12 +40,13 @@ HTTP and independent preparation use this same scope. Configure an adequately
 sized permanent working volume in `~/.config/audioharvest/storage.json`:
 
 ```json
-{"working_root":"/absolute/working/volume"}
+{"working_root":"/absolute/working/volume","reserve_gib":20}
 ```
 
 Size it for the complete corpus and required listening renders, with reserve
-space. Jobs reserve estimated space before encoding. Capacity failures remain
-visible and can be retried after capacity is available.
+space. Jobs reserve estimated space before encoding and preserve a configurable
+20-GiB floor by default. Capacity/offline jobs retry automatically when space or
+an original location returns, with at least 60 seconds between recovery checks.
 
 ```bash
 ./scripts/install-preparation-service.sh

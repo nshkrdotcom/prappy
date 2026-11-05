@@ -66,7 +66,9 @@ The user preparation service keeps working after HTTP/player shutdown and
 restarts after failure. It observes the configured libraries, persists jobs,
 checks original identity, prepares/verifies audio and peaks, then publishes Ready.
 Jobs reserve working space before encoding. CapacityBlocked and Offline are
-explicit states; complete-corpus readiness requires sufficient storage and
+explicit states and recover automatically when their resources return. The
+default free-space floor is 20 GiB, configurable as `reserve_gib` in storage.json.
+Complete-corpus readiness requires sufficient storage and
 successful preparation of every required source.
 
 The local player connects automatically to localhost:8765 using the existing
