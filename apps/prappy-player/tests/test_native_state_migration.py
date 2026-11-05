@@ -3,10 +3,11 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
-from migrate_native_state import Clock, migrate_workspace, migrate_history
+from migrate_native_state import Clock, migrate_workspace, migrate_history, migrate_preferences, plan_state, apply_plan
 
 
 class NativeStateMigration(unittest.TestCase):
@@ -85,6 +86,30 @@ class NativeStateMigration(unittest.TestCase):
         self.assertTrue(migrated.endswith('TRAIL 1 2\nCURSOR 1\n'))
         self.assertIn('REPEAT 2',migrated)
         with self.assertRaisesRegex(ValueError,'unmapped'):migrate_history(original,{},r'C:\player')
+
+    def test_preferences_keep_volume_geometry_and_search_without_retired_folder_scope(self):
+        old='PRAPPY_UI 4\n1 0 1 202\n"old-folder"\n1\n"hidden"\n1\n"pin"\n73\n'+\
+            '1 0 1 0 0\n374 265 1641 850 710 250\n0 0 0 0 0 0\n'+\
+            '"jazz" ".mka" "old-folder" "old-location"\n0 279\n1\n"old-include"\n1\n0 "old-group"\n'
+        new=migrate_preferences(old,{'opus'})
+        self.assertTrue(new.startswith('PRAPPY_UI 4\n1 0 1 202\n""\n0\n0\n73\n'))
+        self.assertIn('374 265 1641 850 710 250\n',new)
+        self.assertIn('"jazz" "" "" ""\n0 279\n0\n0\n',new)
+        self.assertNotIn('old-folder',new)
+
+    def test_apply_archives_every_original_and_resumes(self):
+        state,bundle=self.fixture(); bundle['history_paths']={}; bundle['codecs']=['opus']
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); source=root/'sample-workspaces.json'
+            original=json.dumps(state,ensure_ascii=False).encode(); source.write_bytes(original)
+            plan=plan_state(root,bundle)
+            with self.assertRaisesRegex(RuntimeError,'injected'):apply_plan(plan,fail_after=1)
+            result=apply_plan(plan)
+            self.assertEqual((Path(result['archive'])/'sample-workspaces.json.before').read_bytes(),original)
+            self.assertEqual(json.loads(source.read_bytes())['active_source']['timeline_id'],'tl_'+'4'*32)
+            self.assertEqual(apply_plan(plan)['archive'],result['archive'])
+            source.write_text('{}')
+            with self.assertRaisesRegex(ValueError,'changed'):apply_plan(plan)
 
 
 if __name__=='__main__':unittest.main()

@@ -4,10 +4,14 @@ The backend supplies verified old timelines, native manifests and exact region
 revision mappings. Conversion is offline, after outstanding saves have settled.
 """
 from copy import deepcopy
+import argparse
+import hashlib
 import json
 import math
-from pathlib import PureWindowsPath
+import os
+from pathlib import Path, PureWindowsPath
 import re
+import tempfile
 
 
 def source_key(source):
@@ -118,3 +122,113 @@ def migrate_history(text,path_map,windows_state_directory):
         target=PureWindowsPath(windows_state_directory)/'sources'/source['library_id']/(source['capture_id']+'.source')
         lines[index]=match[1]+json.dumps(str(target),ensure_ascii=False)+(match[3] or '')
     return ''.join(lines)
+
+
+def migrate_preferences(text,codecs):
+    lines=text.splitlines()
+    if not lines or lines[0]!='PRAPPY_UI 4':raise ValueError('unsupported preferences version')
+    cursor=3
+    def skip_paths():
+        nonlocal cursor
+        count=int(lines[cursor]); cursor+=1
+        if not 0<=count<=4096 or cursor+count>len(lines):raise ValueError('invalid preference path list')
+        cursor+=count
+    skip_paths(); skip_paths()
+    volume=lines[cursor]; cursor+=1
+    if not 0<=int(volume)<=100:raise ValueError('invalid saved volume')
+    session=lines[cursor:cursor+3]; cursor+=3
+    strings=[]; remainder=lines[cursor]; cursor+=1
+    decoder=json.JSONDecoder()
+    for _ in range(4):
+        value,end=decoder.raw_decode(remainder.lstrip()); strings.append(value)
+        remainder=remainder.lstrip()[end:]
+    if remainder.strip() or any(not isinstance(value,str) for value in strings):raise ValueError('invalid preference filters')
+    if strings[1].removeprefix('.') not in codecs:strings[1]=''
+    strings[2:]=['','']
+    scroll=lines[cursor]; cursor+=1
+    skip_paths()
+    groups=int(lines[cursor]); cursor+=1
+    if not 0<=groups<=500000 or cursor+groups>len(lines):raise ValueError('invalid saved groups')
+    cursor+=groups
+    if any(line.strip() for line in lines[cursor:]):raise ValueError('unexpected preferences data')
+    # Filesystem folder scopes cannot identify the new catalog's library groups.
+    # Their original bytes remain archived; user volume/layout/search are retained.
+    return '\n'.join([lines[0],lines[1],'""','0','0',volume,*session,
+        ' '.join(json.dumps(value,ensure_ascii=False) for value in strings),scroll,'0','0'])+'\n'
+
+
+def plan_state(directory,bundle):
+    directory=Path(directory).resolve(); files=[]
+    for name in ('sample-workspaces.json','player-history.txt','player-ui.txt'):
+        path=directory/name
+        if not path.is_file():continue
+        original=path.read_bytes(); text=original.decode('utf-8-sig')
+        if name=='sample-workspaces.json':
+            text=json.dumps(migrate_workspace(json.loads(text),bundle),indent=2,ensure_ascii=False)+'\n'
+        elif name=='player-history.txt':
+            text=migrate_history(text,bundle['history_paths'],bundle['windows_state_directory'])
+        else:text=migrate_preferences(text,set(bundle['codecs']))
+        files.append({'name':name,'original_sha256':hashlib.sha256(original).hexdigest(),'new_text':text})
+    return {'schema_version':1,'state_directory':str(directory),'files':files}
+
+
+def atomic_write(path,data):
+    path.parent.mkdir(parents=True,exist_ok=True)
+    descriptor,name=tempfile.mkstemp(prefix='.native-state-',dir=path.parent)
+    try:
+        with os.fdopen(descriptor,'wb') as stream:
+            stream.write(data); stream.flush(); os.fsync(stream.fileno())
+        os.replace(name,path)
+        directory=os.open(path.parent,os.O_RDONLY)
+        try:os.fsync(directory)
+        finally:os.close(directory)
+    finally:Path(name).unlink(missing_ok=True)
+
+
+def apply_plan(plan,*,fail_after=None):
+    if plan['schema_version']!=1:raise ValueError('unsupported state migration plan')
+    root=Path(plan['state_directory']).resolve()
+    identity=hashlib.sha256(json.dumps(plan,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+    archive=(root/'native-state-originals'/identity).resolve()
+    if not archive.is_relative_to(root):raise ValueError('state archive leaves its directory')
+    changes=[]
+    for item in plan['files']:
+        name=item['name']
+        if name not in {'sample-workspaces.json','player-history.txt','player-ui.txt'}:
+            raise ValueError('unexpected state migration file')
+        path=root/name; backup=archive/(name+'.before'); data=item['new_text'].encode('utf-8')
+        if path.is_symlink():raise ValueError('state migration cannot replace a symbolic link')
+        original=path.read_bytes()
+        if backup.exists():
+            if hashlib.sha256(backup.read_bytes()).hexdigest()!=item['original_sha256']:
+                raise ValueError('original state archive changed')
+            if original!=data and hashlib.sha256(original).hexdigest()!=item['original_sha256']:
+                raise ValueError('saved state changed after planning')
+        elif hashlib.sha256(original).hexdigest()==item['original_sha256']:
+            changes.append((backup,original))
+        else:raise ValueError('saved state changed before archival')
+    for path,data in changes:atomic_write(path,data)
+    atomic_write(archive/'plan.json',json.dumps(plan,indent=2,ensure_ascii=False).encode('utf-8'))
+    for index,item in enumerate(plan['files'],1):
+        atomic_write(root/item['name'],item['new_text'].encode('utf-8'))
+        if fail_after==index:raise RuntimeError('injected state migration interruption')
+    return {'applied':True,'archive':str(archive),'files':len(plan['files'])}
+
+
+def main():
+    parser=argparse.ArgumentParser(description='Plan/apply offline native player-state conversion; keep the player closed')
+    parser.add_argument('--state-dir',type=Path)
+    parser.add_argument('--mapping',type=Path)
+    parser.add_argument('--output',type=Path)
+    parser.add_argument('--apply-plan',type=Path)
+    args=parser.parse_args()
+    if args.apply_plan:
+        if args.state_dir or args.mapping or args.output:parser.error('apply-plan cannot be combined with planning arguments')
+        print(json.dumps(apply_plan(json.loads(args.apply_plan.read_bytes())))); return
+    if not all((args.state_dir,args.mapping,args.output)):parser.error('planning requires state-dir, mapping and a new output path')
+    plan=plan_state(args.state_dir,json.loads(args.mapping.read_bytes()))
+    with args.output.open('x',encoding='utf-8') as stream:json.dump(plan,stream,indent=2,ensure_ascii=False)
+    print(json.dumps({'plan':str(args.output),'files':len(plan['files']),'applied':False}))
+
+
+if __name__=='__main__':main()
