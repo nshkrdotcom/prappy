@@ -215,6 +215,9 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
         require(rejected, message);
     };
     try {
+        const auto defaults=logPath.parent_path()/fs::path("defaults-"+sampling::uuid()+".ini");
+        createDefaultConfig(defaults);
+        require(readConfig(defaults).debugLog,"Generated player defaults do not load with debug logging enabled.");
         waveformRenderTests(log);
         {
             require(Browse::tokens("  artist \"NU NU\" mix ") == std::vector<std::wstring>({L"artist",L"nu nu",L"mix"}),

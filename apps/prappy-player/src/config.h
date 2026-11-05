@@ -84,8 +84,6 @@ inline void createDefaultConfig(const fs::path& file) {
         << "directory=" << root << "\nextensions=flac,wav,mp3,opus,m4a,wv,mka,webm,ogg,aac,aiff,wma\n"
         << "history_limit=10000\nadd_new_listening_history_entry_when_replaying_history_item=false\ndebug_log=true\n"
         << "# Loudness matching is enabled/disabled in Options and saved with player-ui.txt.\n"
-        << "normalization_target_lufs=-18\nnormalization_unmeasured_fallback_db=0\n"
-        << "# 0 = auto: hardware cores minus two, clamped to 1..4.\n"
-        << "analysis_worker_count=0\nanalysis_remote_concurrency_limit=2\nanalysis_waveform_memory_mib=128\n";
+        << "normalization_target_lufs=-18\nnormalization_unmeasured_fallback_db=0\n";
     if (!out) throw std::runtime_error("Cannot create player.ini. Put the player in a writable folder.");
 }
