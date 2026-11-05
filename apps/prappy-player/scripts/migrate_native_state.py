@@ -1,0 +1,120 @@
+"""One-time native state conversion; normal player code has no retired reader.
+
+The backend supplies verified old timelines, native manifests and exact region
+revision mappings. Conversion is offline, after outstanding saves have settled.
+"""
+from copy import deepcopy
+import json
+import math
+from pathlib import PureWindowsPath
+import re
+
+
+def source_key(source):
+    for name,prefix in (('library_id','lib'),('capture_id','cap'),('timeline_id','tl')):
+        check_id(source[name],prefix)
+    return '/'.join(source[name] for name in ('library_id','capture_id','timeline_id'))
+
+
+def check_id(value,prefix):
+    if not isinstance(value,str) or not re.fullmatch(prefix+r'_[0-9a-f]{32}',value):
+        raise ValueError('invalid canonical '+prefix+' identity')
+
+
+class Clock:
+    def __init__(self,old,native):
+        self.old_rate,self.rate=old['sample_rate'],native['sample_rate']
+        self.old_total,self.total=old['frame_count'],native['frame_count']
+        if any(type(value) is not int or value<=0 or value>2**63-1 for value in (
+            self.old_rate,self.rate,self.old_total,self.total)):
+            raise ValueError('invalid source clock')
+        if max(self.old_rate,self.rate)>768000 or abs(self.round(self.old_total)-self.total)>(self.rate+self.old_rate-1)//self.old_rate+1:
+            raise ValueError('source duration changed during native migration')
+
+    def round(self,value):return (2*value*self.rate+self.old_rate)//(2*self.old_rate)
+
+    def frame(self,value):
+        if type(value) is not int or not 0<=value<=self.old_total:raise ValueError('source frame is out of bounds')
+        result=self.total if value==self.old_total else self.round(value)
+        if not 0<=result<=self.total:raise ValueError('native frame is out of bounds')
+        return result
+
+    def viewport(self,value):
+        if type(value) not in (int,float) or not math.isfinite(value):raise ValueError('invalid viewport')
+        return self.total if value==self.old_total else value*self.rate/self.old_rate
+
+
+def migrate_workspace(original,bundle):
+    if bundle['schema_version']!=1:raise ValueError('unsupported migration manifest')
+    if original['commands'] or original.get('source_handoff') is not None:
+        raise ValueError('pending commands and source handoffs must finish before migration')
+    mappings={}
+    for item in bundle['sources']:
+        old=item['timeline']; prepared=item['prepared']; capture=prepared['capture']; native=capture['timeline']
+        old_ref={'library_id':item['library_id'],'capture_id':old['capture_id'],'timeline_id':old['id']}
+        if (prepared['state']!='Ready' or capture['id']!=old['capture_id'] or
+            capture['timeline_id']!=native['id'] or native['working_asset_key']!=prepared['key'] or
+            capture['blob_sha256']!=prepared['source_sha256']):
+            raise ValueError('native manifest does not describe the saved original')
+        key=source_key(old_ref); new_ref={**old_ref,'timeline_id':native['id']}; source_key(new_ref)
+        if key in mappings:raise ValueError('duplicate source mapping')
+        mappings[key]=(item,Clock(old,native),new_ref)
+    regions=bundle['region_revisions']
+    def region_ref(library,reference):
+        key=library+'/'+reference['id']+':'+str(reference['revision'])
+        if key not in regions:raise ValueError('saved region has no native revision mapping')
+        return {**reference,**regions[key]}
+    def draft_value(library,value,clock):
+        converted=deepcopy(value)
+        converted['start']=clock.frame(value['start']); converted['end']=clock.frame(value['end'])
+        if converted['start']>=converted['end']:raise ValueError('saved draft would collapse in the native clock')
+        attributes=converted['attributes']; target=attributes.get('metadata_target','')
+        if target.startswith('reg_'):
+            attributes['metadata_target_revision']=region_ref(library,{
+                'id':target,'revision':attributes['metadata_target_revision']})['revision']
+        metadata=attributes.get('metadata',{})
+        if metadata.get('target_id','').startswith('reg_'):
+            metadata['target_revision']=region_ref(library,{
+                'id':metadata['target_id'],'revision':metadata['target_revision']})['revision']
+        return converted
+    result=deepcopy(original)
+    for name in ('source_handoff_digest','source_handoff_library','source_handoff_request'):result.pop(name,None)
+    result['source_handoff_source']=None; result['prepared_manifest']=None
+    for row in result['workspaces']['sources']:
+        key=source_key(row['source'])
+        if key not in mappings:raise ValueError('saved editor source is unmapped')
+        item,clock,new_ref=mappings[key]; library=new_ref['library_id']
+        if row['total']!=clock.old_total:raise ValueError('workspace differs from its registered timeline')
+        row['total']=clock.total; row['source']=new_ref
+        view=row['view']; view['capture']=deepcopy(item['prepared']['capture'])
+        if 'cursor' in view:view['cursor']=min(clock.total-1,clock.frame(view['cursor']))
+        for name in ('viewport_start','viewport_end'):
+            if name in view:view[name]=clock.viewport(view[name])
+        for draft in row['drafts']:
+            if draft['saving'] is not None:raise ValueError('pending draft saves must finish before migration')
+            was_dirty=draft['baseline'] is None or draft['value']!=draft['baseline']
+            draft['value']=draft_value(library,draft['value'],clock)
+            if draft['baseline'] is not None:draft['baseline']=draft_value(library,draft['baseline'],clock)
+            if draft['region'] is not None:draft['region']=region_ref(library,draft['region'])
+            if was_dirty!=(draft['baseline'] is None or draft['value']!=draft['baseline']):
+                raise ValueError('native rounding would hide an unsaved edit; preserve it explicitly before migration')
+    if result['active_source'] is not None:
+        item,_,new_ref=mappings[source_key(result['active_source'])]
+        result['active_source']=new_ref; result['prepared_manifest']=deepcopy(item['prepared'])
+    return result
+
+
+def migrate_history(text,path_map,windows_state_directory):
+    lines=text.splitlines(keepends=True)
+    if not lines or lines[0].rstrip('\r\n')!='PRAPPY_HISTORY 1':raise ValueError('unsupported history version')
+    for index,line in enumerate(lines):
+        if not line.startswith(('ENTRY ','QUEUED ')):continue
+        match=re.fullmatch(r'((?:ENTRY|QUEUED) \d+ -?\d+ \S+ )(".*")(\r?\n)?',line)
+        if match is None:raise ValueError('invalid history entry')
+        path=json.loads(match[2])
+        if path not in path_map:raise ValueError('unmapped history audio: '+path)
+        source=path_map[path]
+        check_id(source['library_id'],'lib'); check_id(source['capture_id'],'cap')
+        target=PureWindowsPath(windows_state_directory)/'sources'/source['library_id']/(source['capture_id']+'.source')
+        lines[index]=match[1]+json.dumps(str(target),ensure_ascii=False)+(match[3] or '')
+    return ''.join(lines)
