@@ -1,5 +1,5 @@
 param([Parameter(Mandatory)][string]$Manifest,[string]$BuildVariant='Release',
-    [ValidateRange(1,100)][int]$Iterations=1,[switch]$EvictPreparedPages,[switch]$InjectNotReady)
+    [ValidateRange(1,100)][int]$Iterations=1,[switch]$EvictPreparedPages,[switch]$InjectNotReady,[switch]$InjectCatalogNotReady)
 $ErrorActionPreference='Stop'
 $app=Split-Path $PSScriptRoot -Parent
 $fixture=Get-Content -LiteralPath $Manifest -Raw|ConvertFrom-Json
@@ -62,6 +62,7 @@ function Stop-Player {
  if($process -and !$process.HasExited){$null=$process.CloseMainWindow();if(!$process.WaitForExit(5000)){Stop-Process -Id $process.Id}}
 }
 try {
+ if($InjectCatalogNotReady){$fixtureHeaders=@{Authorization='Bearer '+[IO.File]::ReadAllText($fixture.token_file).Trim()};$null=Invoke-RestMethod -Method Post -Headers $fixtureHeaders -Uri ($fixture.gate_url+'/catalog-not-ready')}
  Start-Player
  $null=Wait-Ui {param($ui)$ui.Catalog.sources-eq 2} 'prepared catalog'
  Click list;Click library-0
@@ -101,6 +102,7 @@ try {
  $restored=Wait-Ui {param($ui)$ui.Sample.capture-eq $ready.Sample.capture -and $ui.Sample.waveform_exact_pcm} 'native editor restart'
  if($restored.Sample.end-ne $ready.Sample.end){throw 'Editor restart changed native selection frames.'}
  $log=Get-Content "$state/player-debug.log" -Raw
+ if($InjectCatalogNotReady -and ($log-notmatch 'play.preparing ' -or $log-notmatch 'play.prepared ')){throw 'Pending prepared playback was not exercised.'}
  if($log-match 'tag=(hash|resolve|source-import|pcm|audition) '){throw 'Editor used retired source registration or raw PCM paths.'}
  $ordered=@($measurements|Sort-Object)
  $percentiles=@(.5,.95,.99)|ForEach-Object {$ordered[[Math]::Ceiling($_*$ordered.Count)-1]}

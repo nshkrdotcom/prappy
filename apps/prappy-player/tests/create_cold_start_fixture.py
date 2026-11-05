@@ -54,6 +54,7 @@ def gated_app(config):
     gate.set()
     held_requests = waiting_requests = cancelled_requests = cancellation_epoch = 0
     not_ready = {}
+    catalog_not_ready = 0
 
     def state():
         return {'ready': True, 'pid': os.getpid(), 'library_id': config['library_id'],
@@ -66,7 +67,7 @@ def gated_app(config):
 
     @app.middleware('http')
     async def hold_product_requests(request, call_next):
-        nonlocal held_requests, waiting_requests, cancelled_requests
+        nonlocal held_requests, waiting_requests, cancelled_requests,catalog_not_ready
         if request.url.path.startswith('/v1/') and not gate.is_set():
             if not hmac.compare_digest(request.headers.get('Authorization', ''), 'Bearer ' + token):
                 return JSONResponse({'error': 'invalid credentials'}, status_code=401)
@@ -86,7 +87,19 @@ def gated_app(config):
         if kind and not_ready.get(kind, 0) and hmac.compare_digest(request.headers.get('Authorization', ''), 'Bearer ' + token):
             not_ready[kind] -= 1
             return JSONResponse({'state': 'Queued', 'error': None}, status_code=202)
-        return await call_next(request)
+        response=await call_next(request)
+        if route=='/v1/catalog' and response.status_code==200 and catalog_not_ready:
+            catalog_not_ready-=1
+            body=json.loads(b''.join([chunk async for chunk in response.body_iterator]))
+            for item in body['items']:item.update(state='Queued',analysis=None,timeline_id=None)
+            return JSONResponse(body)
+        return response
+
+    @app.post('/_fixture/catalog-not-ready', dependencies=[Depends(authenticate)])
+    async def inject_catalog_not_ready():
+        nonlocal catalog_not_ready
+        catalog_not_ready=1
+        return {'catalog_not_ready':catalog_not_ready}
 
     @app.post('/_fixture/not-ready', dependencies=[Depends(authenticate)])
     async def inject_not_ready(count: int = 2):

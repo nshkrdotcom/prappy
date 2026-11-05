@@ -6,6 +6,7 @@
 #include <utility>
 
 namespace prepared {
+struct NotReady:std::runtime_error {using std::runtime_error::runtime_error;};
 struct CatalogSource {
     SourceRef source;
     std::string asset,timeline,state,title,artist,codec,libraryName,originalPath;

@@ -15,6 +15,8 @@ struct Playback {
     HistoryFile& file;
     Loader load;
     std::optional<Pending> pending;
+    std::optional<fs::path> waitingSource;
+    debuglog::Clock::time_point preparationStarted{};
     std::set<std::wstring> unavailable;
     std::string notice;
     uint64_t generation = 0;
@@ -45,7 +47,12 @@ struct Playback {
         // This also prevents a brief audible start when restoring a saved session.
         try {
             if(!load(path,true,kind==Kind::Restore?0:position)){notice=audio.error;return false;}
+        } catch(const prepared::NotReady& error){
+            waitingSource=path;pending=Pending{kind,0,targetId,oldPaused,position,paused};
+            preparationStarted=debuglog::Clock::now();debuglog::write("play.preparing","state="+std::string(error.what()));
+            notice=error.what();++generation;return true;
         } catch(const std::exception& error){notice=error.what();return false;}
+        waitingSource.reset();
         pending = Pending{kind, audio.serial, targetId, oldPaused, position, paused};
         notice.clear(); ++generation; return true;
     }
@@ -91,7 +98,7 @@ struct Playback {
     }
     void removeQueued(uint64_t id) {
         if (pending && pending->targetId == id && history.find(id) && history.find(id)->queued) {
-            const bool paused = pending->oldPaused; pending.reset();
+            const bool paused = pending->oldPaused; pending.reset();waitingSource.reset();
             audio.run({"stop"}); audio.loaded = audio.active = false;
             if (const auto entry = history.current()) request(entry->path, Kind::Rollback, history.cursor, paused, entry->position);
             else audio.current.clear();
@@ -127,7 +134,20 @@ struct Playback {
     }
     void tick() {
         const bool eof = audio.poll();
-        if (pending && audio.loadedSerial == pending->serial) {
+        if(waitingSource&&pending){
+            const auto waitingId=key(*waitingSource);
+            const auto track=std::find_if(library.tracks.begin(),library.tracks.end(),[&](const auto& item){return Library::matches(item,waitingId);});
+            if(track!=library.tracks.end()&&track->prepared&&track->prepared->ready()){
+                try{
+                    if(load(*waitingSource,true,pending->kind==Kind::Restore?0:pending->position)){
+                        debuglog::write("play.prepared","wait_ms="+std::to_string(debuglog::elapsed(preparationStarted)));
+                        pending->serial=audio.serial;waitingSource.reset();notice.clear();
+                    }else{notice=audio.error;pending.reset();waitingSource.reset();++generation;}
+                }catch(const prepared::NotReady& error){notice=error.what();}
+                catch(const std::exception& error){notice=error.what();pending.reset();waitingSource.reset();++generation;}
+            }else if(track!=library.tracks.end()&&track->prepared)notice="Recording preparation: "+track->prepared->state;
+        }
+        if (pending && !waitingSource && audio.loadedSerial == pending->serial) {
             debuglog::write("play.ready","serial="+std::to_string(pending->serial)+" ms="+std::to_string(debuglog::elapsed(audio.loadStarted)));
             const auto completed = *pending; pending.reset();
             unavailable.erase(key(audio.current));
@@ -149,7 +169,7 @@ struct Playback {
             audio.setPaused(completed.paused);
             ++generation; file.save(history, true);
         }
-        if (pending && !audio.error.empty()) {
+        if (pending && !waitingSource && !audio.error.empty()) {
             debuglog::write("play.error","serial="+std::to_string(pending->serial)+" error="+audio.error);
             const auto failed = *pending; pending.reset();
             unavailable.insert(key(audio.current)); notice = audio.error; ++generation;

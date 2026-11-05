@@ -97,7 +97,7 @@ std::function<bool(const fs::path&,bool,double)> preparedPlaybackLoader(Audio& a
             promotions->client->collect();
             sampling::Request request;request.tag="prepared-promote";request.method="POST";
             request.path=source.source.endpoint()+"/promote";promotions->client->submit(std::move(request));
-            throw std::runtime_error("Recording preparation: "+source.state);
+            throw prepared::NotReady("Recording preparation: "+source.state);
         }
         const auto loaded=audio.play(path,paused,position,library.backend->url+source.source.endpoint()+
                                     "/playback?asset="+source.asset+"&timeline="+source.timeline,library.backend->token);
