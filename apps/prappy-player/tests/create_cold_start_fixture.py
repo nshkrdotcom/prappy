@@ -113,7 +113,7 @@ def serve(state_path):
                 log_level='warning', access_log=False)
 
 
-def create(port, manifest, directory):
+def create(port, manifest, directory, rate=48000, channels=2, subtype='PCM_16'):
     import numpy as np
     import soundfile as sf
     from audioharvest.catalog.commits import Catalog
@@ -134,17 +134,18 @@ def create(port, manifest, directory):
     directory = directory.resolve()
     media = directory / 'media'
     media.mkdir()
-    rate = 48000
+    if not 8000 <= rate <= 192000 or not 1 <= channels <= 32:
+        raise ValueError('invalid fixture timeline')
     frames = np.arange(rate * 15, dtype=np.float64)
     for name, hz in [('previous', 440), ('mark', 660)]:
         # The standard editor regression navigates from the loud opening to a
         # quieter final passage to verify viewport-dependent amplitude fitting.
         amplitude = np.where(frames < 9 * rate, .2, .02)
-        tone = (amplitude * np.sin(frames * (2 * np.pi * hz / rate))).astype('float32')
-        sf.write(media / (name + '.wav'), np.column_stack((tone, tone)), rate, subtype='PCM_16')
+        tone = amplitude * np.sin(frames * (2 * np.pi * hz / rate))
+        sf.write(media / (name + '.wav'), np.repeat(tone[:, None], channels, axis=1), rate, subtype=subtype)
     library = directory / 'library'
     init_library(library, registry=directory / 'registry.json')
-    service = SourceService(library)
+    service = SourceService(library, working_root=directory / 'working')
     previous = service.import_file(media / 'previous.wav', complete=True, title='Previous 440 Hz')
     marked = service.import_file(media / 'mark.wav', complete=True, title='Marked 660 Hz')
     preparation = LibraryPreparation([library], directory / 'working')
@@ -208,6 +209,9 @@ def main():
     parser.add_argument('--port', type=int)
     parser.add_argument('--manifest', type=Path)
     parser.add_argument('--directory', type=Path, help='new disposable Linux directory; defaults to /tmp')
+    parser.add_argument('--rate', type=int, default=48000)
+    parser.add_argument('--channels', type=int, default=2)
+    parser.add_argument('--subtype', choices=['PCM_16','PCM_32','FLOAT','DOUBLE'], default='PCM_16')
     parser.add_argument('--serve-state', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.serve_state:
@@ -215,7 +219,7 @@ def main():
     else:
         if args.port is None or args.manifest is None:
             parser.error('--port and --manifest are required')
-        create(args.port, args.manifest.resolve(), args.directory)
+        create(args.port, args.manifest.resolve(), args.directory, args.rate, args.channels, args.subtype)
 
 
 if __name__ == '__main__':

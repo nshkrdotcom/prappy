@@ -6,15 +6,15 @@
 #include "waveform_amplitude.h"
 #include "waveform_viewport.h"
 #include "sample_handoff.h"
-#include "sample_preparation.h"
-#include "sample_preview.h"
+#include "prepared_catalog.h"
 #include <array>
 #include <set>
 namespace sampling {
 class Workspace {
-    struct PlayingSongMark {fs::path path;Frame frame;uint64_t ticket;bool submitted=false,failed=false;std::optional<SecondsSpan> selection;double duration=0;OpenSource action=OpenSource::Cue;std::string digest{},importRequest{},importLibrary{};};
+    struct PlayingSongMark {prepared::SourceRef source;std::string asset;Frame rate,frame;uint64_t ticket;bool submitted=false,failed=false;};
     std::optional<PlayingSongMark> pendingMark;
-    Json markMatches=Json::array();
+    Json preparedManifest;
+    Frame rate=Rate;
     SampleLibrary sampleLibrary;
     SourceHandoff handoff;
     std::string sourceLibrary,activeDraft;
@@ -22,10 +22,8 @@ class Workspace {
     size_t sourceRegionOffset=0,sourceRegionTotal=0;
     bool selectionDefined=false,storageBlocked=false;
     std::string storageError;
-    SourcePreparation preparation;
     fs::path directory;
     std::function<void()> notify;
-    PreviewStore previewStore;
     std::unique_ptr<Client> client;
     Connection connection;
     Json libraries=Json::array(),items=Json::array(),collections=Json::array(),capture,region,overview,timing,metadata;
@@ -41,7 +39,7 @@ class Workspace {
     bool boundaryHeld=false;
     uint64_t generation=0;
     std::string library,notice,libraryQuery,facet,facetValue,regionName="New sample",kind="unknown",collectionName;
-    std::string pcmDecoder;
+    std::string pcmPath,detailPath;
     bool connectionReady=false;
     std::optional<Request> waitingAudition;
     std::string serverUrl="http://127.0.0.1:8765",tokenFile;
@@ -53,10 +51,14 @@ class Workspace {
     bool fit=true,connectionAttempted=false;
     double viewportStart=0,viewportEnd=48000;
     Frame pcmStart=0,pcmEnd=0;
-    std::vector<float> pcm;
+    std::vector<double> pcm;
+    std::shared_ptr<const prepared::Block> nativePcm;
+    Span monitorRange()const;
+    Frame monitorFrame(Frame)const;
+    Frame sourceFrame(Frame)const;
     AmplitudeScale amplitude;
     StereoEnvelope envelope,displayEnvelope;
-    std::vector<PeakBin> overviewBins;
+    std::vector<PeakBin> overviewBins,detailBins;
     uint64_t waveformRevision=0,envelopeRevision=~uint64_t{0},envelopeBuilds=0;
     Frame envelopeStart=-1,envelopeEnd=-1;
     size_t envelopeBudget=0;
@@ -75,22 +77,18 @@ class Workspace {
     SourceRef sourceRef()const;
     DraftValue draftValue()const;
     void stash();
-    void activateDraft(const std::string&);
-    void newDraft(Span,bool variant=false);
+    void activateDraft(const std::string&,bool fetch=true);
+    void newDraft(Span,bool variant=false,bool fetch=true);
     void fetchSourceRegions(size_t offset=0);
     void chooseRegion(const Json&);
     void submitMark();
-    void importMarkedSource();
     void finishMark(const Json&);
-    void openCapture(Json, std::optional<Span> = {});
+    void openCapture(Json, std::optional<Span> = {},std::optional<Frame> cue = {});
     void loadDetails(bool refresh=false);
     Json draftSnapshot()const;
     void discardConflicts();
     void persist();
     void restore();
-    void restorePreview();
-    void cachePreview();
-    void collectPreview();
     void metadataFields(const Json&);
     Json humanFacts(bool forSample=false)const;
     void requestAudition(Frame,bool);
@@ -112,7 +110,7 @@ public:
     void draw(Audio&,const std::function<void(const char*,bool)>&);
     bool active()const{return open;}
     bool animating()const{return open&&(transport.state==PlaybackState::Playing||transport.state==PlaybackState::Buffering);}
-    const std::string& preparationStatus()const{return preparation.status;}
-    std::string diagnostics()const{return Json{{"open",open},{"capture",capture.is_null()?Json(nullptr):capture.at("id")},{"region",region},{"start",editor.span.start},{"end",editor.span.end},{"pcm_frames",pcm.size()/2},{"beats",beats.size()},{"pending",pending.size()},{"notice",notice},{"amplitude_mode",static_cast<int>(amplitude.mode)},{"amplitude_gain",amplitude.gain},{"visible_peak",envelope.peak},{"envelope_builds",envelopeBuilds},{"waveform_exact_pcm",envelopePcm},{"viewport_start",viewportStart},{"viewport_end",viewportEnd},{"pcm_start",pcmStart},{"pcm_end",pcmEnd},{"playback_state",transport.status()},{"playback_scope",static_cast<int>(transport.scope)},{"playhead",transport.cursor},{"playback_start",transport.range.start},{"playback_end",transport.range.end},{"playback_loop",transport.loop},{"playback_chunks",auditionChunks},{"audio_frames_submitted",auditionSubmitted},{"selection_defined",selectionDefined},{"source_library",sourceLibrary},{"active_draft",activeDraft},{"workspace_count",sampleLibrary.all().size()},{"draft_count",capture.is_null()?size_t{0}:sampleLibrary.at(sourceRef()).drafts.size()},{"source_region_total",sourceRegionTotal},{"preparation",preparation.status},{"mark_pending",pendingMark.has_value()},{"mark_frame",pendingMark?pendingMark->frame:Frame{-1}},{"mark_failed",pendingMark&&pendingMark->failed}}.dump();}
+    const std::string& preparationStatus()const{return notice;}
+    std::string diagnostics()const{return Json{{"open",open},{"capture",capture.is_null()?Json(nullptr):capture.at("id")},{"region",region},{"start",editor.span.start},{"end",editor.span.end},{"pcm_frames",pcm.size()/2},{"beats",beats.size()},{"pending",pending.size()},{"notice",notice},{"amplitude_mode",static_cast<int>(amplitude.mode)},{"amplitude_gain",amplitude.gain},{"visible_peak",envelope.peak},{"envelope_builds",envelopeBuilds},{"waveform_exact_pcm",envelopePcm},{"viewport_start",viewportStart},{"viewport_end",viewportEnd},{"pcm_start",pcmStart},{"pcm_end",pcmEnd},{"playback_state",transport.status()},{"playback_scope",static_cast<int>(transport.scope)},{"playhead",transport.cursor},{"playback_start",transport.range.start},{"playback_end",transport.range.end},{"playback_loop",transport.loop},{"playback_chunks",auditionChunks},{"audio_frames_submitted",auditionSubmitted},{"selection_defined",selectionDefined},{"source_library",sourceLibrary},{"active_draft",activeDraft},{"workspace_count",sampleLibrary.all().size()},{"draft_count",capture.is_null()?size_t{0}:sampleLibrary.at(sourceRef()).drafts.size()},{"source_region_total",sourceRegionTotal},{"preparation",notice},{"mark_pending",pendingMark.has_value()},{"mark_frame",pendingMark?pendingMark->frame:Frame{-1}},{"mark_failed",pendingMark&&pendingMark->failed}}.dump();}
 };
 }

@@ -1,5 +1,7 @@
 #include "prepared_audio.h"
 #include "prepared_catalog.h"
+#include "prepared_requests.h"
+#include "sample_handoff.h"
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -51,5 +53,14 @@ int main() {
     rejects([&]{parseCatalog({{"items",nlohmann::json::array({row,row})}});});
     row["analysis"]["native_frames"]=1.5;
     rejects([&]{parseCatalog({{"items",nlohmann::json::array({row})}});});
+    sampling::SourceHandoff handoff;
+    const auto intent=handoff.begin("stable-recording",sampling::OpenSource::Selection,1,2,sampling::SecondsSpan{.5,1.5});
+    const auto resolved=handoff.resolve(intent.ticket,{library,capture,"tl_"+std::string(32,'d')},88200,44100);
+    require(resolved&&resolved->selection&&resolved->selection->start==22050&&resolved->selection->end==66150);
+    nlohmann::json manifest={{"key",std::string(64,'a')},{"sample_rate",192000},{"channels",32},
+        {"frames",1920000},{"sample_format","float64"}};
+    require(pcmContext(manifest,13,100).at("channels")==32);
+    rejects([&]{pcmContext(manifest,0,1920000);});
+    rejects([&]{pcmContext(manifest,1920000,1);});
     std::cout<<"PASS prepared source identity, native timeline, precision and bounded payloads\n";
 }

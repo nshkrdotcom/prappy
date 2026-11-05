@@ -18,6 +18,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <deque>
+namespace prepared {struct CatalogSource;}
 struct AudioInfo {
     std::string codec, sampleFormat, channelLayout;
     int64_t sampleRate = 0, channels = 0;
@@ -59,6 +60,7 @@ struct Audio {
     void waitIdle();
     std::string error;
     fs::path current;
+    std::shared_ptr<const prepared::CatalogSource> preparedSource;
     bool loaded = false, paused = false, active = false, waitingStart = false;
     bool pauseRequested = false; // User intent survives mpv's file-option reset at EOF.
     int64_t desiredEntry = -1, eventEntry = -1;
@@ -137,6 +139,7 @@ struct Audio {
     bool play(const fs::path& path, bool startPaused = false, double startPosition = 0,
               const std::string& streamUrl = {},const std::string& bearerToken = {}) {
         loadStarted=Clock::now();
+        preparedSource.reset();
         if (worker) {
             ++serial; const auto epoch=serial; const auto level=volume;
             if(logPlayback)debuglog::write("play.request","serial="+std::to_string(serial)+" source="+utf8(path));

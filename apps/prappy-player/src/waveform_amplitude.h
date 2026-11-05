@@ -37,7 +37,8 @@ struct StereoEnvelope {
         x.push_back(frame);lmin.push_back(lo);lmax.push_back(hi);rmin.push_back(ro);rmax.push_back(rh);
         peak=std::max({peak,std::abs(lo),std::abs(hi),std::abs(ro),std::abs(rh)});
     }
-    bool fromPcm(std::span<const float> audio,int64_t origin,int64_t first,int64_t end,size_t budget){
+    template<class Samples>
+    bool fromPcm(const Samples& audio,int64_t origin,int64_t first,int64_t end,size_t budget){
         clear();
         if(audio.size()%2 || first<origin || end<=first || end>origin+static_cast<int64_t>(audio.size()/2))return false;
         const auto step=std::max<int64_t>(1,(end-first+static_cast<int64_t>(std::max<size_t>(1,budget))-1)/static_cast<int64_t>(std::max<size_t>(1,budget)));

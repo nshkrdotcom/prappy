@@ -227,6 +227,8 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
                 if(header(L"X-Asset-Key")!=expected.at("asset_key").get<std::string>()||
                    header(L"X-Channels")!=std::to_string(expected.at("channels").get<int64_t>()))
                     throw std::runtime_error("Prepared response source or channel identity differs.");
+                if(request.tag=="prepared-pcm"&&header(L"X-Audio-Domain")!=expected.at("domain").get<std::string>())
+                    throw std::runtime_error("Prepared response audio domain differs.");
                 reply.body=expected;
                 if(request.tag=="prepared-pcm") {
                     const auto start=expected.at("origin_frame").get<int64_t>(),count=expected.at("frame_count").get<int64_t>();
@@ -428,7 +430,12 @@ Client::~Client(){ClientExecutor::instance().retire(state);}
 void Client::submit(Request request) {
     request.queuedAt=debuglog::Clock::now();request.diagnosticId=++nextDiagnosticId;
     auto& executor=ClientExecutor::instance();std::lock_guard guard(executor.mutex);
-    if(request.method=="GET"&&request.tag!="download")std::erase_if(state->pending,[&](const auto& old){return old.tag==request.tag&&(request.tag!="collectionMember"||old.path==request.path);});
+    if(request.method=="GET"&&request.tag!="download")std::erase_if(state->pending,[&](const auto& old){
+        if(old.tag!=request.tag)return false;
+        if(request.tag=="prepared-pcm")return old.body.at("domain")==request.body.at("domain");
+        if(request.tag=="prepared-waveform")return old.body.value("overview",false)==request.body.value("overview",false);
+        return request.tag!="collectionMember"||old.path==request.path;
+    });
     if(state->pending.size()>=512)throw std::runtime_error("Backend request queue is full.");
     state->pending.push_back(std::move(request));executor.wake.notify_all();
 }

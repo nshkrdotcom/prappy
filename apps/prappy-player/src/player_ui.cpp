@@ -321,9 +321,8 @@ int runPlayer(HINSTANCE instance) {
         const auto gainForPath = [&](const fs::path& path, uint64_t serial) {
             gain::Measurement measured;
             gain::Tags tags;
-            const auto track=matchingTrack(path);
-            if(track!=library.tracks.end()&&track->prepared&&track->prepared->ready()) {
-                const auto& source=*track->prepared;
+            if(audio.preparedSource&&key(path)==key(audio.current)) {
+                const auto& source=*audio.preparedSource;
                 measured.loudness=source.loudness;measured.samplePeak=source.peak;
                 tags=gain::parseTags(source.tags,lower(source.codec).find("opus")!=std::string::npos);
             }

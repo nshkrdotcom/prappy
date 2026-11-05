@@ -42,7 +42,7 @@ public:
     }
     SourceIntent begin(std::string path,OpenSource action,double cue,double duration,std::optional<SecondsSpan> selection={}){
         if(path.empty()||!std::isfinite(duration)||duration<=0||
-           duration*Rate>=static_cast<double>(std::numeric_limits<Frame>::max())||
+           duration*768000>=static_cast<double>(std::numeric_limits<Frame>::max())||
            !std::isfinite(cue)||cue<0||cue>duration||
            ((action==OpenSource::Selection)!=selection.has_value()))throw std::runtime_error("Invalid source handoff.");
         if(selection&&(!std::isfinite(selection->start)||!std::isfinite(selection->end)||selection->start<0||
@@ -50,14 +50,14 @@ public:
         pending=SourceIntent{++sequence,std::move(path),action,cue,duration,selection};return *pending;
     }
     void cancel(){pending.reset();}
-    std::optional<ResolvedIntent> resolve(uint64_t ticket,const SourceRef& source,Frame total){
+    std::optional<ResolvedIntent> resolve(uint64_t ticket,const SourceRef& source,Frame total,Frame rate){
         if(!pending||pending->ticket!=ticket)return {};
         source.validate();
         // 50 ms tolerates duration reporting granularity, not a different edit/timeline.
-        if(total<=0||std::abs(pending->duration-static_cast<double>(total)/Rate)>.05)
+        if(rate<=0||rate>768000||total<=0||std::abs(pending->duration-static_cast<double>(total)/static_cast<double>(rate))>.05)
             throw std::runtime_error("Player duration differs from the canonical timeline. Select again in the editor.");
         const auto frame=[&](double seconds){
-            const double scaled=seconds*Rate;
+            const double scaled=seconds*static_cast<double>(rate);
             if(!std::isfinite(scaled)||scaled>=static_cast<double>(std::numeric_limits<Frame>::max()))throw std::runtime_error("Time exceeds frame range.");
             const auto value=static_cast<Frame>(std::llround(scaled));
             // Only sub-frame duration-rounding error at the source end may be clamped.

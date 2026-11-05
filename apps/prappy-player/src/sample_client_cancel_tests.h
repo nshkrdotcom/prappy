@@ -7,6 +7,22 @@ inline void sampleClientCancellationTests(std::ostream& log) {
     using namespace sampling;
     const auto require=[](bool value,const char* message){if(!value)throw std::runtime_error(message);};
     struct ReleaseOnExit {std::promise<void>& promise;~ReleaseOnExit(){try{promise.set_value();}catch(const std::future_error&){}}};
+    {
+        std::promise<void> entered,release,completed;
+        ReleaseOnExit releaseOnExit{release};auto gate=release.get_future().share();
+        std::atomic<int> replies=0;
+        Client client(Connection{},[&]{if(++replies==2)completed.set_value();},
+            [](const Connection&,const Request&,std::stop_token){return Reply{};},
+            [&,gate](const fs::path&,std::stop_token){entered.set_value();gate.wait();return std::string(32,'x');});
+        require(entered.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready,"Prepared coalescing barrier did not start.");
+        client.submit({"prepared-pcm","GET","native-old",{{"domain","native"}},1,{}});
+        client.submit({"prepared-pcm","GET","monitor",{{"domain","listening"}},1,{}});
+        client.submit({"prepared-pcm","GET","native-latest",{{"domain","native"}},1,{}});
+        release.set_value();
+        require(completed.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready,"Native waveform detail cancelled pending audition audio.");
+        const auto result=client.collect();
+        require(result.size()==2&&result[0].request.path=="monitor"&&result[1].request.path=="native-latest","Prepared domain coalescing retained obsolete detail.");
+    }
     // The release gate is deliberately independent of cancellation. Destruction
     // must return while a filesystem/provider call has not acknowledged stop.
     for(const bool credentialRead:{false,true}) {

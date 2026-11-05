@@ -99,6 +99,9 @@ std::function<bool(const fs::path&,bool,double)> preparedPlaybackLoader(Audio& a
             request.path=source.source.endpoint()+"/promote";promotions->client->submit(std::move(request));
             throw std::runtime_error("Recording preparation: "+source.state);
         }
-        return audio.play(path,paused,position,library.backend->url+source.source.endpoint()+"/playback",library.backend->token);
+        const auto loaded=audio.play(path,paused,position,library.backend->url+source.source.endpoint()+
+                                    "/playback?asset="+source.asset,library.backend->token);
+        if(loaded)audio.preparedSource=std::make_shared<prepared::CatalogSource>(source);
+        return loaded;
     };
 }

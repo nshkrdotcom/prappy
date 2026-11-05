@@ -53,13 +53,13 @@ inline void sampleLibraryTests(const std::filesystem::path& directory,std::ostre
     SourceHandoff handoff;
     const auto stale=handoff.begin("alias-one",OpenSource::Cue,1,10);
     const auto requested=handoff.begin("alias-two",OpenSource::Selection,2,10,SecondsSpan{1.25,2.5});
-    require(!handoff.resolve(stale.ticket,b,Rate*10),"Superseded handoff was accepted.");
-    const auto resolved=handoff.resolve(requested.ticket,a,Rate*10);
+    require(!handoff.resolve(stale.ticket,b,Rate*10,Rate),"Superseded handoff was accepted.");
+    const auto resolved=handoff.resolve(requested.ticket,a,Rate*10,Rate);
     require(resolved&&resolved->source==a&&resolved->selection==Span{60000,120000}&&!handoff.current(),"Selection/cue mapping lost frozen intent.");
     const auto cancelled=handoff.begin("cancel",OpenSource::Samples,0,10);handoff.cancel();
-    require(!handoff.resolve(cancelled.ticket,a,Rate*10),"Cancelled handoff was accepted.");
+    require(!handoff.resolve(cancelled.ticket,a,Rate*10,Rate),"Cancelled handoff was accepted.");
     const auto mismatch=handoff.begin("mismatch",OpenSource::Selection,1,10,SecondsSpan{1,2});
-    rejects([&]{handoff.resolve(mismatch.ticket,a,Rate*9);});
+    rejects([&]{handoff.resolve(mismatch.ticket,a,Rate*9,Rate);});
     require(handoff.current()->ticket==mismatch.ticket,"Timeline mismatch discarded recoverable intent.");
     rejects([&]{handoff.begin("bad",OpenSource::Selection,0,10,SecondsSpan{2,2});});
     log<<"PASS canonical multi-source drafts, atomic reopen, idempotent pending saves, late acknowledgments, conflicts and source/range intent fencing\n";

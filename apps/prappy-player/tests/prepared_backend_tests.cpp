@@ -1,6 +1,7 @@
 #include "remote_catalog.h"
 #include "remote_waveform.h"
 #include "audio.h"
+#include "prepared_requests.h"
 #include <iostream>
 
 int main(int argc,char** argv) {
@@ -18,13 +19,15 @@ int main(int argc,char** argv) {
         if(library.tracks.size()!=2||progress.hashReads!=0||!library.backend)
             throw std::runtime_error("Catalog did not come from the prepared service.");
         for(const auto& track:library.tracks)
-            if(!track.prepared||!track.prepared->ready()||track.prepared->native.frames!=720000)
+            if(!track.prepared||!track.prepared->ready()||track.prepared->native.frames!=fixture.at("previous_capture").at("timeline").at("frame_count"))
                 throw std::runtime_error("Missing prepared native timeline.");
         const auto& source=*library.tracks.front().prepared;
+        sampling::Request inspect;inspect.tag="prepared-manifest";inspect.path=source.source.endpoint();
+        const auto manifest=sampling::perform(*library.backend,inspect);
+        if(!manifest.error.empty())throw std::runtime_error(manifest.error);
         sampling::Request range;range.tag="prepared-pcm";
         range.path=source.source.endpoint()+"/pcm?asset="+source.asset+"&start=100&count=1000";
-        range.body={{"asset_key",source.asset},{"origin_frame",100},{"frame_count",1000},
-            {"sample_rate",48000},{"channels",2},{"sample_format","float32"},{"total_frames",720000}};
+        range.body=prepared::pcmContext(manifest.body,100,1000);
         const auto reply=sampling::perform(*library.backend,range);
         if(!reply.error.empty()||!reply.preparedPcm||reply.preparedPcm->frames()!=1000)
             throw std::runtime_error("Prepared PCM failed: "+reply.error);
@@ -34,7 +37,7 @@ int main(int argc,char** argv) {
         while(!waveform.value()&&std::chrono::steady_clock::now()<deadline) {
             waveform.collect();Sleep(5);
         }
-        if(!waveform.value()||waveform.value()->frames!=720000||waveform.value()->levels[0].empty())
+        if(!waveform.value()||waveform.value()->frames!=static_cast<uint64_t>(source.listening.frames)||waveform.value()->levels[0].empty())
             throw std::runtime_error("Prepared waveform failed: "+waveform.status());
         Audio audio;audio.open(true,{},false);
         const auto load=preparedPlaybackLoader(audio,library,[]{});
