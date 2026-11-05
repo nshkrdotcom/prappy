@@ -59,7 +59,6 @@ private:
     int y = 0;
     int width = 0;
     int height = 0;
-    bool pending = false;
   };
 
   bool writeBmp(
@@ -76,7 +75,6 @@ private:
   mutable std::mutex mutex;
   ScreenshotCapture capture;
   std::string completedMessage;
-  bool hasCompletedMessage = false;
 };
 
 std::filesystem::path nextScreenshotPath();

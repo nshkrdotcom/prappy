@@ -156,205 +156,49 @@ endif()
 set(SHADER_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
 file(MAKE_DIRECTORY "${SHADER_OUT_DIR}")
 
-add_custom_command(
-  OUTPUT "${SHADER_OUT_DIR}/imgui_vs.bin"
-  COMMAND "${BGFX_SHADERC}"
-    -f "${ROOT_DIR}/src/shaders/imgui.vs.sc"
-    -o "${SHADER_OUT_DIR}/imgui_vs.bin"
-    --type vertex
-    --platform windows
-    -p s_5_0
-    --varyingdef "${ROOT_DIR}/src/shaders/varying.def.sc"
-    -i "${BGFX_DIR}/src"
-  DEPENDS
-    "${BGFX_SHADERC}"
-    "${ROOT_DIR}/src/shaders/imgui.vs.sc"
-    "${ROOT_DIR}/src/shaders/varying.def.sc"
-  VERBATIM
-)
+function(prappy_shader name source type)
+  set(varying_options)
+  set(varying_dependencies)
+  if(ARGC GREATER 3)
+    set(varying_file "${ROOT_DIR}/src/shaders/${ARGV3}")
+    set(varying_options --varyingdef "${varying_file}")
+    set(varying_dependencies "${varying_file}")
+  endif()
 
-add_custom_command(
-  OUTPUT "${SHADER_OUT_DIR}/imgui_fs.bin"
-  COMMAND "${BGFX_SHADERC}"
-    -f "${ROOT_DIR}/src/shaders/imgui.fs.sc"
-    -o "${SHADER_OUT_DIR}/imgui_fs.bin"
-    --type fragment
-    --platform windows
-    -p s_5_0
-    --varyingdef "${ROOT_DIR}/src/shaders/varying.def.sc"
-    -i "${BGFX_DIR}/src"
-  DEPENDS
-    "${BGFX_SHADERC}"
-    "${ROOT_DIR}/src/shaders/imgui.fs.sc"
-    "${ROOT_DIR}/src/shaders/varying.def.sc"
-  VERBATIM
-)
+  set(output "${SHADER_OUT_DIR}/${name}.bin")
+  add_custom_command(
+    OUTPUT "${output}"
+    COMMAND "${BGFX_SHADERC}"
+      -f "${ROOT_DIR}/src/shaders/${source}"
+      -o "${output}"
+      --type ${type}
+      --platform windows
+      -p s_5_0
+      ${varying_options}
+      -i "${BGFX_DIR}/src"
+    DEPENDS
+      "${BGFX_SHADERC}"
+      "${ROOT_DIR}/src/shaders/${source}"
+      ${varying_dependencies}
+    VERBATIM
+  )
+  list(APPEND SHADER_FILES "${output}")
+  set(SHADER_FILES "${SHADER_FILES}" PARENT_SCOPE)
+endfunction()
 
-add_custom_command(
-  OUTPUT "${SHADER_OUT_DIR}/color_vs.bin"
-  COMMAND "${BGFX_SHADERC}"
-    -f "${ROOT_DIR}/src/shaders/color.vs.sc"
-    -o "${SHADER_OUT_DIR}/color_vs.bin"
-    --type vertex
-    --platform windows
-    -p s_5_0
-    --varyingdef "${ROOT_DIR}/src/shaders/visualization_varying.def.sc"
-    -i "${BGFX_DIR}/src"
-  DEPENDS
-    "${BGFX_SHADERC}"
-    "${ROOT_DIR}/src/shaders/color.vs.sc"
-    "${ROOT_DIR}/src/shaders/visualization_varying.def.sc"
-  VERBATIM
-)
+prappy_shader(imgui_vs imgui.vs.sc vertex varying.def.sc)
+prappy_shader(imgui_fs imgui.fs.sc fragment varying.def.sc)
+prappy_shader(color_vs color.vs.sc vertex visualization_varying.def.sc)
+prappy_shader(color_fs color.fs.sc fragment visualization_varying.def.sc)
+prappy_shader(oahu_terrain_vs oahu_terrain.vs.sc vertex oahu_terrain_varying.def.sc)
+prappy_shader(oahu_terrain_fs oahu_terrain.fs.sc fragment oahu_terrain_varying.def.sc)
+prappy_shader(oahu_ocean_vs oahu_ocean.vs.sc vertex oahu_ocean_varying.def.sc)
+prappy_shader(oahu_ocean_fs oahu_ocean.fs.sc fragment oahu_ocean_varying.def.sc)
+prappy_shader(particle_vs particle.vs.sc vertex particle_varying.def.sc)
+prappy_shader(particle_fs particle.fs.sc fragment particle_varying.def.sc)
+prappy_shader(particle_update_cs particle_update.cs.sc compute)
 
-add_custom_command(
-  OUTPUT "${SHADER_OUT_DIR}/color_fs.bin"
-  COMMAND "${BGFX_SHADERC}"
-    -f "${ROOT_DIR}/src/shaders/color.fs.sc"
-    -o "${SHADER_OUT_DIR}/color_fs.bin"
-    --type fragment
-    --platform windows
-    -p s_5_0
-    --varyingdef "${ROOT_DIR}/src/shaders/visualization_varying.def.sc"
-    -i "${BGFX_DIR}/src"
-  DEPENDS
-    "${BGFX_SHADERC}"
-    "${ROOT_DIR}/src/shaders/color.fs.sc"
-    "${ROOT_DIR}/src/shaders/visualization_varying.def.sc"
-  VERBATIM
-)
-
-add_custom_command(
-  OUTPUT "${SHADER_OUT_DIR}/oahu_terrain_vs.bin"
-  COMMAND "${BGFX_SHADERC}"
-    -f "${ROOT_DIR}/src/shaders/oahu_terrain.vs.sc"
-    -o "${SHADER_OUT_DIR}/oahu_terrain_vs.bin"
-    --type vertex
-    --platform windows
-    -p s_5_0
-    --varyingdef "${ROOT_DIR}/src/shaders/oahu_terrain_varying.def.sc"
-    -i "${BGFX_DIR}/src"
-  DEPENDS
-    "${BGFX_SHADERC}"
-    "${ROOT_DIR}/src/shaders/oahu_terrain.vs.sc"
-    "${ROOT_DIR}/src/shaders/oahu_terrain_varying.def.sc"
-  VERBATIM
-)
-
-add_custom_command(
-  OUTPUT "${SHADER_OUT_DIR}/oahu_terrain_fs.bin"
-  COMMAND "${BGFX_SHADERC}"
-    -f "${ROOT_DIR}/src/shaders/oahu_terrain.fs.sc"
-    -o "${SHADER_OUT_DIR}/oahu_terrain_fs.bin"
-    --type fragment
-    --platform windows
-    -p s_5_0
-    --varyingdef "${ROOT_DIR}/src/shaders/oahu_terrain_varying.def.sc"
-    -i "${BGFX_DIR}/src"
-  DEPENDS
-    "${BGFX_SHADERC}"
-    "${ROOT_DIR}/src/shaders/oahu_terrain.fs.sc"
-    "${ROOT_DIR}/src/shaders/oahu_terrain_varying.def.sc"
-  VERBATIM
-)
-
-add_custom_command(
-  OUTPUT "${SHADER_OUT_DIR}/oahu_ocean_vs.bin"
-  COMMAND "${BGFX_SHADERC}"
-    -f "${ROOT_DIR}/src/shaders/oahu_ocean.vs.sc"
-    -o "${SHADER_OUT_DIR}/oahu_ocean_vs.bin"
-    --type vertex
-    --platform windows
-    -p s_5_0
-    --varyingdef "${ROOT_DIR}/src/shaders/oahu_ocean_varying.def.sc"
-    -i "${BGFX_DIR}/src"
-  DEPENDS
-    "${BGFX_SHADERC}"
-    "${ROOT_DIR}/src/shaders/oahu_ocean.vs.sc"
-    "${ROOT_DIR}/src/shaders/oahu_ocean_varying.def.sc"
-  VERBATIM
-)
-
-add_custom_command(
-  OUTPUT "${SHADER_OUT_DIR}/oahu_ocean_fs.bin"
-  COMMAND "${BGFX_SHADERC}"
-    -f "${ROOT_DIR}/src/shaders/oahu_ocean.fs.sc"
-    -o "${SHADER_OUT_DIR}/oahu_ocean_fs.bin"
-    --type fragment
-    --platform windows
-    -p s_5_0
-    --varyingdef "${ROOT_DIR}/src/shaders/oahu_ocean_varying.def.sc"
-    -i "${BGFX_DIR}/src"
-  DEPENDS
-    "${BGFX_SHADERC}"
-    "${ROOT_DIR}/src/shaders/oahu_ocean.fs.sc"
-    "${ROOT_DIR}/src/shaders/oahu_ocean_varying.def.sc"
-  VERBATIM
-)
-
-add_custom_command(
-  OUTPUT "${SHADER_OUT_DIR}/particle_vs.bin"
-  COMMAND "${BGFX_SHADERC}"
-    -f "${ROOT_DIR}/src/shaders/particle.vs.sc"
-    -o "${SHADER_OUT_DIR}/particle_vs.bin"
-    --type vertex
-    --platform windows
-    -p s_5_0
-    --varyingdef "${ROOT_DIR}/src/shaders/particle_varying.def.sc"
-    -i "${BGFX_DIR}/src"
-  DEPENDS
-    "${BGFX_SHADERC}"
-    "${ROOT_DIR}/src/shaders/particle.vs.sc"
-    "${ROOT_DIR}/src/shaders/particle_varying.def.sc"
-  VERBATIM
-)
-
-add_custom_command(
-  OUTPUT "${SHADER_OUT_DIR}/particle_fs.bin"
-  COMMAND "${BGFX_SHADERC}"
-    -f "${ROOT_DIR}/src/shaders/particle.fs.sc"
-    -o "${SHADER_OUT_DIR}/particle_fs.bin"
-    --type fragment
-    --platform windows
-    -p s_5_0
-    --varyingdef "${ROOT_DIR}/src/shaders/particle_varying.def.sc"
-    -i "${BGFX_DIR}/src"
-  DEPENDS
-    "${BGFX_SHADERC}"
-    "${ROOT_DIR}/src/shaders/particle.fs.sc"
-    "${ROOT_DIR}/src/shaders/particle_varying.def.sc"
-  VERBATIM
-)
-
-add_custom_command(
-  OUTPUT "${SHADER_OUT_DIR}/particle_update_cs.bin"
-  COMMAND "${BGFX_SHADERC}"
-    -f "${ROOT_DIR}/src/shaders/particle_update.cs.sc"
-    -o "${SHADER_OUT_DIR}/particle_update_cs.bin"
-    --type compute
-    --platform windows
-    -p s_5_0
-    -i "${BGFX_DIR}/src"
-  DEPENDS
-    "${BGFX_SHADERC}"
-    "${ROOT_DIR}/src/shaders/particle_update.cs.sc"
-  VERBATIM
-)
-
-add_custom_target(shaders ALL
-  DEPENDS
-    "${SHADER_OUT_DIR}/imgui_vs.bin"
-    "${SHADER_OUT_DIR}/imgui_fs.bin"
-    "${SHADER_OUT_DIR}/color_vs.bin"
-    "${SHADER_OUT_DIR}/color_fs.bin"
-    "${SHADER_OUT_DIR}/oahu_terrain_vs.bin"
-    "${SHADER_OUT_DIR}/oahu_terrain_fs.bin"
-    "${SHADER_OUT_DIR}/oahu_ocean_vs.bin"
-    "${SHADER_OUT_DIR}/oahu_ocean_fs.bin"
-    "${SHADER_OUT_DIR}/particle_vs.bin"
-    "${SHADER_OUT_DIR}/particle_fs.bin"
-    "${SHADER_OUT_DIR}/particle_update_cs.bin"
-)
+add_custom_target(shaders ALL DEPENDS ${SHADER_FILES})
 
 add_dependencies(prappy_native shaders)
 
@@ -365,36 +209,6 @@ add_custom_command(TARGET prappy_native POST_BUILD
     "$<TARGET_FILE_DIR:prappy_native>/assets/prappy_icon.bmp"
   COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:prappy_native>/shaders"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${SHADER_OUT_DIR}/imgui_vs.bin"
-    "$<TARGET_FILE_DIR:prappy_native>/shaders/imgui_vs.bin"
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${SHADER_OUT_DIR}/imgui_fs.bin"
-    "$<TARGET_FILE_DIR:prappy_native>/shaders/imgui_fs.bin"
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${SHADER_OUT_DIR}/color_vs.bin"
-    "$<TARGET_FILE_DIR:prappy_native>/shaders/color_vs.bin"
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${SHADER_OUT_DIR}/color_fs.bin"
-    "$<TARGET_FILE_DIR:prappy_native>/shaders/color_fs.bin"
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${SHADER_OUT_DIR}/oahu_terrain_vs.bin"
-    "$<TARGET_FILE_DIR:prappy_native>/shaders/oahu_terrain_vs.bin"
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${SHADER_OUT_DIR}/oahu_terrain_fs.bin"
-    "$<TARGET_FILE_DIR:prappy_native>/shaders/oahu_terrain_fs.bin"
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${SHADER_OUT_DIR}/oahu_ocean_vs.bin"
-    "$<TARGET_FILE_DIR:prappy_native>/shaders/oahu_ocean_vs.bin"
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${SHADER_OUT_DIR}/oahu_ocean_fs.bin"
-    "$<TARGET_FILE_DIR:prappy_native>/shaders/oahu_ocean_fs.bin"
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${SHADER_OUT_DIR}/particle_vs.bin"
-    "$<TARGET_FILE_DIR:prappy_native>/shaders/particle_vs.bin"
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${SHADER_OUT_DIR}/particle_fs.bin"
-    "$<TARGET_FILE_DIR:prappy_native>/shaders/particle_fs.bin"
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${SHADER_OUT_DIR}/particle_update_cs.bin"
-    "$<TARGET_FILE_DIR:prappy_native>/shaders/particle_update_cs.bin"
+    ${SHADER_FILES}
+    "$<TARGET_FILE_DIR:prappy_native>/shaders"
 )

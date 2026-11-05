@@ -147,9 +147,6 @@ std::string pathUtf8(const fs::path& path) {
     const auto bytes = path.u8string();
     return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
-fs::path pathFromUtf8(const std::string& text) {
-    return fs::path(std::u8string(reinterpret_cast<const char8_t*>(text.data()), text.size()));
-}
 std::string blobName(const Entry& entry) {
     const auto hash = checksum(entry.path + ":" + std::to_string(entry.bytes) + ":" + std::to_string(entry.stamp));
     char output[32]{};

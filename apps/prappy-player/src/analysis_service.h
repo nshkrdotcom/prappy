@@ -39,13 +39,13 @@ class Service {
     std::deque<std::string> diagnosticEvents;
     std::vector<std::jthread> workers;
     std::jthread ioThread;
-    bool indexLoaded = false, snapshotDelivered = false, readOnly = false, dirty = false, forceAfterLoad = false;
+    bool indexLoaded = false, snapshotDelivered = false, readOnly = false, dirty = false;
     uint64_t registryRevision = 0;
     Clock::time_point checkpoint{};
     size_t maxWaveBytes = 0;
     void decodeLoop(std::stop_token stop);
     void ioLoop(std::stop_token stop);
-    void scheduleMissingLocked(bool force);
+    void scheduleMissingLocked();
     void requestLocked(const Identity& id, analysis_queue::Priority priority, bool force = false);
     void completeLocked(Summary summary);
     void changedLocked();

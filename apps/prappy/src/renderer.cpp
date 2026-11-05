@@ -117,7 +117,6 @@ void DynamicVertexBuffer::ensure(
   vertexCapacity = requiredCapacity;
   vertexStride = requiredStride;
   creationFlags = bufferFlags;
-  uploadBytes = 0;
   handle = bgfx::createDynamicVertexBuffer(vertexCapacity, layout, creationFlags);
 }
 
@@ -145,13 +144,11 @@ void DynamicVertexBuffer::update(
   const bgfx::VertexLayout& layout,
   std::uint16_t bufferFlags
 ) {
-  uploadBytes = vertexCount * requiredStride;
-  if (vertexCount == 0) {
-    return;
+  if (vertexCount != 0) {
+    ensure(vertexCount, requiredStride, layout, bufferFlags);
   }
-
-  ensure(vertexCount, requiredStride, layout, bufferFlags);
-  if (!isValid()) {
+  uploadBytes = vertexCount * requiredStride;
+  if (vertexCount == 0 || !isValid()) {
     return;
   }
 

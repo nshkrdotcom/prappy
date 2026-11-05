@@ -1948,7 +1948,7 @@ void applyOahuDiagnosticPreset(OahuDiagnosticSettings& diagnostics, const std::s
     diagnostics.showGrid = true;
     diagnostics.showRidges = true;
     diagnostics.showLandmarks = true;
-  } else if (preset == "coastline") {
+  } else if (preset == "coastline" || preset == "landmarks") {
     diagnostics.topDown = true;
     diagnostics.showBackground = false;
     diagnostics.showFilledTerrain = false;
@@ -1964,14 +1964,6 @@ void applyOahuDiagnosticPreset(OahuDiagnosticSettings& diagnostics, const std::s
     diagnostics.showGrid = true;
     diagnostics.showRidges = false;
     diagnostics.showLandmarks = false;
-  } else if (preset == "landmarks") {
-    diagnostics.topDown = true;
-    diagnostics.showBackground = false;
-    diagnostics.showFilledTerrain = false;
-    diagnostics.showCoastline = true;
-    diagnostics.showGrid = false;
-    diagnostics.showRidges = false;
-    diagnostics.showLandmarks = true;
   } else if (preset == "flyover") {
     diagnostics.topDown = false;
     diagnostics.showBackground = true;

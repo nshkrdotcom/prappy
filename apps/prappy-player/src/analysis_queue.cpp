@@ -37,9 +37,8 @@ void Queue::offer(Job job) {
     waiting_.insert_or_assign(job.key, std::move(job));
 }
 bool Queue::preemptFor(const Job& demand, size_t workers, size_t remoteLimit) {
-    const bool busy = running_.size() >= workers;
     const bool remoteBusy = demand.remote && remoteRunning() >= remoteLimit;
-    if (!busy && !remoteBusy) return false;
+    if (running(demand) || (running_.size() < workers && !remoteBusy)) return false;
     Running* victim = nullptr;
     for (auto& [_, task] : running_) {
         if (task.stop.stop_requested() || (remoteBusy && !task.job.remote)) continue;

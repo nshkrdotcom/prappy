@@ -457,13 +457,9 @@ struct ParticleFieldVisualization final : IVisualizationModule {
     ImGui::Text("Buffer capacity: %u", particleVertexBuffer.capacity());
     ImGui::Text("Upload bytes: %u", particleVertexBuffer.lastUploadBytes());
     ImGui::Text("Shader: %s", particleProgram.label());
-    if (canCompute) {
-      ImGui::Checkbox("Prefer compute simulation", &preferComputeSimulation);
-    } else {
-      ImGui::BeginDisabled();
-      ImGui::Checkbox("Prefer compute simulation", &preferComputeSimulation);
-      ImGui::EndDisabled();
-    }
+    ImGui::BeginDisabled(!canCompute);
+    ImGui::Checkbox("Prefer compute simulation", &preferComputeSimulation);
+    ImGui::EndDisabled();
 
     int nextCount = targetParticleCount;
     if (ImGui::SliderInt("Count", &nextCount, 256, 6000)) {

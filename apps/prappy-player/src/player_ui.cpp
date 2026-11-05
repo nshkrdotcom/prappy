@@ -581,7 +581,6 @@ int runPlayer(HINSTANCE instance) {
                 ImGui::EndPopup();
             }
         };
-        const auto togglePlayback = [&] { playback.toggle(); };
         UiSchedule schedule;
         auto lastUpdate = UiSchedule::Clock::now();
         bool mouseHeld = false, composing = false;
@@ -646,7 +645,7 @@ int runPlayer(HINSTANCE instance) {
                 if (!uiProbe.scripted && (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) &&
                     event.key.key == SDLK_SPACE && !io.WantTextInput && !composing &&
                     !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
-                    if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) { if(sampleWorkspace.active())sampleWorkspace.toggleTransport(audio);else togglePlayback(); }
+                    if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) { if(sampleWorkspace.active())sampleWorkspace.toggleTransport(audio);else playback.toggle(); }
                     continue;
                 }
                 if (!uiProbe.scripted) ImGui_ImplSDL3_ProcessEvent(&event);
@@ -790,7 +789,7 @@ int runPlayer(HINSTANCE instance) {
                 if (centeredButton("<##strip", {30, 26}, "back")) playback.navigate(-1); rememberControl();
                 ImGui::SameLine();
                 const bool wantsPause=playback.pending?playback.pending->paused:audio.paused;
-                if (centeredButton(audio.active && !wantsPause ? "Pause##strip" : "Play##strip", {55, 26}, "play")) togglePlayback(); rememberControl();
+                if (centeredButton(audio.active && !wantsPause ? "Pause##strip" : "Play##strip", {55, 26}, "play")) playback.toggle(); rememberControl();
                 ImGui::SameLine();
                 if (centeredButton(">##strip", {30, 26}, "next")) playback.navigate(1); rememberControl();
                 ImGui::SameLine();
@@ -1137,7 +1136,7 @@ int runPlayer(HINSTANCE instance) {
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, {.84f, .59f, .24f, 1});
             ImGui::PushStyleColor(ImGuiCol_Text, {.12f, .15f, .16f, 1});
             const bool wantsPause = playback.pending ? playback.pending->paused : audio.paused;
-            if (centeredButton(audio.active && !wantsPause ? "Pause" : "Play", {playWidth, buttonHeight}, "play")) togglePlayback();
+            if (centeredButton(audio.active && !wantsPause ? "Pause" : "Play", {playWidth, buttonHeight}, "play")) playback.toggle();
             rememberControl();
             ImGui::PopStyleColor(4);
             ImGui::SetCursorPos({nextX, transportRowY});

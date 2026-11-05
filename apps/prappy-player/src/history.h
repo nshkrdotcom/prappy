@@ -49,10 +49,6 @@ struct History {
         return entry && !entry->queued ? entry : nullptr;
     }
     static int64_t now() { return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count(); }
-    std::optional<size_t> adjacent(int direction) const {
-        if (trail.empty() || (direction < 0 && cursor == 0) || (direction > 0 && cursor + 1 >= trail.size())) return {};
-        return direction < 0 ? cursor - 1 : cursor + 1;
-    }
     void prune() {
         const auto active = current() ? current()->id : 0;
         const auto played = playedCount;

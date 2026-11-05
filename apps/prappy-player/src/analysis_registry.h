@@ -37,7 +37,6 @@ uint64_t checksum(std::string_view data);
 std::string encode(const Entries& entries);
 Entries decode(std::string_view data);
 std::string pathUtf8(const fs::path& path);
-fs::path pathFromUtf8(const std::string& text);
 std::string blobName(const Entry& value);
 void atomicWrite(const fs::path& path, const std::string& bytes);
 std::string readFile(const fs::path& path);

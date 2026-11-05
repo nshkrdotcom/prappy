@@ -166,6 +166,8 @@ static void schedulerTests() {
     auto admitted = queue.take(2);
     check(admitted && admitted->first.key == "c" && queue.running() == 2,
           "Foreground was not admitted immediately after cancelled slot released");
+    check(!queue.preemptFor(admitted->first, 2, 2),
+          "Running foreground demand preempted unrelated work");
     Queue one;
     one.offer(a); auto running = one.take(1);
     one.offer(c); check(one.preemptFor(c,1,1) && running->second.stop_requested(), "Single-worker preemption");

@@ -69,9 +69,8 @@ void Workspace::openCapture(Json item,std::optional<Span> selected){
 void Workspace::loadDetails(bool refresh){
     if(capture.is_null())return;
     const auto base=endpoint(library)+"/captures/"+capture.at("id").get<std::string>();
-    const auto range=waveformRange(viewportStart,viewportEnd,editor.total);
-    const Frame start=range.start,end=range.end;
-    if(end-start<=Rate*60)get("pcm",base+"/pcm?start="+std::to_string(start)+"&end="+std::to_string(end)+"&timeline="+capture.at("timeline_id").get<std::string>());
+    const auto [start,end]=waveformRange(viewportStart,viewportEnd,editor.total);
+    if(end-start<=Rate*60&&(start<pcmStart||end>pcmEnd))get("pcm",base+"/pcm?start="+std::to_string(start)+"&end="+std::to_string(end)+"&timeline="+capture.at("timeline_id").get<std::string>());
     if(overview.is_null()||refresh)get("overview",base+"/overview?cached_only=true");
     if(timing.is_null()||refresh)get("timing",base+"/timing");
 }
@@ -463,16 +462,7 @@ void Workspace::process(){
             bool unchanged=false;for(const auto& row:pending)if(row.at("command").at("request_id")==id)unchanged=row.value("draft",Json())==draftSnapshot();
             pending.erase(std::remove_if(pending.begin(),pending.end(),[&](const auto& row){return row.at("command").at("request_id")==id;}),pending.end());
             if(reply.request.generation==generation && reply.request.path==endpoint(library)+"/commands"){
-                if(reply.body.contains("region")){
-                    const bool sampleScope=metadataTarget.empty() || (!region.is_null() && metadataTarget==region.at("id").get<std::string>());
-                    region=reply.body.at("region");editor.dirty=!unchanged;
-                    if(sampleScope && reply.body.contains("metadata")){
-                        metadata=reply.body.at("metadata").at("metadata");metadataTarget=region.at("id");metadataTargetRevision=region.at("revision");metadataRevision=metadata.at("revision");
-                    }
-                    notice="Saved "+region.at("id").get<std::string>()+" revision "+std::to_string(region.at("revision").get<int>());
-                    if(unchanged)get("sampleMetadata",endpoint(library)+"/metadata/"+region.at("id").get<std::string>()+"?revision="+std::to_string(region.at("revision").get<int>()));
-                }
-                else notice="Saved";
+                notice="Saved";
                 if(reply.body.contains("job_id")){analysisJob=reply.body.at("job_id");get("job",endpoint(library)+"/jobs/"+analysisJob);notice="Analysis queued; editing remains available.";}
                 if(reply.request.body.at("operation")=="classify" || reply.request.body.at("operation")=="grid.edit" || reply.request.body.at("operation")=="grid.create")loadDetails(true);
                 if(unchanged && reply.request.body.at("operation")=="metadata.write")get("sampleMetadata",endpoint(library)+"/metadata/"+metadataTarget+"?revision="+std::to_string(metadataTargetRevision));
@@ -491,7 +481,7 @@ void Workspace::tick(Audio& audio){
             preparation.tick(warm,notify,utf8(audio.current),audio.displayPosition(),audio.duration,audio.loadedSerial);
         }else if(open)preparation.suspend();
         const auto previousState=transport.state;
-        if(open&&audio.loaded&&!audio.paused)audio.setPaused(true);hadOpen=open;
+        if(open&&audio.loaded&&!audio.paused)audio.setPaused(true);
         if(open && !connectionAttempted)connect();
         process();
         if(!open&&transport.engaged())stopTransport();

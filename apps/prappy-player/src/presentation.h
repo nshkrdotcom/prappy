@@ -11,7 +11,6 @@
 // window thread; asynchronous analysis and audio never touch the renderer.
 class Presentation {
     SDL_Renderer* renderer = nullptr;
-    double lastInput = -1;
 public:
     using Clock = std::chrono::steady_clock;
     struct Timing { double build = 0, draw = 0, present = 0, total = 0, input = -1; } timing;
@@ -48,8 +47,8 @@ public:
         const auto drawn = Clock::now();
         if (!SDL_RenderPresent(renderer) && !SDL_HasEvent(SDL_EVENT_RENDER_DEVICE_RESET)) throw std::runtime_error(SDL_GetError());
         const auto end = Clock::now();
-        if (input) lastInput = static_cast<double>(SDL_GetTicksNS()-input)/1e6;
+        if (input) timing.input = static_cast<double>(SDL_GetTicksNS()-input)/1e6;
         timing = {ms(frameStart,built),ms(built,drawn),ms(drawn,end),ms(frameStart,end),
-            lastInput};
+            timing.input};
     }
 };

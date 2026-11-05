@@ -81,19 +81,16 @@ void PrappyBgfxCallback::queueScreenshot(
   capture.y = std::max(static_cast<int>(std::round(origin.y)), 0);
   capture.width = std::max(static_cast<int>(std::round(size.x)), 1);
   capture.height = std::max(static_cast<int>(std::round(size.y)), 1);
-  capture.pending = true;
-  hasCompletedMessage = false;
   completedMessage.clear();
 }
 
 bool PrappyBgfxCallback::consumeScreenshotStatus(std::string& message) {
   std::lock_guard<std::mutex> lock(mutex);
-  if (!hasCompletedMessage) {
+  if (completedMessage.empty()) {
     return false;
   }
 
   message = completedMessage;
-  hasCompletedMessage = false;
   completedMessage.clear();
   return true;
 }
@@ -143,7 +140,6 @@ void PrappyBgfxCallback::screenShot(
   {
     std::lock_guard<std::mutex> lock(mutex);
     request = capture;
-    capture.pending = false;
   }
 
   if (request.path.empty() && filePath) {
@@ -163,7 +159,6 @@ void PrappyBgfxCallback::screenShot(
   completedMessage = ok
     ? std::string("Saved ") + request.path.string()
     : error;
-  hasCompletedMessage = true;
 }
 
 void PrappyBgfxCallback::captureBegin(

@@ -38,7 +38,7 @@ class Workspace {
     uint64_t transportEpoch=0;
     uint64_t auditionChunks=0;
     Frame auditionSubmitted=0;
-    bool boundaryHeld=false,hadOpen=false;
+    bool boundaryHeld=false;
     uint64_t generation=0;
     std::string library,notice,libraryQuery,facet,facetValue,regionName="New sample",kind="unknown",collectionName;
     std::string pcmDecoder;
@@ -50,7 +50,7 @@ class Workspace {
     size_t browseOffset=0,browseTotal=0;
     int metadataTargetRevision=1,metadataRevision=0;
     int tab=0,snapMode=0,selectedAnchor=0;
-    bool fit=true,sourcePending=false,connectionAttempted=false;
+    bool fit=true,connectionAttempted=false;
     double viewportStart=0,viewportEnd=48000;
     Frame pcmStart=0,pcmEnd=0;
     std::vector<float> pcm;

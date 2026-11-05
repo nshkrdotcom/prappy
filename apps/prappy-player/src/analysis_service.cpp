@@ -108,9 +108,8 @@ void Service::requestLocked(const Identity& identity, analysis_queue::Priority p
         queue.preemptFor(job, workers.size(), settings.remoteLimit);
     wake.notify_all();
 }
-void Service::scheduleMissingLocked(bool force) {
+void Service::scheduleMissingLocked() {
     if (!indexLoaded || readOnly || catalog.empty()) return;
-    if (force) for (const auto& [key, _] : catalog) forceKeys.insert(key);
     // Keep only a fixed window of background requests in memory. A selected
     // track bypasses this cap in requestLocked and can preempt a running job.
     constexpr size_t MaxWaiting = 256;
@@ -156,8 +155,7 @@ void Service::reconcile(const Library& library, bool force) {
     snapshotDelivered = false; snapshotStarted = false;
     if (selected && !all.count(idOf(*selected))) selected.reset();
     if (force) requestedWaveforms.clear();
-    if (!indexLoaded && force) forceAfterLoad = true;
-    scheduleMissingLocked(force);
+    scheduleMissingLocked();
 }
 void Service::retry(const Track& track) {
     if (!track.offline) retry(Identity{track.path, track.bytes, track.stamp});
@@ -170,9 +168,8 @@ void Service::retry(const Identity& identity) {
 void Service::prioritize(const Track& track) {
     if (!track.offline) prioritize(Identity{track.path, track.bytes, track.stamp});
 }
-void Service::prioritize(const Identity& requested) {
+void Service::prioritize(const Identity& identity) {
     std::lock_guard lock(mutex);
-    Identity identity = requested;
     if (selected != identity) requestedWaveforms.clear();
     selected = identity;
     queue.cancelOtherSelected(idOf(identity));
@@ -397,7 +394,7 @@ void Service::decodeLoop(std::stop_token stop) {
             std::lock_guard lock(mutex);
             queue.complete(job, cancelled, !stop.stop_requested());
             if (!cancelled) forceKeys.erase(job.key);
-            if (!stop.stop_requested()) scheduleMissingLocked(false);
+            if (!stop.stop_requested()) scheduleMissingLocked();
         }
         wake.notify_all();
         if (notify) notify();
@@ -432,7 +429,7 @@ void Service::ioLoop(std::stop_token stop) {
         std::lock_guard lock(mutex);
         registry = std::move(recovered); readOnly = unsupported; indexLoaded = true;
         if (recoveredBackup && !readOnly) changedLocked();
-        scheduleMissingLocked(forceAfterLoad); forceAfterLoad = false;
+        scheduleMissingLocked();
         if (selected) requestLocked(*selected, analysis_queue::Priority::Selected);
         recordLocked("registry load entries=" + std::to_string(registry.size()) + (readOnly ? " unsupported" : ""));
     }
@@ -481,9 +478,7 @@ void Service::ioLoop(std::stop_token stop) {
                     // An oversized blob is not corrupt: re-decoding cannot
                     // solve the configured memory constraint.
                     if (std::string_view(e.what()) != "Waveform exceeds memory budget") {
-                        auto job = makeJob(id, analysis_queue::Priority::Selected, true);
-                        queue.offer(job); queue.preemptFor(job, workers.size(), settings.remoteLimit);
-                        wake.notify_all();
+                        requestLocked(id, analysis_queue::Priority::Selected, true);
                     }
                     recordLocked("selected waveform cache miss " + idOf(id) + " " + e.what());
                 }

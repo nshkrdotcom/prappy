@@ -21,7 +21,7 @@ class SourcePreparation {
     }
 public:
     std::string path,status="Editor preparation idle",digest,decodeIdentity;
-    Json match,overview,regions;
+    Json match,regions;
     std::vector<float> pcm;
     Frame pcmStart=0;
     std::string knownDigest(std::string_view current,uint64_t serial)const{
@@ -37,7 +37,7 @@ public:
         if(configuredUrl!=connection.url||configuredToken!=token){
             client.reset();connected=connecting=issued=false;attempts=0;path.clear();configuredUrl=connection.url;configuredToken=token;
         }
-        if(current!=path||loadedSerial!=serial){path=current;loadedSerial=serial;++generation;issued=false;attempts=0;digest.clear();decodeIdentity.clear();match=nullptr;overview=nullptr;regions=nullptr;pcm.clear();status="Preparing editor...";due=now+std::chrono::milliseconds(750);}
+        if(current!=path||loadedSerial!=serial){path=current;loadedSerial=serial;++generation;issued=false;attempts=0;digest.clear();decodeIdentity.clear();match=nullptr;regions=nullptr;pcm.clear();status="Preparing editor...";due=now+std::chrono::milliseconds(750);}
         if(path.empty()||duration<=0)return;
         if(!client&&now>=due)client=std::make_unique<Client>(connection,notify);
         if(!client)return;
@@ -60,12 +60,10 @@ public:
                 const std::string base="/v1/libraries/"+match.at("library_id").get<std::string>()+"/captures/"+match.at("capture").at("id").get<std::string>();
                 window(position);
                 client->submit({"sourceRegions","GET",base+"/regions?timeline="+match.at("capture").at("timeline_id").get<std::string>()+"&limit=100&offset=0",nullptr,generation,{}});
-                client->submit({"overview","GET",base+"/overview?cached_only=true",nullptr,generation,{}});
             }else if(tag=="pcm"){
                 if(reply.status==202){status="Source ready; audio prepared on demand";continue;}
                 pcmStart=reply.body.at("origin_frame");pcm=std::move(reply.pcm);decodeIdentity=reply.body.at("decode_identity");status="Editor ready (cached audio)";
-            }else if(tag=="overview"&&reply.status!=202)overview=reply.body;
-            else if(tag=="sourceRegions")regions=reply.body;
+            }else if(tag=="sourceRegions")regions=reply.body;
         }
     }
 };

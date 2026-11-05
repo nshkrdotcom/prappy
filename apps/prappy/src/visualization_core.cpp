@@ -222,11 +222,6 @@ void CameraRig::applyPreset(VisualizationPresetId id) {
       target = {0.0f, 0.55f, -0.6f};
       break;
     case VisualizationPresetId::OahuCenteredTopDown:
-      manual = false;
-      routeSpeed = 1.0f;
-      fovDegrees = 58.0f;
-      target = {0.0f, 0.0f, 0.0f};
-      break;
     case VisualizationPresetId::OahuDebugMesh:
       manual = false;
       routeSpeed = 1.0f;

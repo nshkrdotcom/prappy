@@ -75,8 +75,6 @@ void setUniform(bgfx::UniformHandle handle, const ImVec4& value) {
 }
 
 struct OahuFlyoverVisualization final : IVisualizationModule {
-  ImVec2 lastSize{};
-
   bgfx::VertexLayout terrainLayout;
   ShaderProgram terrainProgram;
   bgfx::VertexBufferHandle terrainVertexBuffer = BGFX_INVALID_HANDLE;
@@ -573,9 +571,7 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
     }
   }
 
-  void reset(const ImVec2& size) override {
-    lastSize = size;
-  }
+  void reset(const ImVec2&) override {}
 
   void destroyTerrainResources() {
     if (bgfx::isValid(terrainIndexBuffer)) {
@@ -618,7 +614,6 @@ struct OahuFlyoverVisualization final : IVisualizationModule {
   }
 
   void draw(VisualizationContext& context) override {
-    lastSize = context.size;
     const OahuDiagnosticSettings defaults;
     const OahuDiagnosticSettings& diagnostics = context.oahuDiagnostics
       ? *context.oahuDiagnostics
