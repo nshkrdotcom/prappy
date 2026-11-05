@@ -61,7 +61,7 @@ function Wait-RenderedLayout([int]$Width,[int]$Height) {
     $timer=[Diagnostics.Stopwatch]::StartNew()
     do {
         try {
-            $text=if(Test-Path -LiteralPath $status){Get-Content -LiteralPath $status -Raw}else{''}
+            $text=[IO.File]::ReadAllText($status)
             if($text -match ("(?m)^READY "+$Width+' '+$Height+' ') -and $text -match '(?m)^CONTROL "list" '){return}
         }catch [IO.IOException]{}
         Start-Sleep -Milliseconds 10

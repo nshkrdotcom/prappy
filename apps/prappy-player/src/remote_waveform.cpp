@@ -37,7 +37,7 @@ bool RemoteWaveform::collect() {
                 if(prepared::integer(pyramid.at("frames_per_bin"))!=256||prepared::integer(pyramid.at("channels"))!=2)
                     throw std::runtime_error("Unexpected prepared waveform format.");
                 const auto stride=int64_t{256}*(int64_t{1}<<level);
-                if(stride<=0||count<=0||count>8192||count!=source.listening.frames/stride+(source.listening.frames%stride?1:0))
+                if(stride<=0||count<=0||count>8192||count!=source.listening.frames/stride+(source.listening.frames%stride!=0))
                     throw std::runtime_error("Prepared waveform bins differ from the listening timeline.");
                 sampling::Request request;request.tag="prepared-waveform";request.generation=generation;
                 request.path=source.source.endpoint()+"/waveform?asset="+source.asset+"&timeline="+source.timeline+"&domain=listening&level="+
