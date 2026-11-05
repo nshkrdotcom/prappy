@@ -12,5 +12,6 @@ external/
 *.dll
 *.lib
 *.exp
+__pycache__/
 
 apps/prappy-player/third_party/freetype/

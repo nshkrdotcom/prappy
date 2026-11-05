@@ -11,7 +11,6 @@
 #include <cmath>
 #include <atomic>
 #include <algorithm>
-#include <map>
 namespace sampling {
 namespace {
 std::atomic<uint64_t> nextDiagnosticId{0};
@@ -29,12 +28,6 @@ std::wstring wide(const std::string& s) {
     MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,s.data(),static_cast<int>(s.size()),result.data(),count);
     return result;
 }
-struct SourceHashCache {
-    struct Entry{std::array<uint64_t,5> stamp;std::string hash;};
-    std::mutex mutex;
-    std::map<fs::path,Entry> entries;
-};
-SourceHashCache& sourceHashCache(){static SourceHashCache cache;return cache;}
 struct SourceFile {
     HANDLE handle=INVALID_HANDLE_VALUE;
     SourceFile(const fs::path& path,std::stop_token stop) {
@@ -72,24 +65,7 @@ void startWorkstationBackend() {
         throw std::runtime_error("Cannot start Workstation backend: Windows error "+std::to_string(GetLastError()));
     CloseHandle(process.hThread);CloseHandle(process.hProcess);
 }
-std::string cachedSourceHash(const fs::path& path,std::stop_token stop){
-    const auto stamp=[&]{
-        if(stop.stop_requested())throw std::runtime_error("Source hashing cancelled.");
-        HANDLE handle=CreateFileW(path.c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,0,nullptr);
-        if(handle==INVALID_HANDLE_VALUE)throw std::runtime_error("Cannot inspect source identity.");
-        BY_HANDLE_FILE_INFORMATION info{};FILE_BASIC_INFO basic{};
-        const bool ok=GetFileInformationByHandle(handle,&info)&&GetFileInformationByHandleEx(handle,FileBasicInfo,&basic,sizeof(basic));CloseHandle(handle);
-        if(!ok)throw std::runtime_error("Cannot inspect source changes.");
-        return std::array<uint64_t,5>{info.dwVolumeSerialNumber,(static_cast<uint64_t>(info.nFileIndexHigh)<<32)|info.nFileIndexLow,
-            (static_cast<uint64_t>(info.nFileSizeHigh)<<32)|info.nFileSizeLow,static_cast<uint64_t>(basic.LastWriteTime.QuadPart),static_cast<uint64_t>(basic.ChangeTime.QuadPart)};
-    };
-    auto& storage=sourceHashCache();auto& lock=storage.mutex;auto& cache=storage.entries;
-    const auto before=stamp();
-    {std::lock_guard guard(lock);const auto found=cache.find(path);if(found!=cache.end()&&found->second.stamp==before){debuglog::write("hash.cache","hit=1");return found->second.hash;}}
-    const auto digest=fileHash(path,stop);if(stamp()!=before)throw std::runtime_error("Source changed while hashing. Retry opening it.");
-    {std::lock_guard guard(lock);if(cache.size()>=16)cache.erase(cache.begin());cache.insert_or_assign(path,SourceHashCache::Entry{before,digest});}
-    return digest;
-}
+
 }
 Connection authorize(Connection connection,std::stop_token stop) {
     if(connection.token.empty())connection.token=trim(readCredential(connection.credentialFile,stop));
@@ -101,7 +77,7 @@ std::string uuid() {
     wchar_t buffer[40]{}; if(!StringFromGUID2(id,buffer,40))throw std::runtime_error("Cannot format command identity.");
     auto s=utf8(fs::path(buffer)); std::erase_if(s,[](char c){return c=='{' || c=='}' || c=='-';}); return s;
 }
-std::string fileHash(const fs::path& path,std::stop_token stop) {
+static std::string fileHash(const fs::path& path,std::stop_token stop) {
     const auto began=debuglog::Clock::now();
     debuglog::write("hash.begin","source="+utf8(path));
     BCRYPT_ALG_HANDLE algorithm=nullptr;
@@ -134,7 +110,6 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
     } completion{reply,identity,began};
     fs::path temporary;
     try {
-        if (request.tag=="hash") { reply.body={{"sha256",cachedSourceHash(fs::path(std::u8string(reinterpret_cast<const char8_t*>(request.path.data()),request.path.size())),stop)}}; return reply; }
         auto base=wide(connection.url); URL_COMPONENTS url{};url.dwStructSize=sizeof(url);
         url.dwHostNameLength=static_cast<DWORD>(-1);url.dwUrlPathLength=static_cast<DWORD>(-1);
         if (!WinHttpCrackUrl(base.c_str(),0,0,&url)) throw std::runtime_error("Invalid backend URL.");
@@ -143,11 +118,8 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
         if (url.nScheme!=INTERNET_SCHEME_HTTPS && host!=L"127.0.0.1" && host!=L"localhost" && host!=L"::1")
             throw std::runtime_error("Remote servers require HTTPS.");
         Internet session(WinHttpOpen(L"Prappy Sampling/1",WINHTTP_ACCESS_TYPE_NO_PROXY,nullptr,nullptr,0));
-        // Registration verifies the entire source; cold PCM requests prepare
-        // canonical audio. Multi-hour recordings can take minutes before any
-        // response headers arrive. These worker requests remain cancellable.
-        const bool preparesAudio=request.tag=="source-import" || request.tag=="pcm" || request.tag=="audition";
-        const int receiveTimeout=preparesAudio?600000:30000;
+        // Explicit exports may render audio; interactive reads stay bounded.
+        const int receiveTimeout=request.tag=="export"?600000:30000;
         if(!WinHttpSetTimeouts(session.value,5000,5000,30000,receiveTimeout))
             throw std::runtime_error("Cannot configure backend timeouts.");
         Internet server(WinHttpConnect(session.value,host.c_str(),url.nPort,0));
@@ -207,10 +179,10 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
             if(!MoveFileExW(temporary.c_str(),request.download.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))throw std::runtime_error("Cannot publish downloaded audio.");reply.body={{"path",utf8(request.download)}};
         }
         else if (status==202){reply.body=Json::parse(bytes.begin(),bytes.end());}
-        else if (request.tag=="pcm" || request.tag=="audition" || request.tag=="prepared-pcm" || request.tag=="prepared-waveform") {
+        else if (request.tag=="prepared-pcm" || request.tag=="prepared-waveform") {
             const auto header=[&](const wchar_t* name){
                 std::array<wchar_t,256> value{};DWORD size=static_cast<DWORD>(sizeof(value));
-                if(!WinHttpQueryHeaders(operation.value,WINHTTP_QUERY_CUSTOM,name,value.data(),&size,nullptr))throw std::runtime_error("Missing canonical PCM identity.");
+                if(!WinHttpQueryHeaders(operation.value,WINHTTP_QUERY_CUSTOM,name,value.data(),&size,nullptr))throw std::runtime_error("Missing prepared audio identity.");
                 return utf8(fs::path(value.data()));
             };
             // Hash through the same Windows provider as downloaded artifacts, without disk I/O.
@@ -221,8 +193,8 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
             BCryptCloseAlgorithmProvider(algorithm,0);
             if(hashStatus<0)throw std::runtime_error("PCM SHA256 failed.");
             std::string hash;const char* digits="0123456789abcdef";for(auto c:digest){hash+=digits[c>>4];hash+=digits[c&15];}
-            if(hash!=header(L"X-PCM-SHA256"))throw std::runtime_error("Canonical PCM hash differs.");
-            if(request.tag=="prepared-pcm" || request.tag=="prepared-waveform") {
+            if(hash!=header(L"X-PCM-SHA256"))throw std::runtime_error("Prepared audio hash differs.");
+            {
                 const auto& expected=request.body;
                 if(header(L"X-Asset-Key")!=expected.at("asset_key").get<std::string>()||
                    header(L"X-Channels")!=std::to_string(expected.at("channels").get<int64_t>()))
@@ -250,15 +222,6 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
                     reply.pcm.resize(bytes.size()/4);std::memcpy(reply.pcm.data(),bytes.data(),bytes.size());
                     for(auto value:reply.pcm)if(!std::isfinite(value))throw std::runtime_error("Nonfinite waveform.");
                 }
-            } else {
-                const auto at=request.path.find("start="),until=request.path.find("&end="),timeline=request.path.find("&timeline=");
-                if(at==std::string::npos||until==std::string::npos||timeline==std::string::npos)throw std::runtime_error("PCM request lacks exact bounds.");
-                const auto start=std::stoll(request.path.substr(at+6,until-at-6)),end=std::stoll(request.path.substr(until+5,timeline-until-5));
-                if(header(L"X-Origin-Frame")!=std::to_string(start)||header(L"X-Frame-Count")!=std::to_string(end-start)||header(L"X-Timeline-Id")!=request.path.substr(timeline+10)||bytes.size()!=static_cast<size_t>(end-start)*8)throw std::runtime_error("Canonical PCM timeline or bounds differ.");
-                reply.body={{"origin_frame",start},{"frame_count",end-start},{"decode_identity",header(L"X-Decode-Identity")}};
-                if(bytes.empty()||bytes.size()%8)throw std::runtime_error("Invalid stereo PCM response.");
-                reply.pcm.resize(bytes.size()/4);std::memcpy(reply.pcm.data(),bytes.data(),bytes.size());
-                for(auto value:reply.pcm)if(!std::isfinite(value))throw std::runtime_error("Nonfinite PCM.");
             }
         } else {
             reply.body=Json::parse(bytes.begin(),bytes.end());
@@ -284,8 +247,8 @@ struct ClientState {
 };
 namespace {
 size_t requestLane(const Request& request) {
-    if(request.tag=="audition" || request.tag=="pcm" || request.tag=="prepared-pcm" || request.tag=="prepared-waveform")return 0;
-    if(request.tag=="libraries"||request.tag=="hash"||request.tag=="resolve"||request.method!="GET")return 1;
+    if(request.tag=="prepared-pcm" || request.tag=="prepared-waveform")return 0;
+    if(request.tag=="libraries"||request.method!="GET")return 1;
     return 2;
 }
 // One process-wide executor, with exactly three independently scheduled lanes.
@@ -299,7 +262,7 @@ class ClientExecutor {
     std::shared_ptr<ClientState> find(size_t index) {
         for(auto& weak:clients)if(auto state=weak.lock();state&&!state->retired) {
             if(index==1&&!state->credentialsStarted)return state;
-            if(std::any_of(state->pending.begin(),state->pending.end(),[&](const Request& request){return requestLane(request)==index&&(state->credentialsReady||request.tag=="hash");}))return state;
+            if(std::any_of(state->pending.begin(),state->pending.end(),[&](const Request& request){return requestLane(request)==index&&state->credentialsReady;}))return state;
         }
         return {};
     }
@@ -314,7 +277,7 @@ class ClientExecutor {
                 credentials=lane.index==1&&!state->credentialsStarted;
                 if(credentials)state->credentialsStarted=true;
                 else {
-                    const auto next=std::find_if(state->pending.begin(),state->pending.end(),[&](const Request& item){return requestLane(item)==lane.index&&(state->credentialsReady||item.tag=="hash");});
+                    const auto next=std::find_if(state->pending.begin(),state->pending.end(),[&](const Request& item){return requestLane(item)==lane.index&&state->credentialsReady;});
                     request=std::move(*next);state->pending.erase(next);
                 }
                 connection=state->connection;
@@ -349,7 +312,7 @@ class ClientExecutor {
                 debuglog::write("http.dequeue","req="+std::to_string(request.diagnosticId)+" tag="+request.tag+" queue_ms="+std::to_string(debuglog::elapsed(request.queuedAt)));
                 Reply result;result.request=request;
                 try {
-                    if(request.tag!="hash"&&!state->credentialError.empty())result.error=state->credentialError;
+                    if(!state->credentialError.empty())result.error=state->credentialError;
                     else if(!stop.stop_requested())result=state->transport(connection,request,stop);
                     if((request.tag=="libraries"||request.tag=="catalog")&&!result.error.empty()&&state->credentialError.empty()&&connection.startWorkstation&&!stop.stop_requested()) {
                         state->bootstrap();
@@ -371,8 +334,6 @@ class ClientExecutor {
         }
     }
     ClientExecutor() {
-        // Its function-static storage must outlive workers during CRT teardown.
-        (void)sourceHashCache();
         try {
             for(size_t index=0;index<lanes.size();++index){lanes[index].index=index;lanes[index].worker=std::jthread([this,index](std::stop_token stop){run(lanes[index],stop);});}
         }catch(...) {

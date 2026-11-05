@@ -9,7 +9,7 @@
 #include "waveform_tests.h"
 #include "sample_library_tests.h"
 #include "sample_handoff_tests.h"
-#include "sample_preview_tests.h"
+#include "sample_workspace_tests.h"
 #include "audio_async_tests.h"
 #include "sample_client_cancel_tests.h"
 #include "scan_async_tests.h"
@@ -310,7 +310,7 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
         sampleClientCancellationTests(log);
         scanAsyncTests(log);
         sampleLibraryTests(root,log);
-        samplePreviewTests(root,log);
+        sampleWorkspaceTests(root,log);
         pendingSampleHandoffTests(root,log);
         {
             // Public-domain test signal: 3072 stereo silent frames, 48 kHz/24-bit

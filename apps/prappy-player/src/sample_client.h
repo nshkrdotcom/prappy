@@ -33,7 +33,6 @@ struct Reply {
 };
 Reply perform(const Connection&, const Request&, std::stop_token = {});
 std::string uuid();
-std::string fileHash(const fs::path&,std::stop_token = {});
 struct ClientState;
 class Client {
 public:

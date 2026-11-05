@@ -58,13 +58,13 @@ inline void sampleClientCancellationTests(std::ostream& log) {
         auto gate=release.get_future().share();
         Connection connection;connection.token=std::string(32,'x');
         Client::Transport blocked=[&,gate](const Connection&,const Request& request,std::stop_token){
-            if(request.tag=="overview"){overviewEntered.set_value();gate.wait();}
-            if(request.tag=="hash"){metadataEntered.set_value();gate.wait();}
+            if(request.tag=="browse"){overviewEntered.set_value();gate.wait();}
+            if(request.tag=="command"){metadataEntered.set_value();gate.wait();}
             Reply result;result.request=request;return result;
         };
         auto previous=std::make_unique<Client>(connection,[] {},std::move(blocked));
-        Request overview;overview.tag="overview";previous->submit(overview);
-        Request hash;hash.tag="hash";previous->submit(hash);
+        Request overview;overview.tag="browse";previous->submit(overview);
+        Request hash;hash.tag="command";hash.method="POST";previous->submit(hash);
         const bool overviewBlocked=overviewEntered.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready;
         const bool metadataBlocked=metadataEntered.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready;
         if(!overviewBlocked||!metadataBlocked){release.set_value();require(false,"Sampling lanes did not reach barriers.");}
@@ -74,7 +74,7 @@ inline void sampleClientCancellationTests(std::ostream& log) {
             // Client must retain the submitted request even with a custom transport.
             Reply result;return result;
         });
-        Request pcm;pcm.tag="pcm";pcm.path="foreground";pcm.generation=71;replacement.submit(pcm);
+        Request pcm;pcm.tag="prepared-pcm";pcm.path="foreground";pcm.generation=71;replacement.submit(pcm);
         const bool foregroundCompleted=played.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready;
         release.set_value();
         require(foregroundCompleted,"Foreground PCM waited behind retired overview/source work.");
@@ -88,7 +88,7 @@ inline void sampleClientCancellationTests(std::ostream& log) {
         Connection connection;
         Client client(connection,[&]{if(++finished==2)completed.set_value();},[](const Connection&,const Request&,std::stop_token){return Reply{};},
             [&,gate](const fs::path&,std::stop_token){++reads;entered.set_value();gate.wait();return std::string(32,'x');});
-        Request pcm;pcm.tag="pcm";client.submit(pcm);Request browse;browse.tag="browse";client.submit(browse);
+        Request pcm;pcm.tag="prepared-pcm";client.submit(pcm);Request browse;browse.tag="browse";client.submit(browse);
         const bool reading=entered.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready;
         if(!reading){release.set_value();require(false,"Credential read did not start.");}
         require(client.collect().empty(),"HTTP work began before startup credentials were ready.");
@@ -101,9 +101,9 @@ inline void sampleClientCancellationTests(std::ostream& log) {
         ReleaseOnExit releaseOnExit{release};auto gate=release.get_future().share();
         Connection connection;connection.token=std::string(32,'x');
         Client client(connection,[] {},[&,gate](const Connection&,const Request& request,std::stop_token){
-            if(request.tag=="hash"){entered.set_value();gate.wait();}return Reply{};
+            if(request.tag=="command"){entered.set_value();gate.wait();}return Reply{};
         });
-        Request request;request.tag="hash";client.submit(request);
+        Request request;request.tag="command";request.method="POST";client.submit(request);
         require(entered.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready,"Queue test did not reach source barrier.");
         request.method="POST";request.tag="queued";
         for(int index=0;index<512;++index)client.submit(request);
@@ -120,7 +120,7 @@ inline void sampleClientCancellationTests(std::ostream& log) {
         },[&](const fs::path&,std::stop_token){
             ++reads;if(!bootstraps)throw std::runtime_error("Credential not created yet.");return std::string(32,'c');
         },[&]{++bootstraps;});
-        Request pcm;pcm.tag="pcm";client.submit(pcm);Request browse;browse.tag="browse";client.submit(browse);
+        Request pcm;pcm.tag="prepared-pcm";client.submit(pcm);Request browse;browse.tag="browse";client.submit(browse);
         require(completed.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready,"Cold workstation credential creation never released pending HTTP work.");
         const auto replies=client.collect();
         require(reads==2&&bootstraps==1&&replies.size()==2&&replies[0].error.empty()&&replies[1].error.empty(),"Cold bootstrap did not cache its first successful credential read.");

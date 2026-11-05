@@ -86,6 +86,18 @@ def gated_app(config):
     async def inspect_gate():
         return state()
 
+    @app.post('/_fixture/evict', dependencies=[Depends(authenticate)])
+    def evict_prepared_pages(asset: str):
+        # Advisory eviction touches only this fixture's converted files.
+        store=app.state.preparation.store
+        manifest=store.manifest(asset)
+        if manifest is None:raise HTTPException(404,'fixture asset absent')
+        directory=store.asset_path(asset)
+        for relative in {manifest['audio'],manifest['listening']['audio']}:
+            with (directory/relative).open('rb') as handle:
+                os.posix_fadvise(handle.fileno(),0,0,os.POSIX_FADV_DONTNEED)
+        return {'asset':asset,'advisory':'POSIX_FADV_DONTNEED'}
+
     @app.post('/_fixture/hold', dependencies=[Depends(authenticate)])
     async def hold_gate():
         gate.clear()
@@ -113,7 +125,7 @@ def serve(state_path):
                 log_level='warning', access_log=False)
 
 
-def create(port, manifest, directory, rate=48000, channels=2, subtype='PCM_16'):
+def create(port, manifest, directory, rate=48000, channels=2, subtype='PCM_16', source=None):
     import numpy as np
     import soundfile as sf
     from audioharvest.catalog.commits import Catalog
@@ -147,7 +159,8 @@ def create(port, manifest, directory, rate=48000, channels=2, subtype='PCM_16'):
     init_library(library, registry=directory / 'registry.json')
     service = SourceService(library, working_root=directory / 'working')
     previous = service.import_file(media / 'previous.wav', complete=True, title='Previous 440 Hz')
-    marked = service.import_file(media / 'mark.wav', complete=True, title='Marked 660 Hz')
+    marked = service.import_file(source or media / 'mark.wav', complete=True,
+                                 title='Marked recording' if source else 'Marked 660 Hz')
     preparation = LibraryPreparation([library], directory / 'working')
     preparation.refresh()
     while preparation.prepare_one():
@@ -185,9 +198,11 @@ def create(port, manifest, directory, rate=48000, channels=2, subtype='PCM_16'):
                 raise TimeoutError(f'fixture server did not become ready; inspect {log}')
             retry.wait(.05)
         previous_capture = request_json(url + '/v1/libraries/' + library_id + '/entities/' + previous['capture_id'], token)
+        marked_capture = request_json(url + '/v1/libraries/' + library_id + '/entities/' + marked['capture_id'], token)
         result = {'url': url, 'token_file': windows_path(token_file), 'library_id': library_id,
                   'previous_capture': previous_capture, 'mark_song': windows_path(media / 'mark.wav'),
-                  'mark_capture_id': marked['capture_id'], 'tone_hz': 660, 'gate_url': url + '/_fixture',
+                  'mark_capture_id': marked['capture_id'], 'mark_capture':marked_capture,
+                  'tone_hz': None if source else 660, 'gate_url': url + '/_fixture',
                   'fixture_pid': child.pid, 'fixture_directory': windows_path(directory),
                   'fixture_log': windows_path(log)}
         manifest.parent.mkdir(parents=True, exist_ok=True)
@@ -212,6 +227,7 @@ def main():
     parser.add_argument('--rate', type=int, default=48000)
     parser.add_argument('--channels', type=int, default=2)
     parser.add_argument('--subtype', choices=['PCM_16','PCM_32','FLOAT','DOUBLE'], default='PCM_16')
+    parser.add_argument('--source', type=Path, help='read-only original to import into this isolated fixture')
     parser.add_argument('--serve-state', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.serve_state:
@@ -219,7 +235,7 @@ def main():
     else:
         if args.port is None or args.manifest is None:
             parser.error('--port and --manifest are required')
-        create(args.port, args.manifest.resolve(), args.directory, args.rate, args.channels, args.subtype)
+        create(args.port, args.manifest.resolve(), args.directory, args.rate, args.channels, args.subtype,args.source)
 
 
 if __name__ == '__main__':

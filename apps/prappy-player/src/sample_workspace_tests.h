@@ -1,7 +1,7 @@
 #pragma once
 #include "sample_workspace.h"
 #include <ostream>
-inline void samplePreviewTests(const std::filesystem::path& root,std::ostream& log){
+inline void sampleWorkspaceTests(const std::filesystem::path& root,std::ostream& log){
     using namespace sampling;
     const auto require=[](bool ok,const char* message){if(!ok)throw std::runtime_error(message);};
     const SourceRef source{"lib_"+std::string(32,'a'),"cap_"+std::string(32,'b'),"tl_"+std::string(32,'c')};
