@@ -296,8 +296,12 @@ void Workspace::mark(Audio& audio,std::optional<SecondsSpan> selection,OpenSourc
 }
 void Workspace::submitMark(){
     if(!pendingMark||pendingMark->submitted||pendingMark->failed||!client||libraries.empty())return;
+    if(incomingPlayback&&incomingPlayback->reference()==pendingMark->source.endpoint()){
+        if(!incomingPlayback->state().error.empty()){pendingMark->failed=true;notice=incomingPlayback->state().error;}
+        else if(!incomingPlayback->descriptor().is_null())finishMark(incomingPlayback->descriptor());
+        return;
+    }
     pendingMark->submitted=true;notice="Opening recording...";
-    if(incomingPlayback&&incomingPlayback->reference()==pendingMark->source.endpoint()){finishMark(incomingPlayback->descriptor());return;}
     client->submit({"mark-prepared","GET",pendingMark->source.endpoint(),{{"mark",pendingMark->ticket}},generation,{}});
 }
 void Workspace::finishMark(const Json& match){
@@ -539,7 +543,9 @@ void Workspace::tick(Audio& audio){
         }
         if(open&&audio.loaded&&!audio.paused)audio.setPaused(true);
         if(open && !connectionAttempted)connect();
+        if(open&&pendingMark&&incomingPlayback)incomingPlayback->tick();
         process();
+        if(open&&pendingMark)submitMark();
         if(!open&&transport.engaged())stopTransport();
         if(open&&nativePlayback){
             if(!preparedManifest.is_null()){

@@ -121,9 +121,10 @@ struct Audio {
         }catch(const std::exception& e){error=e.what();active=loaded=false;return false;}
     }
     std::shared_ptr<sampling::NativePlayback> takeNativeForEditor(){
-        if(!nativeMode||!native||!loaded)return {};
-        native->pause(true);native->tick();nativeReturnFrame=native->state().cursor;
-        position=static_cast<double>(nativeReturnFrame)/native->state().rate;
+        if(!nativeMode||!native||!active)return {};
+        native->pause(true);native->tick();const auto& state=native->state();
+        nativeReturnFrame=state.rate>0?state.cursor:-1;
+        if(state.rate>0)position=static_cast<double>(nativeReturnFrame)/state.rate;
         paused=pauseRequested=true;nativeEditing=true;return native;
     }
     void resumeNative(){
@@ -131,10 +132,11 @@ struct Audio {
         nativeEditing=false;
         if(!native||!preparedSource)return;
         const auto& source=*preparedSource;
-        if(native->reference()==source.source.endpoint()&&!native->descriptor().is_null()){
+        if(native->reference()==source.source.endpoint()){
             const auto& d=native->descriptor();
-            native->start({0,prepared::integer(d.at("frame_count"))},nativeReturnFrame,false,true);
-            native->clearCache();
+            if(!d.is_null())native->start({0,prepared::integer(d.at("frame_count"))},nativeReturnFrame>=0?nativeReturnFrame:
+                static_cast<sampling::Frame>(std::llround(position*prepared::integer(d.at("sample_rate")))),false,true);
+            native->pause(true);native->clearCache();
         }else native->load(source.source.endpoint(),source.source.capture,source.asset,true,position);
         native->gain(static_cast<float>(volume/100*std::pow(10.,gain/20)));
     }

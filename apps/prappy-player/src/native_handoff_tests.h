@@ -58,5 +58,21 @@ inline void nativeHandoffTests(const fs::path& root,std::ostream& log){
     require(memory.used()==reserved,"Save snapshot copied or double-charged retained PCM");
     const auto checked=perform(connection,fingerprint);
     require(checked.error.empty()&&checked.body.at("sha256")=="19f0212a2c85ff556ebeb0e7ec8d5ac64299145a606f207ac650c4aab24bf73c"&&checked.body.at("bytes")==rate*8,"Off-thread save fingerprint changed native PCM bits");
-    log<<"PASS native handoff: shared immutable windows, no decode/lookup, independent audition and exact return cue\n";
+    auto descriptorReady=std::make_shared<std::atomic<bool>>(false);
+    Client::Transport delayed=[=](const Connection& c,const Request& request,std::stop_token stop){
+        if(request.tag=="source-descriptor")while(!descriptorReady->load()&&!stop.stop_requested())SDL_Delay(1);
+        return transport(c,request,stop);
+    };
+    audio.native=std::make_shared<NativePlayback>(connection,memory,[]{},delayed);
+    require(audio.playNative(trial/"signal.source",source,connection,true,3),"Pending native fixture load failed");
+    const auto inflight=audio.native;const auto pendingSerial=audio.serial;const auto previousLookups=lookups->load();
+    Workspace pendingWorkspace(trial,[]{},memory,transport);pendingWorkspace.mark(audio);
+    const bool adopted=audio.nativeEditing;descriptorReady->store(true);
+    require(adopted,"Editor failed to adopt an in-flight native source");
+    wait([&]{return Json::parse(pendingWorkspace.diagnostics()).at("pcm_frames").get<Frame>()>0;},[&]{audio.poll();pendingWorkspace.tick(audio);});
+    require(audio.native==inflight&&lookups->load()==previousLookups,"In-flight handoff duplicated source lookup or transport");
+    pendingWorkspace.returnToPlayer();audio.resumeNative();
+    wait([&]{return audio.loaded;},[&]{audio.poll();});
+    require(audio.native==inflight&&audio.serial==pendingSerial&&audio.displayPosition()==3,"In-flight return lost its original cue or history identity");
+    log<<"PASS native handoff: shared immutable windows, in-flight adoption, no decode/lookup, independent audition and exact return cue\n";
 }
