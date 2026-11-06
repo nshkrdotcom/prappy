@@ -1,5 +1,13 @@
 #include <windows.h>
-#ifdef PRAPPY_CODEC_FIXTURES
+#if defined(PRAPPY_INDEXED_FIXTURES)
+#define TEST_NAME "prappy_prepared_backend_tests"
+#define TEST_FILE "prappy_prepared_backend_tests.exe"
+#define TEST_DESCRIPTION "Prappy indexed audio integration tests"
+#elif defined(PRAPPY_NATIVE_FIXTURES)
+#define TEST_NAME "prappy_prepared_audio_tests"
+#define TEST_FILE "prappy_prepared_audio_tests.exe"
+#define TEST_DESCRIPTION "Prappy native audio contract tests"
+#elif defined(PRAPPY_CODEC_FIXTURES)
 #define TEST_NAME "prappy_analysis_windows_tests"
 #define TEST_FILE "prappy_analysis_windows_tests.exe"
 #define TEST_DESCRIPTION "Prappy Windows analysis fixture tests"
@@ -9,8 +17,8 @@
 #define TEST_DESCRIPTION "Prappy portable analysis tests"
 #endif
 1 VERSIONINFO
-FILEVERSION 0,1,0,0
-PRODUCTVERSION 0,1,0,0
+FILEVERSION 0,3,0,0
+PRODUCTVERSION 0,3,0,0
 FILETYPE VFT_APP
 BEGIN
  BLOCK "StringFileInfo"
@@ -21,8 +29,8 @@ BEGIN
    VALUE "InternalName", TEST_NAME "\0"
    VALUE "OriginalFilename", TEST_FILE "\0"
    VALUE "ProductName", "Prappy Player tests\0"
-   VALUE "FileVersion", "0.1.0\0"
-   VALUE "ProductVersion", "0.1.0\0"
+   VALUE "FileVersion", "0.3.0\0"
+   VALUE "ProductVersion", "0.3.0\0"
   END
  END
  BLOCK "VarFileInfo"
