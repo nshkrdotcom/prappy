@@ -8,7 +8,7 @@
 
 int main(int argc,char** argv) {
     try {
-        if(argc!=2&&argc!=3)throw std::runtime_error("Pass an isolated indexed fixture manifest and optional --measure.");
+        if(argc!=2&&argc!=3)throw std::runtime_error("Pass an isolated indexed fixture manifest and optional --measure or --latency.");
         const auto fixture=sampling::Json::parse(stateio::read(stateio::pathFromText(argv[1])));
         const auto directory=fs::temp_directory_path()/("prappy-indexed-client-"+sampling::uuid());
         fs::create_directory(directory);const auto config=directory/"player.ini";
@@ -25,6 +25,41 @@ int main(int argc,char** argv) {
         sampling::Request inspect;inspect.tag="source-descriptor";inspect.path=source.source.endpoint();
         const auto manifest=sampling::perform(*library.backend,inspect);
         if(!manifest.error.empty())throw std::runtime_error(manifest.error);
+        if(argc==3&&std::string(argv[2])=="--latency"){
+            struct Probe {
+                std::atomic<Uint64> first{0};
+                static void SDLCALL receive(void* context,const SDL_AudioSpec*,float* pcm,int bytes){
+                    auto& probe=*static_cast<Probe*>(context);if(probe.first.load())return;
+                    for(int i=0;i<bytes/4;++i)if(pcm[i]!=0){probe.first=SDL_GetTicksNS();break;}
+                }
+            };
+            const prepared::Frame rate=manifest.body.at("sample_rate"),frames=manifest.body.at("frame_count");
+            std::mt19937_64 random(43);std::uniform_int_distribution<prepared::Frame> positions(0,frames-std::min(frames,rate*3));
+            std::vector<double> loadedTimes,soundTimes;sampling::Json samples=sampling::Json::array();size_t peak=0;
+            for(int i=0;i<100;++i){
+                sampling::PcmBudget memory(256);Audio trial;trial.openNative(true,memory);Probe probe;
+                const auto first=positions(random);const auto started=SDL_GetTicksNS();
+                if(!trial.playNative(track->path,source,*library.backend,true,static_cast<double>(first)/rate))throw std::runtime_error(trial.error);
+                const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+                while(!trial.loaded&&trial.error.empty()&&std::chrono::steady_clock::now()<deadline){trial.poll();Sleep(1);}
+                if(!trial.loaded)throw std::runtime_error("Latency load failed: "+trial.error);
+                const auto ready=SDL_GetTicksNS();
+                if(!SDL_SetAudioPostmixCallback(trial.native->device(),Probe::receive,&probe))throw std::runtime_error(SDL_GetError());
+                trial.setPaused(false);
+                while(!probe.first.load()&&trial.error.empty()&&std::chrono::steady_clock::now()<deadline){trial.poll();Sleep(1);}
+                trial.setPaused(true);SDL_SetAudioPostmixCallback(trial.native->device(),nullptr,nullptr);
+                if(!probe.first.load())throw std::runtime_error("No digital source audio within latency deadline: "+trial.error);
+                const double loaded=static_cast<double>(ready-started)/1e6,sound=static_cast<double>(probe.first.load()-started)/1e6;
+                loadedTimes.push_back(loaded);soundTimes.push_back(sound);peak=std::max(peak,memory.used());
+                samples.push_back({{"start_frame",first},{"ready_ms",loaded},{"first_digital_sample_ms",sound}});
+            }
+            std::sort(loadedTimes.begin(),loadedTimes.end());std::sort(soundTimes.begin(),soundTimes.end());
+            std::cout<<sampling::Json{{"capture",source.source.capture},{"count",100},{"source_seconds",source.duration},
+                {"cache","fresh client transport/SDL device each trial; warm backend/filesystem; random unprefetched positions"},
+                {"ready_ms_p50_p95_p99",{loadedTimes[49],loadedTimes[94],loadedTimes[98]}},
+                {"first_digital_sample_ms_p50_p95_p99",{soundTimes[49],soundTimes[94],soundTimes[98]}},
+                {"physical_device_latency_measured",false},{"maximum_reserved_bytes",peak},{"samples",samples}}.dump()<<'\n';return 0;
+        }
         const auto native=prepared::pcmContext(manifest.body,100,1000);
         const auto key=manifest.body.at("source_key").get<std::string>(),timeline=manifest.body.at("timeline_id").get<std::string>();
         auto read=[&](prepared::Frame origin,prepared::Frame count){
