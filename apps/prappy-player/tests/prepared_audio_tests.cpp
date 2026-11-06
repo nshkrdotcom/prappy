@@ -83,6 +83,11 @@ int main() {
     require(!session.adopt(native,memory.reserve(8),"source-key","timeline",6));
     require(memory.used()==8);
     rejects([&]{session.adopt(native,memory.reserve(8),"other-key","timeline",7);});
+    const auto beforeSnapshot=memory.used();auto frozen=session.clip(4999999999LL,5000000000LL);
+    require(memory.used()==beforeSnapshot&&frozen->bytes()==8);
+    std::vector<std::byte> saved;frozen->each([&](std::span<const std::byte> bytes){saved.insert(saved.end(),bytes.begin(),bytes.end());});
+    require(saved==native->bytes());rejects([&]{session.clip(4999999998LL,5000000000LL);});
     session.retain(0,1);require(!session.find(4999999999LL)&&memory.used()==8);
+    stored.reset();require(memory.used()==8);frozen.reset();require(memory.used()==0);
     stored.reset();require(memory.used()==0);    std::cout<<"PASS prepared source identity, native timeline, precision and bounded payloads\n";
 }

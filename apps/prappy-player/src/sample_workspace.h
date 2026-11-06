@@ -44,7 +44,8 @@ class Workspace {
     uint64_t generation=0;
     std::string library,notice,libraryQuery,facet,facetValue,regionName="New sample",kind="unknown",collectionName;
     std::string detailPath,descriptorPath;
-    bool connectionReady=false,readOnly=true;
+    bool connectionReady=false,readOnly=true,nativeSave=false,evaluationTrial=false;
+    std::set<std::string> supportedOperations;
     std::string serverUrl="http://127.0.0.1:8765",tokenFile;
     std::string metadataTarget,browsePath,analysisJob;
     std::chrono::steady_clock::time_point jobDue{};
@@ -74,6 +75,7 @@ class Workspace {
     bool draftDirty=false;
     void get(std::string tag,std::string path);
     void command(std::string operation,Json payload);
+    void sendSave(Json&,std::shared_ptr<const NativeSession::Clip> = {});
     void browse();
     SourceRef sourceRef()const;
     DraftValue draftValue()const;

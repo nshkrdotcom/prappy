@@ -24,6 +24,7 @@ struct Request {
     std::chrono::steady_clock::time_point queuedAt{};
     uint64_t diagnosticId=0;
     PcmBudget::Permit pcmMemory,incomingMemory;
+    std::shared_ptr<const NativeSession::Clip> upload;
 };
 struct Reply {
     Request request;

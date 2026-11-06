@@ -24,7 +24,7 @@ std::string show(const Json& j){if(j.is_string())return j.get<std::string>();if(
 int timeLabel(double x,char* buffer,int size,void* rate){return std::snprintf(buffer,static_cast<size_t>(size),"%.4fs",x/static_cast<double>(*static_cast<Frame*>(rate)));}
 }
 Workspace::Workspace(fs::path d,std::function<void()> n,PcmBudget memory,Client::Transport transport):directory(std::move(d)),notify(std::move(n)),pcmBudget(std::move(memory)),backendTransport(std::move(transport)){
-    readOnly=!stateio::evaluationState(directory).is_null();
+    evaluationTrial=!stateio::evaluationState(directory).is_null();readOnly=evaluationTrial;
     tokenFile=utf8(fs::path(L"\\\\wsl.localhost\\ubuntu26-dev\\home\\home\\.config\\audioharvest\\server.token"));try{restore();}catch(const std::exception& e){storageBlocked=true;storageError=e.what();}
 }
 Workspace::~Workspace(){try{closeNativeSession();persist();}catch(const std::exception& e){OutputDebugStringA(e.what());}}
@@ -131,21 +131,56 @@ Json Workspace::humanFacts(bool forSample)const{
     }
     Json facts=Json::array();for(const auto& fact:chosen)facts.push_back(fact);return facts;
 }
+void Workspace::sendSave(Json& entry,std::shared_ptr<const NativeSession::Clip> clip){
+    Request request{"command","POST",endpoint(entry.at("library"))+"/native-saves",entry.at("command"),generation,{}};
+    request.upload=std::move(clip);request.incomingMemory=pcmBudget.reserve(2*1024*1024);
+    entry["sending"]=false;entry["stage"]="upload";persist();entry["sending"]=true;
+    try{client->submit(std::move(request));}catch(...){entry["sending"]=false;throw;}
+}
 void Workspace::command(std::string operation,Json payload){
     if(readOnly){notice="Read-only trial: edits are not saved.";return;}
-    if(!client||library.empty()){notice="Connect and select a library first.";return;}
+    if(!client||!connectionReady||library.empty()){notice="Connect before saving; your draft is retained.";return;}
+    if(!supportedOperations.contains(operation)){notice="This action is not available in this trial.";return;}
+    if(operation!="region.save"||!nativeSave){notice="Native saving is unavailable.";return;}
+    if(activeDraft.empty())newDraft(editor.span);
+    stash();
     Json body={{"request_id",uuid()},{"operation",operation},{"payload",std::move(payload)}};
-    Json entry={{"library",library},{"command",body},{"draft",draftSnapshot()}};
-    if(operation=="region.save"){
-        if(activeDraft.empty())newDraft(editor.span);
-        stash();body=sampleLibrary.beginSave(sourceRef(),activeDraft,body);
-        entry={{"library",sourceLibrary},{"command",body},{"draft",draftSnapshot()},{"source",sourceRef().json()},{"draft_id",activeDraft}};
+    const auto& draft=sampleLibrary.draft(sourceRef(),activeDraft);
+    if(!draft.saving&&!draft.dirty()){notice="Sample is already saved.";return;}
+    if(draft.saving){
+        body=draft.saving->command;
+        const auto row=std::find_if(pending.begin(),pending.end(),[&](const auto& p){return p.at("command").at("request_id")==body.at("request_id");});
+        if(row!=pending.end()&&row->value("sending",false)){notice="Saving sample...";return;}
+    }else{
+        if(preparedManifest.is_null()||!nativeSession)throw std::runtime_error("Selected audio is not ready to save.");
+        body["source_key"]=preparedManifest.at("source_key");body["source_region"]=nullptr;
+        const auto frozen=preparedManifest.value("region",Json());
+        if(!frozen.is_null())body["source_region"]={{"id",frozen.at("id")},{"revision",frozen.at("revision")}};
+        const bool metadataOnly=!frozen.is_null()&&body.at("payload").contains("id")&&body.at("payload").at("id")==frozen.at("id")&&
+            body.at("payload").at("expected")==frozen.at("revision")&&body.at("payload").at("span").at("start_frame")==frozen.at("span").at("start_frame")&&
+            body.at("payload").at("span").at("end_frame")==frozen.at("span").at("end_frame");
+        body["pcm_sha256"]=metadataOnly?Json():Json("");body["decoder_epoch"]=nullptr;
     }
-    const auto duplicate=std::find_if(pending.begin(),pending.end(),[&](const auto& row){return row.at("command").at("request_id")==body.at("request_id");});
-    if(duplicate==pending.end())pending.push_back(entry);
-    persist();
-    if(connectionReady)client->submit({"command","POST",endpoint(entry.at("library"))+"/commands",body,generation,{}});
-    notice=connectionReady?"Saving command...":"Command queued until connection is ready.";
+    std::shared_ptr<const NativeSession::Clip> clip;
+    if(!body.at("pcm_sha256").is_null()){
+        if(!nativeSession)throw std::runtime_error("Reopen the pending source before uploading its audio.");
+        clip=nativeSession->clip(body.at("payload").at("span").at("start_frame"),body.at("payload").at("span").at("end_frame"));
+        if(clip->sourceKey!=body.at("source_key").get<std::string>()||clip->timeline!=body.at("payload").at("timeline_id").get<std::string>())throw std::runtime_error("The retained audio belongs to a different pending source.");
+        if(body.at("decoder_epoch").is_null())body["decoder_epoch"]=clip->decoderEpoch;
+    }
+    body=sampleLibrary.beginSave(sourceRef(),activeDraft,std::move(body));
+    auto row=std::find_if(pending.begin(),pending.end(),[&](const auto& p){return p.at("command").at("request_id")==body.at("request_id");});
+    if(row==pending.end()){
+        pending.push_back({{"library",sourceLibrary},{"command",body},{"draft",draftSnapshot()},{"source",sourceRef().json()},{"draft_id",activeDraft}});
+        row=std::prev(pending.end());
+    }
+    if(clip){
+        (*row)["stage"]="hashing";(*row)["sending"]=false;persist();
+        Request request{"native-save-hash","LOCAL","",body,generation,{}};request.upload=std::move(clip);
+        request.incomingMemory=pcmBudget.reserve(2*1024*1024);(*row)["sending"]=true;
+        try{client->submit(std::move(request));}catch(...){(*row)["sending"]=false;throw;}
+        notice="Preparing sample save...";
+    }else{sendSave(*row);notice="Saving sample metadata...";}
 }
 Json Workspace::draftSnapshot()const{
     return {{"span",{editor.span.start,editor.span.end}},{"name",regionName},{"kind",kind},{"fields",fields},{"edited_facets",editedFacets},{"metadata_target",metadataTarget}};
@@ -342,7 +377,7 @@ void Workspace::playbackOverlay(){
 }
 bool Workspace::current(const Request& request)const{
     const auto& tag=request.tag;
-    if(tag!="capabilities"&&tag!="libraries"&&tag!="command"&&tag!="collections"&&request.generation!=generation)return false;
+    if(tag!="capabilities"&&tag!="libraries"&&tag!="command"&&tag!="native-save-hash"&&tag!="collections"&&request.generation!=generation)return false;
     if(tag=="mark-prepared"&&(!pendingMark||request.body.at("mark")!=pendingMark->ticket))return false;
     if(tag=="collections"&&request.path!=endpoint(library)+"/collections")return false;
     if(tag=="browse"&&request.path!=browsePath)return false;
@@ -355,17 +390,36 @@ void Workspace::process(){
     for(auto& reply:client->collect()){
         const auto& tag=reply.request.tag;
         if(!current(reply.request))continue;
+        if(tag=="command"||tag=="native-save-hash")for(auto& entry:pending)
+            if(entry.at("command").at("request_id")==reply.request.body.at("request_id"))entry["sending"]=false;
         if(!reply.error.empty()){if(pendingMark&&(tag=="mark-prepared"||tag=="libraries"||tag=="capabilities"))pendingMark->failed=true;notice=reply.error;if(reply.status==409){notice="Conflict: local draft retained. Reload the saved sample or Fork before saving. "+notice;if(tag=="command")for(auto& row:pending)if(row.at("command").at("request_id")==reply.request.body.at("request_id")){row["conflict"]=true;if(row.contains("source"))sampleLibrary.conflict(SourceRef::parse(row.at("source")),row.at("draft_id"),row.at("command").at("request_id"));}persist();}continue;}
-        if(tag=="capabilities"){
+        if(tag=="native-save-hash"){
+            auto row=std::find_if(pending.begin(),pending.end(),[&](const auto& entry){return entry.at("command").at("request_id")==reply.request.body.at("request_id");});
+            if(row==pending.end())continue;
+            const auto source=SourceRef::parse(row->at("source"));
+            (*row)["command"]=sampleLibrary.fingerprintSave(source,row->at("draft_id"),reply.request.body.at("request_id"),reply.body.at("sha256"));
+            (*row)["stage"]="upload";persist();sendSave(*row,reply.request.upload);notice="Saving sample audio...";
+        }else if(tag=="capabilities"){
             if(reply.body.value("protocol",0)!=3||!reply.body.value("indexed_source",false))throw std::runtime_error("Indexed audio requires backend protocol 3.");
-            readOnly=reply.body.value("read_only",false);get("libraries","/v1/libraries");
+            const auto marker=stateio::evaluationState(directory);
+            readOnly=reply.body.value("read_only",true)||(!marker.is_null()&&!marker.value("native_state",false));
+            nativeSave=reply.body.value("native_save",false);supportedOperations.clear();
+            for(const auto& operation:reply.body.value("operations",Json::array()))supportedOperations.insert(operation.get<std::string>());
+            get("libraries","/v1/libraries");
         }else if(tag=="libraries"){
             libraries=reply.body;connectionReady=true;notice="Connected";
             if(library.empty()&&!libraries.empty())library=libraries[0].at("id");
             browse();
             if(pendingMark)submitMark();
             else if(!capture.is_null()){loadDetails();fetchSourceRegions();}
-            if(!readOnly)for(const auto& entry:pending)if(!entry.value("conflict",false))client->submit({"command","POST",endpoint(entry.at("library"))+"/commands",entry.at("command"),generation,{}});
+            if(!readOnly&&nativeSave)for(auto row=pending.begin();row!=pending.end();){
+                auto& entry=*row;entry["sending"]=false;
+                if(entry.value("conflict",false)||entry.at("command").at("operation")!="region.save"||!entry.at("command").contains("source_key")){++row;continue;}
+                if(entry.at("command").at("pcm_sha256")==""){
+                    sampleLibrary.cancelUnsentSave(SourceRef::parse(entry.at("source")),entry.at("draft_id"),entry.at("command").at("request_id"));
+                    row=pending.erase(row);notice="Unsent save discarded after reconnect; your draft is retained.";
+                }else{sendSave(entry);++row;}
+            }
         }else if(tag=="browse"){items=reply.body.at("items");browseTotal=reply.body.at("total");}
         else if(tag=="sourceRegions"){
             if(reply.body.at("source")!=sourceRef().json()||reply.body.at("offset")!=sourceRegionOffset)continue;
@@ -455,7 +509,7 @@ void Workspace::process(){
                             metadata=reply.body.at("metadata").at("metadata");metadataTarget=region.at("id");metadataTargetRevision=region.at("revision");metadataRevision=metadata.at("revision");
                             stash();d.baseline=d.value;
                         }
-                        notice=d.dirty()?"Saved submitted revision; newer edits retained.":"Sample saved.";fetchSourceRegions();
+                        notice=d.dirty()?"Saved submitted revision; newer edits retained.":"Sample saved.";fetchSourceRegions();loadDetails();
                     }
                 }
                 pending.erase(row);persist();continue;
@@ -478,11 +532,21 @@ void Workspace::tick(Audio& audio){
     try{
         if(storageBlocked)return;
         const auto previousState=transport.state;
+        if(open&&audio.nativeMode&&!audio.nativeEditing&&audio.loaded){
+            auto parent=audio.takeNativeForEditor();
+            if(!nativePlayback)incomingPlayback=std::move(parent);
+            else if(nativePlayback!=parent)parent->stop();
+        }
         if(open&&audio.loaded&&!audio.paused)audio.setPaused(true);
         if(open && !connectionAttempted)connect();
         process();
         if(!open&&transport.engaged())stopTransport();
         if(open&&nativePlayback){
+            if(!preparedManifest.is_null()){
+                const auto coverage=preparedManifest.value("coverage",Json{{"start_frame",0},{"end_frame",editor.total}});
+                const Span selected{std::max(editor.span.start,coverage.at("start_frame").get<Frame>()),std::min(editor.span.end,coverage.at("end_frame").get<Frame>())};
+                if(selected.end>selected.start)nativePlayback->cache(selected);
+            }
             nativePlayback->tick();nativeSession=nativePlayback->session();
             const auto& state=nativePlayback->state();auditionChunks=state.transfers;
             if(!state.error.empty()){notice=state.error;transport.state=PlaybackState::Error;}
@@ -630,6 +694,7 @@ void Workspace::draw(Audio& audio,const std::function<void(const char*,bool)>& o
     }
     try {
         if(readOnly)ImGui::TextDisabled("Read-only trial: edits are not saved.");
+        else if(evaluationTrial)ImGui::TextDisabled("Trial saves stay in this evaluation library.");
         if(button("Return to song","sample-return"))returnToPlayer();
         ImGui::SameLine();if(button("Mark playing song","sample-mark"))mark(audio);
         ImGui::SameLine();if(button("Connection","sample-connection"))ImGui::OpenPopup("Backend connection");
@@ -720,7 +785,7 @@ void Workspace::draw(Audio& audio,const std::function<void(const char*,bool)>& o
             ImGui::EndDisabled();
             waveform(audio,observe);if(!ImGui::IsMouseDown(0))editor.endGesture();
             ImGui::BeginDisabled(!selectionDefined);
-            Span edited=editor.span;ImGui::SetNextItemWidth(150);ImGui::InputScalar("In",ImGuiDataType_S64,&edited.start);ImGui::SameLine();ImGui::SetNextItemWidth(150);ImGui::InputScalar("Out (exclusive)",ImGuiDataType_S64,&edited.end);editor.change(edited);
+            Span edited=editor.span;ImGui::SetNextItemWidth(150);ImGui::InputScalar("In",ImGuiDataType_S64,&edited.start);observe("sample-in",ImGui::IsItemEdited());ImGui::SameLine();ImGui::SetNextItemWidth(150);ImGui::InputScalar("Out (exclusive)",ImGuiDataType_S64,&edited.end);observe("sample-out",ImGui::IsItemEdited());editor.change(edited);
             ImGui::Text("Length: %lld frames / %.6f seconds",static_cast<long long>(editor.span.end-editor.span.start),static_cast<double>(editor.span.end-editor.span.start)/rate);
             if(button("In -1","sample-in-minus"))editor.change({editor.span.start-1,editor.span.end});ImGui::SameLine();if(button("In +1","sample-in-plus"))editor.change({editor.span.start+1,editor.span.end});ImGui::SameLine();
             if(button("Out -1","sample-out-minus"))editor.change({editor.span.start,editor.span.end-1});ImGui::SameLine();if(button("Out +1","sample-out-plus"))editor.change({editor.span.start,editor.span.end+1});ImGui::SameLine();
@@ -753,7 +818,7 @@ void Workspace::draw(Audio& audio,const std::function<void(const char*,bool)>& o
             ImGui::Text("%s %s%s | %.3f / %.3f s | source %.3f s",transport.status(),transport.label(),transport.effectiveLoop()?" (Loop)":"",static_cast<double>(transport.cursor-transport.range.start)/rate,static_cast<double>(transport.range.end-transport.range.start)/rate,static_cast<double>(transport.cursor)/rate);
             if(transport.engaged()&&editor.span!=auditionSelection)ImGui::TextDisabled("Boundary edits apply to audition on release");
             if(ImGui::Shortcut(ImGuiKey_Space)&&!ImGui::GetIO().WantTextInput)toggleTransport(audio);
-            if(input("Sample name",regionName))draftDirty=true;
+            if(input("Sample name",regionName))draftDirty=true;observe("sample-name",ImGui::IsItemEdited());
             const char* kinds[]={"groove","one_shot","pitched_articulation","ensemble_phrase","sustain","texture","transition","unknown"};
             if(ImGui::BeginCombo("Kind",kind.c_str())){for(const char* value:kinds)if(ImGui::Selectable(value,kind==value)){kind=value;draftDirty=true;}ImGui::EndCombo();}
             if(!readOnly){

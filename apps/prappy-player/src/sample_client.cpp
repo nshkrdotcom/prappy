@@ -77,9 +77,7 @@ std::string uuid() {
     wchar_t buffer[40]{}; if(!StringFromGUID2(id,buffer,40))throw std::runtime_error("Cannot format command identity.");
     auto s=utf8(fs::path(buffer)); std::erase_if(s,[](char c){return c=='{' || c=='}' || c=='-';}); return s;
 }
-static std::string fileHash(const fs::path& path,std::stop_token stop) {
-    const auto began=debuglog::Clock::now();
-    debuglog::write("artifact.verify.begin","file="+utf8(path.filename()));
+template<class Reader> static std::string sha256(Reader read,std::stop_token stop){
     BCRYPT_ALG_HANDLE algorithm=nullptr;
     if (BCryptOpenAlgorithmProvider(&algorithm,BCRYPT_SHA256_ALGORITHM,nullptr,0)<0) throw std::runtime_error("Cannot open SHA256.");
     const auto close=[](void* p){BCryptCloseAlgorithmProvider(p,0);};
@@ -87,20 +85,34 @@ static std::string fileHash(const fs::path& path,std::stop_token stop) {
     BCRYPT_HASH_HANDLE hash=nullptr;
     if (BCryptCreateHash(algorithm,&hash,nullptr,0,nullptr,0,0)<0) throw std::runtime_error("Cannot create SHA256.");
     std::unique_ptr<void,decltype(&BCryptDestroyHash)> hashOwner(hash,BCryptDestroyHash);
-    SourceFile file(path,stop);
-    std::vector<char> buffer(65536);
-    while (const auto count=file.read(buffer.data(),static_cast<DWORD>(buffer.size()),stop)) {
-        if (BCryptHashData(hash,reinterpret_cast<PUCHAR>(buffer.data()),count,0)<0) throw std::runtime_error("SHA256 failed.");
-    }
+    read([&](std::span<const std::byte> bytes){
+        if(stop.stop_requested())throw std::runtime_error("SHA256 cancelled.");
+        if(BCryptHashData(hash,reinterpret_cast<PUCHAR>(const_cast<std::byte*>(bytes.data())),static_cast<ULONG>(bytes.size()),0)<0)throw std::runtime_error("SHA256 failed.");
+    });
     std::array<unsigned char,32> digest{};
     if (BCryptFinishHash(hash,digest.data(),static_cast<ULONG>(digest.size()),0)<0) throw std::runtime_error("SHA256 failed.");
     const char* digits="0123456789abcdef"; std::string out;
     for (auto c:digest) {out+=digits[c>>4];out+=digits[c&15];}
-    debuglog::write("artifact.verify.end","ms="+std::to_string(debuglog::elapsed(began)));
     return out;
 }
+static std::string fileHash(const fs::path& path,std::stop_token stop){
+    const auto began=debuglog::Clock::now();debuglog::write("artifact.verify.begin","file="+utf8(path.filename()));
+    SourceFile file(path,stop);std::array<std::byte,65536> buffer{};
+    auto result=sha256([&](auto consume){while(const auto count=file.read(buffer.data(),static_cast<DWORD>(buffer.size()),stop))consume(std::span<const std::byte>(buffer.data(),count));},stop);
+    debuglog::write("artifact.verify.end","ms="+std::to_string(debuglog::elapsed(began)));return result;
+}
+
 Reply perform(const Connection& connection,const Request& request,std::stop_token stop) {
     Reply reply; reply.request=request;
+    if(request.tag=="native-save-hash"){
+        const auto started=debuglog::Clock::now();
+        try{
+            if(!request.upload)throw std::runtime_error("Save has no retained PCM snapshot.");
+            const auto digest=sha256([&](auto consume){request.upload->each(consume);},stop);
+            reply.status=200;reply.body={{"sha256",digest},{"bytes",request.upload->bytes()}};
+        }catch(const std::exception& e){reply.error=e.what();}
+        debuglog::write("save.hash","ms="+std::to_string(debuglog::elapsed(started))+" ok="+(reply.error.empty()?"1":"0"));return reply;
+    }
     const auto began=debuglog::Clock::now();
     const auto identity="req="+std::to_string(request.diagnosticId?request.diagnosticId:++nextDiagnosticId)+" tag="+request.tag+" gen="+std::to_string(request.generation);
     debuglog::write("http.begin",identity);
@@ -137,13 +149,28 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
         const auto token=authorize(connection,stop).token;
         DWORD redirectPolicy=WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
         if(!WinHttpSetOption(operation.value,WINHTTP_OPTION_REDIRECT_POLICY,&redirectPolicy,sizeof(redirectPolicy)))throw std::runtime_error("Cannot constrain backend redirects.");
-        auto headers=wide("Authorization: Bearer "+token+"\r\nContent-Type: application/json\r\nX-Prappy-Request-Id: "+std::to_string(GetCurrentProcessId())+"_"+std::to_string(request.diagnosticId)+"\r\n");
+        auto headers=wide("Authorization: Bearer "+token+"\r\nContent-Type: "+std::string(request.upload?"application/octet-stream":"application/json")+"\r\nX-Prappy-Request-Id: "+std::to_string(GetCurrentProcessId())+"_"+std::to_string(request.diagnosticId)+"\r\n");
         const auto body=request.method=="GET" || request.body.is_null() ? std::string{} : request.body.dump();
-        if (!WinHttpSendRequest(operation.value,headers.c_str(),static_cast<DWORD>(headers.size()),
-             body.empty()?WINHTTP_NO_REQUEST_DATA:const_cast<char*>(body.data()),static_cast<DWORD>(body.size()),static_cast<DWORD>(body.size()),0) ||
-            !WinHttpReceiveResponse(operation.value,nullptr)) {
-            const auto error=GetLastError();
-            debuglog::write("http.failure",identity+" win32="+std::to_string(error));
+        bool sent=false;
+        if(request.upload){
+            if(body.empty()||body.size()>65536||request.upload->bytes()>1024ULL*1024*1024)throw std::runtime_error("Native save exceeds its metadata or retained audio bounds.");
+            const auto length=static_cast<uint32_t>(body.size());
+            const auto total=static_cast<DWORD>(4+body.size()+request.upload->bytes());
+            sent=WinHttpSendRequest(operation.value,headers.c_str(),static_cast<DWORD>(headers.size()),WINHTTP_NO_REQUEST_DATA,0,total,0)!=FALSE;
+            const auto write=[&](std::span<const std::byte> bytes){
+                size_t at=0;
+                while(at<bytes.size()){
+                    if(stop.stop_requested())throw std::runtime_error("Native save upload cancelled.");
+                    DWORD written=0;const auto count=static_cast<DWORD>(std::min<size_t>(65536,bytes.size()-at));
+                    if(!WinHttpWriteData(operation.value,bytes.data()+at,count,&written)||!written)throw std::runtime_error("Native save upload failed: "+std::to_string(GetLastError()));
+                    at+=written;
+                }
+            };
+            if(sent){write(std::as_bytes(std::span(&length,1)));write(std::as_bytes(std::span(body.data(),body.size())));request.upload->each(write);}
+        }else sent=WinHttpSendRequest(operation.value,headers.c_str(),static_cast<DWORD>(headers.size()),
+            body.empty()?WINHTTP_NO_REQUEST_DATA:const_cast<char*>(body.data()),static_cast<DWORD>(body.size()),static_cast<DWORD>(body.size()),0)!=FALSE;
+        if(!sent||!WinHttpReceiveResponse(operation.value,nullptr)){
+            const auto error=GetLastError();debuglog::write("http.failure",identity+" win32="+std::to_string(error));
             throw std::runtime_error("Backend connection failed: "+std::to_string(error));
         }
         DWORD status=0,length=sizeof(status);
@@ -160,7 +187,7 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
             if (!output) throw std::runtime_error("Cannot create downloaded audio.");
         }
         std::vector<char> bytes,chunk(65536);size_t total=0;
-        size_t capacity=64ULL*1024*1024;
+        size_t capacity=request.path.ends_with("/native-saves")?1024*1024:64ULL*1024*1024;
         if(status==200&&(request.tag=="source-pcm"||request.tag=="source-waveform")){
             const auto channels=request.body.at("channels").get<int64_t>();
             const auto count=request.body.at(request.tag=="source-pcm"?"frame_count":"bin_count").get<int64_t>();

@@ -40,6 +40,22 @@ public:
 class NativeSession {
 public:
     struct Buffer {std::shared_ptr<const prepared::Block> pcm;PcmBudget::Permit memory;};
+    struct Clip {
+        struct Segment {std::shared_ptr<const Buffer> buffer;prepared::Frame first,count;};
+        prepared::NativeTimeline source;prepared::Frame first,last;
+        std::string sourceKey,timeline,decoderEpoch;
+        std::vector<Segment> segments;
+        size_t bytes()const{return static_cast<size_t>(last-first)*static_cast<size_t>(source.channels)*prepared::sampleBytes(source.type);}
+        template<class Consumer> void each(Consumer consume)const{
+            const auto stride=static_cast<size_t>(source.channels)*prepared::sampleBytes(source.type);
+            for(const auto& part:segments){
+                const auto* data=part.buffer->pcm->bytes().data()+static_cast<size_t>(part.first-part.buffer->pcm->start())*stride;
+                const auto size=static_cast<size_t>(part.count)*stride;
+                for(size_t at=0;at<size;at+=65536)consume(std::span<const std::byte>(data+at,std::min<size_t>(65536,size-at)));
+            }
+        }
+    };
+
 private:
     prepared::NativeTimeline source;
     std::string sourceKey,timeline,decoderEpoch;
@@ -94,6 +110,17 @@ public:
         return count;
     }
     prepared::Frame frames()const{return frames(0,source.frames);}
+    std::shared_ptr<const Clip> clip(prepared::Frame start,prepared::Frame end)const{
+        if(!covers(start,end)||decoderEpoch.empty())throw std::runtime_error("Save requires the complete selected audio window.");
+        auto result=std::make_shared<Clip>();result->source=source;result->first=start;result->last=end;
+        result->sourceKey=sourceKey;result->timeline=timeline;result->decoderEpoch=decoderEpoch;
+        for(auto at=start;at<end;){
+            auto buffer=find(at);if(!buffer)throw std::runtime_error("Selected audio has a gap.");
+            const auto count=std::min(end,buffer->pcm->start()+buffer->pcm->frames())-at;
+            result->segments.push_back({std::move(buffer),at,count});at+=count;
+        }
+        return result;
+    }
     void retain(prepared::Frame start,prepared::Frame end){
         if(start<0||end<start||end>source.frames)throw std::runtime_error("Invalid native session window.");
         std::erase_if(buffers,[&](const auto& b){return b->pcm->start()>=end||b->pcm->start()+b->pcm->frames()<=start;});

@@ -49,5 +49,14 @@ inline void nativeHandoffTests(const fs::path& root,std::ostream& log){
     workspace.returnToPlayer();audio.resumeNative();audio.poll();
     require(!audio.nativeEditing&&audio.paused&&audio.serial==serial&&audio.displayPosition()==2&&audio.native->session()==shared,"Return changed history identity, cue or PCM ownership");
     require(!fs::exists(trial/"sample-workspaces.json"),"Read-only handoff persisted an editing gesture");
+    workspace.open=true;workspace.tick(audio);
+    require(audio.nativeEditing&&audio.paused,"Restored editor left ordinary playback owning an active transport");
+    workspace.returnToPlayer();audio.resumeNative();audio.poll();
+    require(audio.native->session()==shared&&audio.displayPosition()==2,"Restored editor return replaced the native clock or PCM");
+    Request fingerprint{"native-save-hash","LOCAL","",nullptr,0,{}};
+    const auto reserved=memory.used();fingerprint.upload=audio.native->session()->clip(rate*2,rate*3);
+    require(memory.used()==reserved,"Save snapshot copied or double-charged retained PCM");
+    const auto checked=perform(connection,fingerprint);
+    require(checked.error.empty()&&checked.body.at("sha256")=="19f0212a2c85ff556ebeb0e7ec8d5ac64299145a606f207ac650c4aab24bf73c"&&checked.body.at("bytes")==rate*8,"Off-thread save fingerprint changed native PCM bits");
     log<<"PASS native handoff: shared immutable windows, no decode/lookup, independent audition and exact return cue\n";
 }
