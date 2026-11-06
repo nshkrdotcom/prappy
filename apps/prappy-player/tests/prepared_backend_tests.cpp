@@ -22,9 +22,6 @@ int main(int argc,char** argv) {
         const auto track=std::find_if(library.tracks.begin(),library.tracks.end(),[&](const auto& t){return t.prepared&&t.prepared->source.capture==fixture.at("capture_id").get<std::string>();});
         if(track==library.tracks.end()||!track->prepared->ready())throw std::runtime_error("Fixture original is not playable.");
         const auto& source=*track->prepared;
-        sampling::Request inspect;inspect.tag="source-descriptor";inspect.path=source.source.endpoint();
-        const auto manifest=sampling::perform(*library.backend,inspect);
-        if(!manifest.error.empty())throw std::runtime_error(manifest.error);
         if(argc==3&&std::string(argv[2])=="--latency"){
             struct Probe {
                 std::atomic<Uint64> first{0};
@@ -33,10 +30,11 @@ int main(int argc,char** argv) {
                     for(int i=0;i<bytes/4;++i)if(pcm[i]!=0){probe.first=SDL_GetTicksNS();break;}
                 }
             };
-            const prepared::Frame rate=manifest.body.at("sample_rate"),frames=manifest.body.at("frame_count");
+            const prepared::Frame rate=source.native.rate,frames=static_cast<prepared::Frame>(source.duration*rate);
             std::mt19937_64 random(43);std::uniform_int_distribution<prepared::Frame> positions(0,frames-std::min(frames,rate*3));
+            const int trials=fixture.value("latency_samples",100);if(trials<1||trials>1000)throw std::runtime_error("Latency sample count is out of range.");
             std::vector<double> loadedTimes,soundTimes;sampling::Json samples=sampling::Json::array();size_t peak=0;
-            for(int i=0;i<100;++i){
+            for(int i=0;i<trials;++i){
                 sampling::PcmBudget memory(256);Audio trial;trial.openNative(true,memory);Probe probe;
                 const auto first=positions(random);const auto started=SDL_GetTicksNS();
                 if(!trial.playNative(track->path,source,*library.backend,true,static_cast<double>(first)/rate))throw std::runtime_error(trial.error);
@@ -54,12 +52,16 @@ int main(int argc,char** argv) {
                 samples.push_back({{"start_frame",first},{"ready_ms",loaded},{"first_digital_sample_ms",sound}});
             }
             std::sort(loadedTimes.begin(),loadedTimes.end());std::sort(soundTimes.begin(),soundTimes.end());
-            std::cout<<sampling::Json{{"capture",source.source.capture},{"count",100},{"source_seconds",source.duration},
+            const auto percentiles=[&](const std::vector<double>& values){sampling::Json out=sampling::Json::array();for(double p:{.5,.95,.99})out.push_back(values[static_cast<size_t>(std::ceil(trials*p))-1]);return out;};
+            std::cout<<sampling::Json{{"capture",source.source.capture},{"count",trials},{"source_seconds",source.duration},
                 {"cache","fresh client transport/SDL device each trial; warm backend/filesystem; random unprefetched positions"},
-                {"ready_ms_p50_p95_p99",{loadedTimes[49],loadedTimes[94],loadedTimes[98]}},
-                {"first_digital_sample_ms_p50_p95_p99",{soundTimes[49],soundTimes[94],soundTimes[98]}},
+                {"ready_ms_p50_p95_p99",percentiles(loadedTimes)},
+                {"first_digital_sample_ms_p50_p95_p99",percentiles(soundTimes)},
                 {"physical_device_latency_measured",false},{"maximum_reserved_bytes",peak},{"samples",samples}}.dump()<<'\n';return 0;
         }
+        sampling::Request inspect;inspect.tag="source-descriptor";inspect.path=source.source.endpoint();
+        const auto manifest=sampling::perform(*library.backend,inspect);
+        if(!manifest.error.empty())throw std::runtime_error(manifest.error);
         const auto native=prepared::pcmContext(manifest.body,100,1000);
         const auto key=manifest.body.at("source_key").get<std::string>(),timeline=manifest.body.at("timeline_id").get<std::string>();
         auto read=[&](prepared::Frame origin,prepared::Frame count){
