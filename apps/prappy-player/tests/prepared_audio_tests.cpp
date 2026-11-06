@@ -1,4 +1,5 @@
 #include "prepared_audio.h"
+#include "native_session.h"
 #include "prepared_catalog.h"
 #include "prepared_requests.h"
 #include "sample_handoff.h"
@@ -62,5 +63,23 @@ int main() {
     require(pcmContext(manifest,13,100).at("channels")==32);
     rejects([&]{pcmContext(manifest,0,1920000);});
     rejects([&]{pcmContext(manifest,1920000,1);});
-    std::cout<<"PASS prepared source identity, native timeline, precision and bounded payloads\n";
+    sampling::PcmBudget memory(64);
+    auto incoming=memory.reserve(40ULL*1024*1024);
+    rejects([&]{memory.reserve(25ULL*1024*1024);});
+    auto undo=incoming;incoming.reset();require(memory.used()==40ULL*1024*1024);
+    undo.reset();require(memory.used()==0);
+    require(sampling::PcmBudget{}.limit()==256ULL*1024*1024);
+    rejects([]{sampling::PcmBudget invalid(32);});
+    const NativeTimeline high{192000,1,5000000000LL,SampleType::Float64};
+    auto native=std::make_shared<const Block>(high,4999999999LL,1,
+        std::as_bytes(std::span(&precise,size_t{1})));
+    sampling::NativeSession session(high,"source-key","timeline",7,memory);
+    auto stored=session.adopt(native,memory.reserve(8),"source-key","timeline",7);
+    require(stored&&memory.used()==8);
+    require(session.find(4999999999LL)->pcm->sample(0,0)==precise);
+    require(!session.adopt(native,memory.reserve(8),"source-key","timeline",6));
+    require(memory.used()==8);
+    rejects([&]{session.adopt(native,memory.reserve(8),"other-key","timeline",7);});
+    session.retain(0,1);require(!session.find(4999999999LL)&&memory.used()==8);
+    stored.reset();require(memory.used()==0);    std::cout<<"PASS prepared source identity, native timeline, precision and bounded payloads\n";
 }
