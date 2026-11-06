@@ -112,6 +112,7 @@ public:
         :budget(std::move(memory)),output(budget),client(std::move(connection),std::move(notify),std::move(transport)){}
     ~NativePlayback(){release();}
     NativePlayback(const NativePlayback&)=delete;NativePlayback& operator=(const NativePlayback&)=delete;
+    SDL_AudioDeviceID device()const{return output.device();}
     const State& state()const{return status;}
     const Json& descriptor()const{return manifest;}
     const std::string& reference()const{return endpoint;}

@@ -110,6 +110,59 @@ int main(){
             require(!player.state().loaded&&!player.state().error.empty()&&!player.session(),"Wrong original identity entered playback");
         }
     }
+    for(const int mode:{0,1,2})for(const Frame origin:{Frame{0},Frame{(mode==1?48000:44100)*5/4}}){
+        const Frame rate=mode==1?48000:44100;
+        SDL_SetHint(SDL_HINT_AUDIO_DUMMY_TIMESCALE,"0.1");
+        const Frame total=rate*7+113;
+        const Json description={{"source_key",key},{"timeline_id",timeline},{"frame_count",total},{"sample_rate",rate},{"channels",2},{"sample_format","float32"},{"access_mode","indexed"},
+            {"capture",{{"id",capture},{"blob_sha256",sha}}}};
+        const auto signal=[](Frame frame,int channel){return static_cast<float>(((static_cast<uint64_t>(frame)*1664525+1013904223+channel*71237)%65536)/131072.-.25);};
+        Client::Transport transport=[=](const Connection&,const Request& request,std::stop_token){
+            Reply reply;reply.status=200;
+            if(request.tag=="source-descriptor")reply.body=description;
+            else if(request.tag=="source-pcm"){
+                const Frame first=request.body.at("origin_frame"),count=request.body.at("frame_count");std::vector<std::byte> bytes(static_cast<size_t>(count)*8);
+                for(Frame i=0;i<count;++i)for(int c=0;c<2;++c){float value=signal(first+i,c);std::memcpy(bytes.data()+static_cast<size_t>(i*2+c)*4,&value,4);}
+                reply.preparedPcm=std::make_shared<Block>(NativeTimeline{rate,2,total,SampleType::Float32},first,count,std::move(bytes));reply.body={{"decoder_epoch","digital"}};
+            }else reply.body={{"active",true}};
+            return reply;
+        };
+        struct Device {
+            SDL_AudioDeviceID id=0;
+            explicit Device(bool force){if(force){require(SDL_InitSubSystem(SDL_INIT_AUDIO),"Cannot initialize forced output domain");const SDL_AudioSpec spec{SDL_AUDIO_F32,2,48000};id=SDL_OpenAudioDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,&spec);require(id!=0,"Cannot open forced output domain");}}
+            ~Device(){if(id){SDL_CloseAudioDevice(id);SDL_QuitSubSystem(SDL_INIT_AUDIO);}}
+        } forcedOutput(mode==2);
+        struct Capture{
+            std::vector<float> samples=std::vector<float>(48000*20);std::atomic<size_t> count{0};std::atomic<int> rate{0},channels{0};
+            static void SDLCALL receive(void* context,const SDL_AudioSpec* spec,float* pcm,int bytes){
+                auto& self=*static_cast<Capture*>(context);const auto first=self.count.load();const auto size=std::min(static_cast<size_t>(bytes)/4,self.samples.size()-first);
+                std::memcpy(self.samples.data()+first,pcm,size*4);self.rate=spec->freq;self.channels=spec->channels;self.count.store(first+size);
+            }
+        } captureOutput;
+        PcmBudget memory(64);Connection connection;connection.token=std::string(48,'t');
+        NativePlayback player(connection,memory,[]{},transport);player.load("/digital/audio",capture,sha,true,static_cast<double>(origin)/rate);
+        until(player,[&]{return player.state().loaded;});
+        require(SDL_SetAudioPostmixCallback(player.device(),Capture::receive,&captureOutput),"Cannot install digital output capture");
+        player.gain(.5f);player.pause(false);until(player,[&]{return player.state().finished;});
+        require(SDL_SetAudioPostmixCallback(player.device(),nullptr,nullptr),"Cannot detach digital output capture");
+        require(captureOutput.rate==(mode==2?48000:rate)&&captureOutput.channels==2,"Digital test did not use the expected output domain");
+        const auto count=captureOutput.count.load();size_t first=0;while(first<count&&captureOutput.samples[first]==0)++first;
+        std::vector<float> reference(static_cast<size_t>(total-origin)*2);
+        for(Frame i=0;i<total-origin;++i)for(int c=0;c<2;++c)reference[static_cast<size_t>(i)*2+c]=signal(origin+i,c)*.5f;
+        if(mode==2){
+            const SDL_AudioSpec input{SDL_AUDIO_F32,2,static_cast<int>(rate)},output{SDL_AUDIO_F32,2,48000};
+            auto* stream=SDL_CreateAudioStream(&input,&output);require(stream!=nullptr,"Cannot create continuous resampling reference");
+            require(SDL_PutAudioStreamData(stream,reference.data(),static_cast<int>(reference.size()*4))&&SDL_FlushAudioStream(stream),"Cannot feed continuous resampling reference");
+            reference.resize(static_cast<size_t>(SDL_GetAudioStreamAvailable(stream))/4);
+            require(SDL_GetAudioStreamData(stream,reference.data(),static_cast<int>(reference.size()*4))==static_cast<int>(reference.size()*4),"Cannot read continuous resampling reference");SDL_DestroyAudioStream(stream);
+        }
+        require(first+reference.size()<=count,"Digital output truncated the selected span");
+        float maximum=0;for(size_t i=0;i<reference.size();++i)maximum=std::max(maximum,std::abs(captureOutput.samples[first+i]-reference[i]));
+        std::cout<<"DIGITAL source_rate="<<rate<<" output_rate="<<captureOutput.rate<<" start_frame="<<origin<<" compared_samples="<<reference.size()<<" maximum_error="<<maximum<<"\n";
+        require(maximum<=(mode==2?2e-6f:0.f),"SDL digital output shifted, duplicated, omitted or changed a native sample");
+
+    }
+    SDL_SetHint(SDL_HINT_AUDIO_DUMMY_TIMESCALE,"1");
     {
         const Frame rate=48000,total=rate*300;
         const Json description={{"source_key",key},{"timeline_id",timeline},{"frame_count",total},{"sample_rate",rate},{"channels",2},{"sample_format","float32"},{"access_mode","indexed"},

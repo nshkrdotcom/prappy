@@ -28,9 +28,12 @@ class Audition {
     }
     Frame consumed()const{return std::max<Frame>(0,submitted-std::max(0,SDL_GetAudioStreamQueued(stream))/stride()-deviceFrames);}
     static void SDLCALL provide(void* user,SDL_AudioStream* target,int additional,int){
-        auto& self=*static_cast<Audition*>(user);if(self.paused||!self.current)return;
+        auto& self=*static_cast<Audition*>(user);if(!self.paused)self.fill(target,additional);
+    }
+    void fill(SDL_AudioStream* target,int additional){
+        auto& self=*this;if(!self.current)return;
         const auto bytes=self.stride();
-        int remaining=static_cast<int>(std::min<Frame>(additional,sizeof(self.scratch))/bytes*bytes);
+        int remaining=static_cast<int>(additional/bytes*bytes);
         while(remaining>0){
             if(self.feeding>=self.range.end){
                 if(!self.repeat){if(!self.done)SDL_FlushAudioStream(target);self.done=true;break;}
@@ -42,7 +45,7 @@ class Audition {
                 }else{self.starved=true;break;}
             }
             self.starved=false;
-            const auto frames=std::min({static_cast<Frame>(remaining/bytes),end(*self.current)-self.feeding,self.range.end-self.feeding});
+            const auto frames=std::min({static_cast<Frame>(remaining/bytes),static_cast<Frame>(sizeof(self.scratch)/bytes),end(*self.current)-self.feeding,self.range.end-self.feeding});
             if(frames<=0)break;
             const auto index=self.feeding-self.current->pcm->start();
             for(Frame frame=0;frame<frames;++frame)for(Frame channel=0;channel<self.nativeChannels;++channel)
@@ -75,8 +78,10 @@ public:
             SDL_UnlockAudioStream(stream);throw std::runtime_error(SDL_GetError());
         }
         current=std::move(block);next.reset();retired.reset();range=span;initial=feeding=cursor;submitted=0;repeat=loop;paused=startPaused;done=starved=false;lastFeed=SDL_GetTicksNS();
+        fill(stream,static_cast<int>(sizeof(scratch)));
         SDL_UnlockAudioStream(stream);if(!paused)SDL_ResumeAudioStreamDevice(stream);
     }
+    SDL_AudioDeviceID device()const{return stream?SDL_GetAudioStreamDevice(stream):0;}
     void enqueue(std::shared_ptr<const Buffer> block){
         if(!block||block->pcm->source().rate!=nativeRate||block->pcm->source().channels!=nativeChannels)
             throw std::runtime_error("Native audition buffer format changed.");
