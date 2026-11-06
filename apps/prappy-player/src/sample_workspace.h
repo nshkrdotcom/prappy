@@ -33,7 +33,9 @@ class Workspace {
     Editor editor;
     PcmBudget pcmBudget;
     std::shared_ptr<NativeSession> nativeSession;
-    std::shared_ptr<NativePlayback> nativePlayback,incomingPlayback;
+    std::shared_ptr<NativePlayback> nativePlayback,incomingPlayback,speculativePlayback;
+    Span speculativeWindow{};
+    bool incomingPrefetched=false;
     Client::Transport backendTransport;
     bool sharedPlayerSession=false;
     EditorTransport transport;
@@ -109,12 +111,13 @@ public:
     void connect();
     void returnToPlayer();
     void mark(Audio&,std::optional<SecondsSpan> selection={},OpenSource action=OpenSource::Cue);
+    void prefetch(Audio&,std::optional<SecondsSpan> = {});
     void toggleTransport(Audio&);
     void tick(Audio&);
     void draw(Audio&,const std::function<void(const char*,bool)>&);
     bool active()const{return open;}
     bool animating()const{return open&&(transport.state==PlaybackState::Playing||transport.state==PlaybackState::Buffering);}
     const std::string& preparationStatus()const{return notice;}
-    std::string diagnostics()const{return Json{{"shared_player_session",sharedPlayerSession},{"open",open},{"read_only",readOnly},{"capture",capture.is_null()?Json(nullptr):capture.at("id")},{"region",region},{"start",editor.span.start},{"end",editor.span.end},{"pcm_frames",nativeSession?nativeSession->frames():0},{"beats",beats.size()},{"pending",pending.size()},{"notice",notice},{"amplitude_mode",static_cast<int>(amplitude.mode)},{"amplitude_gain",amplitude.gain},{"visible_peak",envelope.peak},{"envelope_builds",envelopeBuilds},{"waveform_exact_pcm",envelopePcm},{"waveform_bins",overviewBins.size()+detailBins.size()},{"viewport_start",viewportStart},{"viewport_end",viewportEnd},{"pcm_start",nativeSession?nativeSession->first():0},{"pcm_end",nativeSession?nativeSession->last():0},{"pcm_bytes",pcmBudget.used()},{"pcm_budget_bytes",pcmBudget.limit()},{"playback_state",transport.status()},{"playback_scope",static_cast<int>(transport.scope)},{"playhead",transport.cursor},{"playback_start",transport.range.start},{"playback_end",transport.range.end},{"playback_loop",transport.loop},{"playback_chunks",auditionChunks},{"audio_frames_submitted",auditionSubmitted},{"selection_defined",selectionDefined},{"source_library",sourceLibrary},{"active_draft",activeDraft},{"workspace_count",sampleLibrary.all().size()},{"draft_count",capture.is_null()?size_t{0}:sampleLibrary.at(sourceRef()).drafts.size()},{"source_region_total",sourceRegionTotal},{"preparation",notice},{"mark_pending",pendingMark.has_value()},{"mark_frame",pendingMark?pendingMark->frame:Frame{-1}},{"mark_failed",pendingMark&&pendingMark->failed}}.dump();}
+    std::string diagnostics()const{return Json{{"shared_player_session",sharedPlayerSession},{"prefetch_frames",speculativePlayback&&speculativePlayback->session()?speculativePlayback->session()->frames():0},{"prefetch_ready",speculativePlayback&&speculativePlayback->session()&&speculativePlayback->session()->covers(speculativeWindow.start,speculativeWindow.end)},{"open",open},{"read_only",readOnly},{"capture",capture.is_null()?Json(nullptr):capture.at("id")},{"region",region},{"start",editor.span.start},{"end",editor.span.end},{"pcm_frames",nativeSession?nativeSession->frames():0},{"beats",beats.size()},{"pending",pending.size()},{"notice",notice},{"amplitude_mode",static_cast<int>(amplitude.mode)},{"amplitude_gain",amplitude.gain},{"visible_peak",envelope.peak},{"envelope_builds",envelopeBuilds},{"waveform_exact_pcm",envelopePcm},{"waveform_bins",overviewBins.size()+detailBins.size()},{"viewport_start",viewportStart},{"viewport_end",viewportEnd},{"pcm_start",nativeSession?nativeSession->first():0},{"pcm_end",nativeSession?nativeSession->last():0},{"pcm_bytes",pcmBudget.used()},{"pcm_budget_bytes",pcmBudget.limit()},{"playback_state",transport.status()},{"playback_scope",static_cast<int>(transport.scope)},{"playhead",transport.cursor},{"playback_start",transport.range.start},{"playback_end",transport.range.end},{"playback_loop",transport.loop},{"playback_chunks",auditionChunks},{"audio_frames_submitted",auditionSubmitted},{"selection_defined",selectionDefined},{"source_library",sourceLibrary},{"active_draft",activeDraft},{"workspace_count",sampleLibrary.all().size()},{"draft_count",capture.is_null()?size_t{0}:sampleLibrary.at(sourceRef()).drafts.size()},{"source_region_total",sourceRegionTotal},{"preparation",notice},{"mark_pending",pendingMark.has_value()},{"mark_frame",pendingMark?pendingMark->frame:Frame{-1}},{"mark_failed",pendingMark&&pendingMark->failed}}.dump();}
 };
 }

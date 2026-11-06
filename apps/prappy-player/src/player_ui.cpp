@@ -697,6 +697,7 @@ int runPlayer(HINSTANCE instance) {
                 waveformSelection.draw(min,max,audio.displayPosition(),audio.duration,preferences.strip,
                     [&](std::optional<sampling::SecondsSpan> span,sampling::OpenSource action){sampleWorkspace.mark(audio,span,action);waveformSelection.active=false;},
                     [&](const char* id,bool hit){uiProbe.observe(id,hit);rememberControl();});
+                sampleWorkspace.prefetch(audio,waveformSelection.active?std::optional<sampling::SecondsSpan>({waveformSelection.start,waveformSelection.end}):std::nullopt);
                 if(preferences.strip&&waveformSelection.active)setStrip(false);
             };
             if (preferences.strip) {

@@ -280,13 +280,48 @@ void Workspace::returnToPlayer(){
     handoff.cancel();pendingMark.reset();
     auto cursor=transport.cursor;
     if(transport.engaged()){const auto current=nativePlayback?nativePlayback->state():NativePlayback::State{};if(current.submitted>0)cursor=current.cursor;}
-    stopTransport();transport.cursor=cursor;open=false;nativeSession.reset();nativePlayback.reset();incomingPlayback.reset();persist();
+    stopTransport();transport.cursor=cursor;open=false;nativeSession.reset();nativePlayback.reset();incomingPlayback.reset();incomingPrefetched=false;persist();
+}
+void Workspace::prefetch(Audio& audio,std::optional<SecondsSpan> selection){
+    if(open)return;
+    const auto cancel=[&]{if(speculativePlayback){if(speculativePlayback==audio.native)speculativePlayback->clearCache();else speculativePlayback->stop();speculativePlayback.reset();}};
+    if(!selection||!audio.loaded||!audio.native||audio.native->descriptor().is_null()){cancel();return;}
+    const auto& d=audio.native->descriptor();const auto hz=prepared::integer(d.at("sample_rate")),frames=prepared::integer(d.at("frame_count"));
+    if(!std::isfinite(selection->start)||!std::isfinite(selection->end)||selection->start<0||selection->end<=selection->start||selection->end>audio.duration){cancel();return;}
+    const Frame first=std::min(frames-1,static_cast<Frame>(std::llround(selection->start*hz)));
+    const Span window{first,std::min({frames,first+hz*30,static_cast<Frame>(std::llround(selection->end*hz))})};
+    if(window.end<=window.start){cancel();return;}
+    if(!speculativePlayback||speculativePlayback->reference()!=audio.native->reference()||
+        speculativePlayback->descriptor().at("source_key")!=d.at("source_key")||speculativeWindow.start!=first){
+        cancel();
+        if(audio.native->session()->find(first))speculativePlayback=audio.native;
+        else{
+            if(pcmBudget.limit()-pcmBudget.used()<8*1024*1024)return;
+            speculativePlayback=std::make_shared<NativePlayback>(audio.nativeConnection,pcmBudget,notify,backendTransport);
+            speculativePlayback->load(audio.native->reference(),d.at("capture").at("id"),d.at("capture").at("blob_sha256"),true,static_cast<double>(first)/hz,d);
+        }
+    }
+    speculativeWindow=window;speculativePlayback->cache(window);
+    if(speculativePlayback!=audio.native)speculativePlayback->tick();
 }
 void Workspace::mark(Audio& audio,std::optional<SecondsSpan> selection,OpenSource action){
     if(storageBlocked){open=true;return;}
     if(!audio.preparedSource||!audio.preparedSource->ready()||audio.duration<=0){notice="Choose a recording in the player first.";return;}
     const auto intent=handoff.begin(utf8(audio.current),selection?OpenSource::Selection:action,audio.displayPosition(),audio.duration,selection);
     open=true;audio.setPaused(true);stopTransport();incomingPlayback=audio.takeNativeForEditor();++generation;
+    incomingPrefetched=selection&&speculativePlayback&&speculativePlayback->state().error.empty()&&incomingPlayback&&speculativePlayback!=incomingPlayback&&
+        speculativePlayback->reference()==incomingPlayback->reference()&&
+        !incomingPlayback->descriptor().is_null()&&speculativePlayback->descriptor().at("source_key")==incomingPlayback->descriptor().at("source_key")&&
+        speculativeWindow.start==static_cast<Frame>(std::llround(selection->start*incomingPlayback->state().rate));
+    if(incomingPrefetched){incomingPlayback->stop();incomingPlayback=std::move(speculativePlayback);}
+    else if(speculativePlayback&&speculativePlayback!=incomingPlayback)speculativePlayback->stop();
+    speculativePlayback.reset();
+    if(incomingPlayback){
+        const auto session=incomingPlayback->session();const auto hz=incomingPlayback->state().rate;
+        const Frame first=static_cast<Frame>(std::llround((selection?selection->start:intent.cue)*hz));
+        debuglog::write("editor.prefetch",std::string("kind=")+(incomingPrefetched?"selection":"player")+
+            " start_hit="+std::to_string(session&&session->find(first)!=nullptr)+" pcm_bytes="+std::to_string(pcmBudget.used()));
+    }
     const auto& source=*audio.preparedSource;
     pendingMark=PlayingSongMark{source.source,source.asset,source.timeline,source.native.rate,
         static_cast<Frame>(std::llround(intent.cue*static_cast<double>(source.native.rate))),intent.ticket};
@@ -333,7 +368,7 @@ void Workspace::closeNativeSession(){
 void Workspace::resetNativeSession(){
     closeNativeSession();
     if(incomingPlayback&&incomingPlayback->reference()==audioEndpoint()&&incomingPlayback->descriptor().at("source_key")==preparedManifest.at("source_key")){
-        nativePlayback=std::move(incomingPlayback);sharedPlayerSession=true;
+        nativePlayback=std::move(incomingPlayback);sharedPlayerSession=!incomingPrefetched;incomingPrefetched=false;
     }else{
         if(incomingPlayback)incomingPlayback->stop();incomingPlayback.reset();
         nativePlayback=std::make_shared<NativePlayback>(connection,pcmBudget,notify,backendTransport);

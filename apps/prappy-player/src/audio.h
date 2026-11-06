@@ -132,7 +132,7 @@ struct Audio {
         nativeEditing=false;
         if(!native||!preparedSource)return;
         const auto& source=*preparedSource;
-        if(native->reference()==source.source.endpoint()){
+        if(native->reference()==source.source.endpoint()&&(!native->descriptor().is_null()||native->state().buffering)){
             const auto& d=native->descriptor();
             if(!d.is_null())native->start({0,prepared::integer(d.at("frame_count"))},nativeReturnFrame>=0?nativeReturnFrame:
                 static_cast<sampling::Frame>(std::llround(position*prepared::integer(d.at("sample_rate")))),false,true);

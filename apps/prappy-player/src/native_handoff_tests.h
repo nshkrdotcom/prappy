@@ -13,7 +13,8 @@ inline void nativeHandoffTests(const fs::path& root,std::ostream& log){
     const Json descriptor={{"source_key",key},{"timeline_id",timeline},{"frame_count",total},{"sample_rate",rate},{"channels",2},{"sample_format","float32"},{"access_mode","indexed"},
         {"capture",{{"id",capture},{"recording_id","rec_"+std::string(32,'f')},{"blob_sha256",sha},{"timeline_id",timeline},{"timeline",clock},
             {"recording",{{"title","Signal"}}},{"metadata",{{"effective",Json::object()}}}}}};
-    auto reads=std::make_shared<std::atomic<int>>(0),lookups=std::make_shared<std::atomic<int>>(0);
+    auto reads=std::make_shared<std::atomic<int>>(0),lookups=std::make_shared<std::atomic<int>>(0),regionReads=std::make_shared<std::atomic<int>>(0);
+    auto trace=std::make_shared<Json>(Json::array());auto traceMutex=std::make_shared<std::mutex>();
     Client::Transport transport=[=](const Connection&,const Request& request,std::stop_token){
         Reply reply;reply.status=200;
         if(request.tag=="capabilities")reply.body={{"protocol",3},{"indexed_source",true},{"read_only",true}};
@@ -22,6 +23,8 @@ inline void nativeHandoffTests(const fs::path& root,std::ostream& log){
         else if(request.tag=="mark-prepared"){++*lookups;reply.body=descriptor;}
         else if(request.tag=="source-pcm"){
             ++*reads;const Frame first=request.body.at("origin_frame"),count=request.body.at("frame_count");
+            if(first>=286650)++*regionReads;
+            {std::lock_guard lock(*traceMutex);trace->push_back({first,count});}
             reply.preparedPcm=std::make_shared<Block>(NativeTimeline{rate,2,total,SampleType::Float32},first,count,std::vector<std::byte>(static_cast<size_t>(count)*8));
             reply.body={{"decoder_epoch","shared-native"}};
         }else if(request.tag=="source-waveform")reply.pcm=std::vector<float>(request.body.at("bin_count").get<size_t>()*4,.125f);
@@ -74,5 +77,83 @@ inline void nativeHandoffTests(const fs::path& root,std::ostream& log){
     pendingWorkspace.returnToPlayer();audio.resumeNative();
     wait([&]{return audio.loaded;},[&]{audio.poll();});
     require(audio.native==inflight&&audio.serial==pendingSerial&&audio.displayPosition()==3,"In-flight return lost its original cue or history identity");
-    log<<"PASS native handoff: shared immutable windows, in-flight adoption, no decode/lookup, independent audition and exact return cue\n";
+    Workspace prefetched(trial,[]{},memory,transport);
+    wait([&]{return Json::parse(prefetched.diagnostics()).at("prefetch_ready").get<bool>();},[&]{audio.poll();prefetched.prefetch(audio,SecondsSpan{6.5,7.5});});
+    const auto prefetchedReads=regionReads->load();
+    prefetched.mark(audio,SecondsSpan{6.5,7.5});
+    wait([&]{return Json::parse(prefetched.diagnostics()).at("pcm_frames").get<Frame>()>=rate;},[&]{audio.poll();prefetched.tick(audio);});
+    if(regionReads->load()!=prefetchedReads||lookups->load()!=previousLookups){std::lock_guard lock(*traceMutex);throw std::runtime_error("Prefetch duplicate: before="+std::to_string(prefetchedReads)+" after="+std::to_string(regionReads->load())+" reads="+trace->dump()+" state="+prefetched.diagnostics());}
+    require(Json::parse(prefetched.diagnostics()).at("start")==286650,"Prefetched selection moved its native start");
+    prefetched.returnToPlayer();audio.resumeNative();
+    wait([&]{return audio.loaded&&audio.native->state().loaded;},[&]{audio.poll();});
+    require(audio.displayPosition()==3,"Returning from a speculative selection lost the player cue");
+    {
+        auto pressure=memory.reserve(memory.limit()-memory.used()-4*1024*1024);
+        Workspace limited(trial,[]{},memory,transport);
+        bool safe=true;try{limited.prefetch(audio,SecondsSpan{6.5,7.5});}catch(const std::exception&){safe=false;}
+        require(safe&&audio.native->state().loaded&&memory.used()<=memory.limit(),"Speculative prefetch failed playback under memory pressure");
+    }
+    {
+        auto blocked=std::make_shared<std::atomic<bool>>(false),cancelled=std::make_shared<std::atomic<bool>>(false);
+        Client::Transport slow=[=](const Connection& c,const Request& request,std::stop_token stop){
+            if(request.tag=="source-pcm"&&request.body.at("origin_frame")==286650){
+                blocked->store(true);while(!stop.stop_requested())SDL_Delay(1);cancelled->store(true);
+            }
+            return transport(c,request,stop);
+        };
+        Workspace moving(trial,[]{},memory,slow);
+        wait([&]{return blocked->load();},[&]{moving.prefetch(audio,SecondsSpan{6.5,7.5});});
+        moving.prefetch(audio);
+        require(Json::parse(moving.diagnostics()).at("prefetch_frames")==0,"Cancelled selection retained its speculative audio");
+        wait([&]{return cancelled->load()&&Json::parse(moving.diagnostics()).at("prefetch_ready").get<bool>();},[&]{moving.prefetch(audio,SecondsSpan{7,7.5});});
+        const auto readyReads=regionReads->load();moving.mark(audio,SecondsSpan{7,7.5});
+        wait([&]{return Json::parse(moving.diagnostics()).at("pcm_frames").get<Frame>()>0;},[&]{moving.tick(audio);});
+        require(Json::parse(moving.diagnostics()).at("start")==308700&&regionReads->load()==readyReads,"Cancelled prefetch displaced or decoded the newer selection");
+        moving.returnToPlayer();audio.resumeNative();
+    }
+    const auto currentSource=*audio.preparedSource;
+    require(audio.playNative(trial/"other.source",currentSource,connection,true,0),"Fresh source fixture failed");
+    wait([&]{return audio.native->state().loaded;},[&]{audio.poll();});
+    {
+        Workspace switching(trial,[]{},memory,transport);
+        wait([&]{return Json::parse(switching.diagnostics()).at("prefetch_ready").get<bool>();},[&]{switching.prefetch(audio,SecondsSpan{6.5,7.5});});
+        const std::string otherCapture="cap_"+std::string(32,'6'),otherSha(64,'7');
+        Client::Transport changed=[=](const Connection& c,const Request& request,std::stop_token stop){
+            auto reply=transport(c,request,stop);
+            if(request.tag=="source-descriptor"){
+                reply.body["capture"]["id"]=otherCapture;reply.body["capture"]["blob_sha256"]=otherSha;
+                reply.body["capture"]["timeline"]["capture_id"]=otherCapture;reply.body["source_key"]=std::string(64,'8');
+            }
+            return reply;
+        };
+        auto other=source;other.source.capture=otherCapture;other.asset=otherSha;
+        audio.native=std::make_shared<NativePlayback>(connection,memory,[]{},changed);
+        require(audio.playNative(trial/"other.source",other,connection,true,1),"Source-switch fixture failed");
+        switching.prefetch(audio);
+        require(Json::parse(switching.diagnostics()).at("prefetch_frames")==0,"Source switch retained an old speculative selection");
+        wait([&]{return audio.loaded;},[&]{audio.poll();});
+        switching.mark(audio);
+        wait([&]{return Json::parse(switching.diagnostics()).at("capture")==otherCapture;},[&]{switching.tick(audio);});
+        switching.returnToPlayer();audio.resumeNative();
+        require(audio.displayPosition()==1,"Stale speculative source displaced the new player cue");
+    }
+    const auto pendingSource=*audio.preparedSource;
+    require(audio.playNative(trial/"pending.source",pendingSource,connection,true,0),"Pending selection fixture failed");
+    wait([&]{return audio.native->state().loaded;},[&]{audio.poll();});
+    {
+        auto started=std::make_shared<std::atomic<int>>(0);auto release=std::make_shared<std::atomic<bool>>(false);
+        Client::Transport pendingRead=[=](const Connection& c,const Request& request,std::stop_token stop){
+            if(request.tag=="source-pcm"){++*started;while(!release->load()&&!stop.stop_requested())SDL_Delay(1);}
+            return transport(c,request,stop);
+        };
+        Workspace opening(trial,[]{},memory,pendingRead);
+        wait([&]{return started->load()>0;},[&]{opening.prefetch(audio,SecondsSpan{7.75,8});});
+        opening.mark(audio,SecondsSpan{7.75,8});
+        for(int i=0;i<5;++i){opening.tick(audio);SDL_Delay(1);}
+        release->store(true);
+        wait([&]{return Json::parse(opening.diagnostics()).at("pcm_frames").get<Frame>()>0;},[&]{opening.tick(audio);});
+        require(started->load()==1&&Json::parse(opening.diagnostics()).at("start")==341775,"Opening an in-flight selection duplicated or displaced its PCM request");
+        opening.returnToPlayer();audio.resumeNative();
+    }
+    log<<"PASS native handoff: shared immutable windows, pending adoption, bounded/cancellable selection prefetch, source switches and exact return cue\n";
 }
