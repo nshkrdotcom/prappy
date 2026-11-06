@@ -17,7 +17,7 @@ int main() {
     const std::string library="lib_"+std::string(32,'a'),capture="cap_"+std::string(32,'b');
     SourceRef source{library,capture};source.validate();
     rejects([&]{SourceRef{"../../elsewhere",capture}.validate();});
-    require(source.endpoint()=="/v1/libraries/"+library+"/captures/"+capture+"/prepared");
+    require(source.endpoint()=="/v1/libraries/"+library+"/captures/"+capture+"/audio");
     require(scaleFloor(44101,44100,48000)==48001);
     require(scaleCeil(44101,44100,48000)==48002);
     require(scaleFloor(48000,48000,44100)==44100);
@@ -40,19 +40,16 @@ int main() {
     require(integerBlock.sample(0,0)==static_cast<double>(integer)/2147483648.0);
     rejects([&]{Block malformed({48000,2,1,SampleType::Float32},0,1,bytes);});
     rejects([&]{block.sample(1,0);});
-    nlohmann::json row={{"library_id",library},{"capture_id",capture},{"timeline_id","tl_"+std::string(32,'d')},{"asset_key",std::string(64,'c')},
-        {"state","Ready"},{"title","Test song"},{"artist",nullptr},{"codec","opus"},
-        {"library_name","Music"},{"duration_seconds",2.0},{"original_bytes",1200},{"original_path","/original/music"},
-        {"analysis",{{"native_frames",88200},{"native_rate",44100},{"native_channels",1},
-            {"native_sample_format","float64"},{"listening_frames",96000},{"frames",96000},
-            {"sample_rate",48000},{"channels",2},{"loudness_lufs",-23.0},{"sample_peak",.5},
-            {"source_tags",{{"R128_TRACK_GAIN","-512"}}},{"source_codec","opus"}}}};
+    nlohmann::json row={{"library_id",library},{"capture_id",capture},{"original_sha256",std::string(64,'c')},
+        {"state","Playable"},{"analysis_state","Queued"},{"title","Test song"},{"artist",nullptr},
+        {"library_name","Music"},{"original_bytes",1200},{"original_path","/original/music"},
+        {"media",{{"codec","aac"},{"sample_rate",44100},{"channels",1},{"duration_seconds",2.0}}}};
     const auto catalog=parseCatalog({{"items",nlohmann::json::array({row})}});
     require(catalog.size()==1&&catalog[0].source==source&&catalog[0].native.rate==44100);
-    require(catalog[0].native.type==SampleType::Float64&&catalog[0].loudness==-23.0);
-    require(catalog[0].tags[0].first=="R128_TRACK_GAIN");
+    require(catalog[0].native.frames==0&&catalog[0].ready()&&!catalog[0].loudness);
+    require(catalog[0].timeline.empty());
     rejects([&]{parseCatalog({{"items",nlohmann::json::array({row,row})}});});
-    row["analysis"]["native_frames"]=1.5;
+    row["media"]["sample_rate"]=1.5;
     rejects([&]{parseCatalog({{"items",nlohmann::json::array({row})}});});
     sampling::SourceHandoff handoff;
     const auto intent=handoff.begin("stable-recording",sampling::OpenSource::Selection,1,2,sampling::SecondsSpan{.5,1.5});

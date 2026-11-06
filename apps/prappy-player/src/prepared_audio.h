@@ -33,7 +33,7 @@ struct SourceRef {
     void validate()const {
         if(!valid(library,"lib_")||!valid(capture,"cap_"))throw std::runtime_error("Invalid prepared source identity.");
     }
-    std::string endpoint()const {validate();return "/v1/libraries/"+library+"/captures/"+capture+"/prepared";}
+    std::string endpoint()const {validate();return "/v1/libraries/"+library+"/captures/"+capture+"/audio";}
     bool operator==(const SourceRef&)const=default;
 };
 inline Frame scaleFloor(Frame frame,int64_t fromRate,int64_t toRate) {

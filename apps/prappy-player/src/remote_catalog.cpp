@@ -78,29 +78,17 @@ std::optional<fs::path> preparedOriginalLocation(const Track& track,const Librar
     return stateio::pathFromText("\\\\wsl.localhost\\"+library.backendDistribution+path);
 }
 
-std::function<bool(const fs::path&,bool,double)> preparedPlaybackLoader(Audio& audio,Library& library,std::function<void()> notify) {
-    struct Promotions {sampling::Connection connection;std::unique_ptr<sampling::Client> client;};
-    const auto promotions=std::make_shared<Promotions>();
-    return [&audio,&library,notify=std::move(notify),promotions](const fs::path& path,bool paused,double position) {
+std::function<bool(const fs::path&,bool,double)> preparedPlaybackLoader(Audio& audio,Library& library,std::function<void()>) {
+    return [&audio,&library](const fs::path& path,bool paused,double position) {
         const auto id=key(path);
         const auto found=std::find_if(library.tracks.begin(),library.tracks.end(),
             [&](const auto& track){return Library::matches(track,id);});
         if(!library.backend||found==library.tracks.end()||!found->prepared)
-            throw std::runtime_error("Recording is absent from the prepared library.");
+            throw std::runtime_error("Recording is absent from the indexed library.");
         const auto& source=*found->prepared;
-        if(!source.ready()) {
-            const auto& connection=*library.backend;
-            if(!promotions->client||promotions->connection.url!=connection.url||promotions->connection.token!=connection.token) {
-                promotions->connection=connection;
-                promotions->client=std::make_unique<sampling::Client>(connection,notify);
-            }
-            promotions->client->collect();
-            sampling::Request request;request.tag="prepared-promote";request.method="POST";
-            request.path=source.source.endpoint()+"/promote";promotions->client->submit(std::move(request));
-            throw prepared::NotReady("Recording preparation: "+source.state);
-        }
+        if(!source.ready())throw prepared::NotReady("Recording is unavailable: "+source.state);
         const auto loaded=audio.play(path,paused,position,library.backend->url+source.source.endpoint()+
-                                    "/playback?asset="+source.asset+"&timeline="+source.timeline,library.backend->token);
+                                    "/playback",library.backend->token);
         if(loaded)audio.preparedSource=std::make_shared<prepared::CatalogSource>(source);
         return loaded;
     };

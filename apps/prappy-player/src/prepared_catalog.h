@@ -15,7 +15,7 @@ struct CatalogSource {
     NativeTimeline native,listening;
     std::optional<double> loudness,peak;
     std::vector<std::pair<std::string,std::string>> tags;
-    bool ready()const{return state=="Ready";}
+    bool ready()const{return state=="Playable";}
 };
 inline int64_t integer(const nlohmann::json& value) {
     if(!value.is_number_integer()||
@@ -33,47 +33,37 @@ inline std::vector<CatalogSource> parseCatalog(const nlohmann::json& snapshot) {
         CatalogSource source;
         source.source={row.at("library_id"),row.at("capture_id")};source.source.validate();
         if(!seen.emplace(source.source.library,source.source.capture).second)throw std::runtime_error("Duplicate prepared catalog source.");
-        source.asset=row.at("asset_key");
+        source.asset=row.at("original_sha256");
         if(source.asset.size()!=64||source.asset.find_first_not_of("0123456789abcdef")!=std::string::npos)
-            throw std::runtime_error("Invalid prepared asset identity.");
+            throw std::runtime_error("Invalid original source hash.");
         source.state=row.at("state");
-        if(source.state!="Queued"&&source.state!="Preparing"&&source.state!="Ready"&&source.state!="Failed"&&
-           source.state!="Offline"&&source.state!="Stale"&&source.state!="CapacityBlocked")
-            throw std::runtime_error("Unknown preparation state.");
-        source.title=row.at("title");
+        if(source.state!="Playable"&&source.state!="Offline"&&source.state!="Failed")
+            throw std::runtime_error("Unknown indexed source state.");
+        source.title=row.at("title");source.libraryName=row.at("library_name");
         source.originalPath=row.at("original_path");
-        if(!source.originalPath.starts_with('/')||source.originalPath.find('\0')!=std::string::npos)
+        if((source.ready()&&!source.originalPath.starts_with('/'))||source.originalPath.find('\0')!=std::string::npos)
             throw std::runtime_error("Invalid original recording location.");
         source.artist=row.at("artist").is_null()?std::string{}:row.at("artist").get<std::string>();
-        source.codec=row.at("codec");source.libraryName=row.at("library_name");
         const auto bytes=integer(row.at("original_bytes"));
         if(bytes<1)throw std::runtime_error("Invalid original byte count.");
         source.originalBytes=static_cast<uint64_t>(bytes);
-        source.duration=row.at("duration_seconds");
-        if(!std::isfinite(source.duration)||source.duration<=0)throw std::runtime_error("Invalid source duration.");
-        if(source.ready()) {
-            source.timeline=row.at("timeline_id");
-            if(!SourceRef::valid(source.timeline,"tl_"))throw std::runtime_error("Invalid prepared timeline identity.");
+        const auto& media=row.at("media");source.codec=media.at("codec");
+        source.duration=media.at("duration_seconds");
+        source.native.rate=integer(media.at("sample_rate"));source.native.channels=integer(media.at("channels"));
+        // Catalog duration is display-only. Exact frames/type arrive in the
+        // bounded source descriptor when editing starts, independently of analysis.
+        if(!std::isfinite(source.duration)||source.duration<=0||source.native.rate<1||source.native.rate>768000||
+           source.native.channels<1||source.native.channels>32)throw std::runtime_error("Invalid source media dimensions.");
+        if(row.contains("analysis")){
             const auto& analysis=row.at("analysis");
-            source.native={integer(analysis.at("native_rate")),integer(analysis.at("native_channels")),
-                integer(analysis.at("native_frames")),sampleType(analysis.at("native_sample_format").get<std::string>())};
-            source.listening={integer(analysis.at("sample_rate")),integer(analysis.at("channels")),
-                integer(analysis.at("listening_frames")),SampleType::Float32};
-            source.native.validate();source.listening.validate();
-            if(source.listening.rate!=48000||source.listening.channels!=2)
-                throw std::runtime_error("Invalid listening render profile.");
-            if(!analysis.at("loudness_lufs").is_null()) {
-                source.loudness=analysis.at("loudness_lufs").get<double>();
-                if(!std::isfinite(*source.loudness)||*source.loudness< -70||*source.loudness>50)
-                    throw std::runtime_error("Invalid prepared loudness.");
-            }
-            source.peak=analysis.at("sample_peak").get<double>();
-            if(!std::isfinite(*source.peak)||*source.peak<0||*source.peak>64)
-                throw std::runtime_error("Invalid prepared sample peak.");
-            const auto& tags=analysis.at("source_tags");
+            if(analysis.contains("loudness_lufs")&&!analysis.at("loudness_lufs").is_null())source.loudness=analysis.at("loudness_lufs").get<double>();
+            if(analysis.contains("sample_peak")&&!analysis.at("sample_peak").is_null())source.peak=analysis.at("sample_peak").get<double>();
+            if((source.loudness&&!std::isfinite(*source.loudness))||
+               (source.peak&&(!std::isfinite(*source.peak)||*source.peak<0)))throw std::runtime_error("Invalid source analysis.");
+            const auto tags=analysis.value("source_tags",nlohmann::json::object());
             if(!tags.is_object())throw std::runtime_error("Invalid original gain tags.");
-            for(const auto& [name,value]:tags.items()) {
-                if(!value.is_string())throw std::runtime_error("Invalid original gain tag value.");
+            for(const auto& [name,value]:tags.items()){
+                if(!value.is_string())throw std::runtime_error("Invalid original gain tag.");
                 source.tags.emplace_back(name,value.get<std::string>());
             }
         }
