@@ -37,6 +37,22 @@ inline void sampleClientCancellationTests(std::ostream& log) {
         client.submit({"source-waveform","GET","latest-view",{{"overview",false}},2,{}});
         require(latest.get_future().wait_for(std::chrono::milliseconds(100))==std::future_status::ready,"New source waited for an obsolete in-flight decode.");
     }
+    {
+        std::promise<void> entered,release,closed;ReleaseOnExit releaseOnExit{release};auto gate=release.get_future().share();
+        Connection connection;connection.token=std::string(32,'x');std::atomic<int> notifications=0;
+        Client blocker(connection,[]{},[&](const Connection&,const Request&,std::stop_token){entered.set_value();gate.wait();return Reply{};});
+        blocker.submit({"command","POST","lane-barrier",nullptr,0,{}});
+        require(entered.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready,"Session cleanup barrier did not start.");
+        {
+            Client owner(connection,[&]{++notifications;},[&](const Connection& c,const Request& request,std::stop_token stop){
+                if(request.tag=="source-session-close"&&request.method=="DELETE"&&c.token==connection.token&&!stop.stop_requested())closed.set_value();return Reply{};
+            });
+            owner.submit({"source-session-close","DELETE","/source/session?owner=retiring",nullptr,0,{}});
+        }
+        release.set_value();
+        require(closed.get_future().wait_for(std::chrono::seconds(2))==std::future_status::ready,"Transport destruction discarded its decoder-session close.");
+        require(notifications==0,"Session cleanup notified a destroyed owner.");
+    }
     // The release gate is deliberately independent of cancellation. Destruction
     // must return while a filesystem/provider call has not acknowledged stop.
     for(const bool credentialRead:{false,true}) {

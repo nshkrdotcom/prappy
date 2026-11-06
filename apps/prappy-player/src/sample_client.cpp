@@ -271,7 +271,13 @@ class ClientExecutor {
     struct Lane {size_t index=0;std::jthread worker;std::shared_ptr<ClientState> active;std::optional<Request> request;std::stop_source cancel;};
     std::array<Lane,3> lanes;
     std::vector<std::weak_ptr<ClientState>> clients;
+    std::deque<std::shared_ptr<ClientState>> cleanup;
+    static bool closesSession(const Request& request){return request.tag=="source-session-close"&&request.method=="DELETE";}
+
     std::shared_ptr<ClientState> find(size_t index) {
+        std::erase_if(cleanup,[&](const auto& state){return state->pending.empty()&&std::none_of(lanes.begin(),lanes.end(),[&](const auto& lane){return lane.active==state;});});
+        if(index==1)for(const auto& state:cleanup)if(!state->pending.empty())return state;
+
         for(auto& weak:clients)if(auto state=weak.lock();state&&!state->retired) {
             if(index==1&&!state->credentialsStarted)return state;
             if(std::any_of(state->pending.begin(),state->pending.end(),[&](const Request& request){return requestLane(request)==index&&state->credentialsReady;}))return state;
@@ -420,7 +426,17 @@ public:
     void retire(const std::shared_ptr<ClientState>& state) {
         {std::lock_guard guard(state->notificationMutex);state->notify={};}
         {
-            std::lock_guard guard(mutex);state->retired=true;state->pending.clear();state->completed.clear();
+            std::lock_guard guard(mutex);
+            // Only idempotent lease release survives retirement; user commands and reads do not.
+            auto closing=std::make_shared<ClientState>();closing->connection=state->connection;closing->transport=state->transport;
+            closing->credentialsReady=closing->credentialsStarted=true;
+            for(auto& request:state->pending)if(closesSession(request))closing->pending.push_back(std::move(request));
+            for(const auto& lane:lanes)if(lane.active==state&&lane.request&&closesSession(*lane.request))closing->pending.push_back(*lane.request);
+            if(!closing->pending.empty()&&state->credentialsReady&&state->credentialError.empty()){
+                if(cleanup.size()<512)cleanup.push_back(std::move(closing));
+                else debuglog::write("backend.session_close","cleanup queue full; server lease expiry will release session");
+            }
+            state->retired=true;state->pending.clear();state->completed.clear();
             for(auto& lane:lanes)if(lane.active==state)CancelSynchronousIo(lane.worker.native_handle());
             std::erase_if(clients,[&](const auto& weak){auto value=weak.lock();return !value||value==state;});
         }
