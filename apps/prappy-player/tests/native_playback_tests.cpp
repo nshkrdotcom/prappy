@@ -7,7 +7,7 @@ static void require(bool value,const char* message){if(!value)throw std::runtime
 template<class Predicate> static void until(sampling::NativePlayback& player,Predicate done){
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
     do{player.tick();if(done())return;if(!player.state().error.empty())throw std::runtime_error(player.state().error);SDL_Delay(1);}while(std::chrono::steady_clock::now()<deadline);
-    throw std::runtime_error("Native transport timed out");
+    throw std::runtime_error("Native transport timed out at frame "+std::to_string(player.state().cursor));
 }
 int main(){
  try{
@@ -105,6 +105,25 @@ int main(){
             while(player.state().error.empty()&&std::chrono::steady_clock::now()<deadline){player.tick();SDL_Delay(1);}
             require(!player.state().loaded&&!player.state().error.empty()&&!player.session(),"Wrong original identity entered playback");
         }
+    }
+    {
+        SDL_SetHint(SDL_HINT_AUDIO_DUMMY_TIMESCALE,"0.1");SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES,"2048");
+        const Frame rate=192000,total=rate*15;const int channels=5;
+        const Json description={{"source_key",key},{"timeline_id",timeline},{"frame_count",total},{"sample_rate",rate},{"channels",channels},{"sample_format","float64"},{"access_mode","indexed"},
+            {"capture",{{"id",capture},{"blob_sha256",sha}}}};
+        Client::Transport transport=[=](const Connection&,const Request& request,std::stop_token){
+            Reply reply;reply.status=200;
+            if(request.tag=="source-descriptor")reply.body=description;
+            else if(request.tag=="source-pcm"){
+                const Frame start=request.body.at("origin_frame"),count=request.body.at("frame_count");
+                reply.preparedPcm=std::make_shared<Block>(NativeTimeline{rate,channels,total,SampleType::Float64},start,count,
+                    std::vector<std::byte>(static_cast<size_t>(count)*channels*8));reply.body={{"decoder_epoch","large-session"}};
+            }else reply.body={{"active",true}};
+            return reply;
+        };
+        PcmBudget memory(64);Connection connection;connection.token=std::string(48,'t');
+        NativePlayback player(connection,memory,[]{},transport);player.load("/large/audio",capture,sha,false,0);
+        until(player,[&]{require(memory.used()<=memory.limit(),"Sliding playback exceeded its cap");return player.state().cursor>=rate*9;});
     }
     std::cout<<"PASS native playback: exact 44.1/48 kHz frame, native types, pause/seek/EOF, cancellation, frozen bounds and shared backpressure\n";
     return 0;

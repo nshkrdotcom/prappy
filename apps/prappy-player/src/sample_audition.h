@@ -84,7 +84,7 @@ public:
         SDL_LockAudioStream(stream);old=std::move(next);previous=std::move(retired);next=std::move(block);SDL_UnlockAudioStream(stream);
     }
     Snapshot snapshot(){
-        Snapshot result;if(!stream)return result;
+        Snapshot result;std::shared_ptr<const Buffer> previous;if(!stream)return result;
         SDL_LockAudioStream(stream);
         if(!current){SDL_UnlockAudioStream(stream);return result;}
         if(!repeat&&feeding>=range.end&&!done){SDL_FlushAudioStream(stream);done=true;}
@@ -92,6 +92,7 @@ public:
         const auto queued=SDL_GetAudioStreamQueued(stream);
         const bool drained=!paused&&queued<=0&&SDL_GetTicksNS()-lastFeed>=static_cast<Uint64>(deviceFrames)*1000000000ULL/nativeRate;
         result.cursor=done&&drained?range.end:at(drained?submitted:consumed());result.finished=done&&drained;result.buffering=starved&&queued<=0;
+        if(retired&&!contains(*retired,result.cursor))previous=std::move(retired);
         if(!next&&!done){
             const auto wanted=feeding>=range.end&&repeat?range.start:feeding;
             if(wanted<range.end&&!contains(*current,wanted))result.needed=wanted;

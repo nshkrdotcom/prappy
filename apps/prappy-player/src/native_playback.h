@@ -52,8 +52,10 @@ private:
         if(auto cached=retained->find(frame)){feed(std::move(cached));return;}
         if(pending)return;
         const auto t=timeline();
-        retained->retain(std::max<Frame>(0,status.cursor-t.rate*5),std::min(t.frames,status.cursor+t.rate*30));
         const size_t stride=static_cast<size_t>(t.channels)*prepared::sampleBytes(t.type);
+        const auto working=budget.limit()-budget.used()+static_cast<size_t>(retained->frames())*stride;
+        const Frame history=std::min(t.rate*5,static_cast<Frame>(working/4/stride));
+        retained->retain(std::max<Frame>(0,status.cursor-history),std::min(t.frames,status.cursor+t.rate*30));
         const auto available=std::min<size_t>(32*1024*1024,(budget.limit()-budget.used())/2);
         const Frame count=std::min({range.end-frame,t.rate*3,static_cast<Frame>(available/stride)});
         if(count<=0){status.buffering=true;return;}
@@ -100,7 +102,7 @@ public:
     void start(Span span,Frame frame,bool loop,bool paused){
         if(manifest.is_null()||span.start<coverage.start||span.end>coverage.end||span.end<=span.start||frame<span.start||frame>=span.end)
             throw std::runtime_error("Playback range exceeds verified native coverage.");
-        output.stop();started=false;range=span;status.cursor=frame;status.paused=paused;status.finished=false;repeat=loop;status.error.clear();
+        output.stop();started=false;range=span;status.cursor=frame;status.paused=paused;status.finished=false;status.buffering=true;repeat=loop;status.error.clear();
         if(!retained->find(frame))newOwner();request(frame);
     }
     void seek(Frame frame){if(manifest.is_null())throw std::runtime_error("Native source clock is not loaded.");start(range,std::clamp(frame,range.start,range.end-1),repeat,status.paused);}
