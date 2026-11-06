@@ -1,5 +1,9 @@
 #include <windows.h>
-#if defined(PRAPPY_INDEXED_FIXTURES)
+#if defined(PRAPPY_PLAYBACK_FIXTURES)
+#define TEST_NAME "prappy_native_playback_tests"
+#define TEST_FILE "prappy_native_playback_tests.exe"
+#define TEST_DESCRIPTION "Prappy native transport tests"
+#elif defined(PRAPPY_INDEXED_FIXTURES)
 #define TEST_NAME "prappy_prepared_backend_tests"
 #define TEST_FILE "prappy_prepared_backend_tests.exe"
 #define TEST_DESCRIPTION "Prappy indexed audio integration tests"
