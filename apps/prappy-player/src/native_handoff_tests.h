@@ -39,7 +39,8 @@ inline void nativeHandoffTests(const fs::path& root,std::ostream& log){
     Audio audio;audio.openNative(true,memory);audio.nativeConnection=connection;audio.native=std::make_shared<NativePlayback>(connection,memory,[]{},transport);
     CatalogSource source;source.source={library,capture};source.asset=sha;source.state="Playable";source.native={rate,2,total,SampleType::Float32};source.duration=8;source.codec="aac";
     require(audio.playNative(trial/"signal.source",source,connection,true,2),"Native fixture load failed");
-    const auto wait=[&](auto ready,auto tick){const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);do{tick();if(ready())return;SDL_Delay(1);}while(std::chrono::steady_clock::now()<deadline);throw std::runtime_error("Native handoff timed out");};
+    const auto wait=[&](auto ready,auto tick,const char* purpose="Native handoff"){const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);do{tick();if(ready())return;SDL_Delay(1);}while(std::chrono::steady_clock::now()<deadline);throw std::runtime_error(std::string(purpose)+" timed out");};
+    const auto freshPlayer=[&]{const auto current=*audio.preparedSource;require(audio.playNative(audio.current,current,connection,true,0),"Fresh source fixture failed");wait([&]{return audio.native->state().loaded;},[&]{audio.poll();});};
     wait([&]{return audio.loaded&&audio.native->session()->covers(rate*2,rate*8);},[&]{audio.poll();});
     const auto shared=audio.native->session();const auto before=reads->load();const auto serial=audio.serial;
     Workspace workspace(trial,[]{},memory,transport);workspace.mark(audio);
@@ -87,6 +88,7 @@ inline void nativeHandoffTests(const fs::path& root,std::ostream& log){
     prefetched.returnToPlayer();audio.resumeNative();
     wait([&]{return audio.loaded&&audio.native->state().loaded;},[&]{audio.poll();});
     require(audio.displayPosition()==3,"Returning from a speculative selection lost the player cue");
+    freshPlayer();
     {
         auto pressure=memory.reserve(memory.limit()-memory.used()-4*1024*1024);
         Workspace limited(trial,[]{},memory,transport);
@@ -102,7 +104,7 @@ inline void nativeHandoffTests(const fs::path& root,std::ostream& log){
             return transport(c,request,stop);
         };
         Workspace moving(trial,[]{},memory,slow);
-        wait([&]{return blocked->load();},[&]{moving.prefetch(audio,SecondsSpan{6.5,7.5});});
+        wait([&]{return blocked->load();},[&]{moving.prefetch(audio,SecondsSpan{6.5,7.5});},"Cancellable prefetch start");
         moving.prefetch(audio);
         require(Json::parse(moving.diagnostics()).at("prefetch_frames")==0,"Cancelled selection retained its speculative audio");
         wait([&]{return cancelled->load()&&Json::parse(moving.diagnostics()).at("prefetch_ready").get<bool>();},[&]{moving.prefetch(audio,SecondsSpan{7,7.5});});
@@ -111,9 +113,7 @@ inline void nativeHandoffTests(const fs::path& root,std::ostream& log){
         require(Json::parse(moving.diagnostics()).at("start")==308700&&regionReads->load()==readyReads,"Cancelled prefetch displaced or decoded the newer selection");
         moving.returnToPlayer();audio.resumeNative();
     }
-    const auto currentSource=*audio.preparedSource;
-    require(audio.playNative(trial/"other.source",currentSource,connection,true,0),"Fresh source fixture failed");
-    wait([&]{return audio.native->state().loaded;},[&]{audio.poll();});
+    freshPlayer();
     {
         Workspace switching(trial,[]{},memory,transport);
         wait([&]{return Json::parse(switching.diagnostics()).at("prefetch_ready").get<bool>();},[&]{switching.prefetch(audio,SecondsSpan{6.5,7.5});});
@@ -137,9 +137,7 @@ inline void nativeHandoffTests(const fs::path& root,std::ostream& log){
         switching.returnToPlayer();audio.resumeNative();
         require(audio.displayPosition()==1,"Stale speculative source displaced the new player cue");
     }
-    const auto pendingSource=*audio.preparedSource;
-    require(audio.playNative(trial/"pending.source",pendingSource,connection,true,0),"Pending selection fixture failed");
-    wait([&]{return audio.native->state().loaded;},[&]{audio.poll();});
+    freshPlayer();
     {
         auto started=std::make_shared<std::atomic<int>>(0);auto release=std::make_shared<std::atomic<bool>>(false);
         Client::Transport pendingRead=[=](const Connection& c,const Request& request,std::stop_token stop){
@@ -147,7 +145,8 @@ inline void nativeHandoffTests(const fs::path& root,std::ostream& log){
             return transport(c,request,stop);
         };
         Workspace opening(trial,[]{},memory,pendingRead);
-        wait([&]{return started->load()>0;},[&]{opening.prefetch(audio,SecondsSpan{7.75,8});});
+        wait([&]{return started->load()>0;},[&]{opening.prefetch(audio,SecondsSpan{7.5,8});},"Overlapping prefetch start");
+        opening.prefetch(audio,SecondsSpan{7.75,8});
         opening.mark(audio,SecondsSpan{7.75,8});
         for(int i=0;i<5;++i){opening.tick(audio);SDL_Delay(1);}
         release->store(true);

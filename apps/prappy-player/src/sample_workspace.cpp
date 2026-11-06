@@ -292,9 +292,9 @@ void Workspace::prefetch(Audio& audio,std::optional<SecondsSpan> selection){
     const Span window{first,std::min({frames,first+hz*30,static_cast<Frame>(std::llround(selection->end*hz))})};
     if(window.end<=window.start){cancel();return;}
     if(!speculativePlayback||speculativePlayback->reference()!=audio.native->reference()||
-        speculativePlayback->descriptor().at("source_key")!=d.at("source_key")||speculativeWindow.start!=first){
+        speculativePlayback->descriptor().at("source_key")!=d.at("source_key")||!speculativePlayback->retainsOrRequests(first)){
         cancel();
-        if(audio.native->session()->find(first))speculativePlayback=audio.native;
+        if(audio.native->retainsOrRequests(first))speculativePlayback=audio.native;
         else{
             if(pcmBudget.limit()-pcmBudget.used()<8*1024*1024)return;
             speculativePlayback=std::make_shared<NativePlayback>(audio.nativeConnection,pcmBudget,notify,backendTransport);

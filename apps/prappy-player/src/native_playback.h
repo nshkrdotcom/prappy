@@ -117,6 +117,7 @@ public:
     const Json& descriptor()const{return manifest;}
     const std::string& reference()const{return endpoint;}
     std::shared_ptr<NativeSession> session()const{return retained;}
+    bool retainsOrRequests(Frame frame)const{return retained&&(retained->find(frame)||(pending&&frame>=pendingStart&&frame<pendingEnd));}
     void load(std::string path,std::string expectedCapture,std::string expectedOriginal,bool paused,double seconds,Json known=nullptr){
         if(!std::isfinite(seconds)||seconds<0||!prepared::SourceRef::valid(expectedCapture,"cap_")||
             expectedOriginal.size()!=64||expectedOriginal.find_first_not_of("0123456789abcdef")!=std::string::npos)
@@ -130,7 +131,7 @@ public:
         if(manifest.is_null()||span.start<coverage.start||span.end>coverage.end||span.end<=span.start||frame<span.start||frame>=span.end)
             throw std::runtime_error("Playback range exceeds verified native coverage.");
         output.stop();started=false;range=span;status.cursor=frame;status.paused=paused;status.finished=false;status.buffering=true;repeat=loop;status.error.clear();
-        if(!retained->find(frame)&&(!pending||frame<pendingStart||frame>=pendingEnd))newOwner();request(frame);
+        if(!retainsOrRequests(frame))newOwner();request(frame);
     }
     void clearCache(){cacheWindow.reset();}
     void loop(bool value){repeat=value;output.loop(value);}
