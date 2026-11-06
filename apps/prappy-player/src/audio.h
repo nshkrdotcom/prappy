@@ -2,6 +2,7 @@
 #include "paths.h"
 #include "debug_log.h"
 #include "output_meter.h"
+#include "native_playback.h"
 #include <mpv/client.h>
 #include <array>
 #include <vector>
@@ -40,6 +41,10 @@ struct Audio {
     Audio() = default;
     Audio(const Audio&) = delete;
     Audio& operator=(const Audio&) = delete;
+    bool nativeMode=false;
+    std::optional<sampling::PcmBudget> nativeMemory;
+    std::unique_ptr<sampling::NativePlayback> native;
+    sampling::Connection nativeConnection;
     HMODULE dll = nullptr;
     mpv_handle* handle = nullptr;
 #define MPV_API(name) decltype(&mpv_##name) name = nullptr
@@ -79,6 +84,7 @@ struct Audio {
     uint64_t seekSequence = 0, pendingSeek = 0;
     double displayPosition(Clock::time_point now = Clock::now()) const {
         if (seekPreview) return *seekPreview;
+        if(nativeMode)return position;
         const auto elapsed = loaded && active && !paused ? std::chrono::duration<double>(now-positionTime).count() : 0;
         return std::clamp(position+std::max(0.0,elapsed),0.0,std::max(0.0,duration));
     }
@@ -86,8 +92,53 @@ struct Audio {
     ~Audio() { stopWorker(); if (handle) { set_wakeup_callback(handle, nullptr, nullptr); terminate_destroy(handle); } if (dll) FreeLibrary(dll); }
     void setNotify(std::function<void()> callback) {
         notify = std::move(callback);
+        if(nativeMode)return;
         if (worker) { setWorkerNotify(); return; }
         set_wakeup_callback(handle, [](void* context) { auto& audio = *static_cast<Audio*>(context); if (audio.notify) audio.notify(); }, this);
+    }
+    void openNative(bool silent,sampling::PcmBudget memory){
+        if(handle||dll||worker||nativeMode)throw std::logic_error("Audio is already open.");
+        nativeMode=true;nativeMemory=std::move(memory);logPlayback=true;
+        if(silent)SDL_SetHint(SDL_HINT_AUDIO_DRIVER,"dummy");
+        else outputMeter=std::make_unique<OutputMeter>();
+    }
+    bool playNative(const fs::path& path,const prepared::CatalogSource& source,const sampling::Connection& backend,bool startPaused,double startPosition){
+        if(!nativeMode)throw std::logic_error("Catalog playback requires the native transport.");
+        loadStarted=Clock::now();++serial;current=path;loaded=false;loadedSerial=0;active=true;info={};
+        paused=pauseRequested=startPaused;position=startPosition;duration=source.duration;error.clear();gain=0;
+        queuedSeek.reset();seekPreview.reset();pendingSeek=0;cachedTags=source.tags;
+        preparedSource=std::make_shared<prepared::CatalogSource>(source);
+        if(logPlayback)debuglog::write("play.request","serial="+std::to_string(serial)+" source="+utf8(path));
+        try{
+            if(!native||nativeConnection.url!=backend.url||nativeConnection.token!=backend.token||nativeConnection.credentialFile!=backend.credentialFile){
+                native.reset();nativeConnection=backend;
+                native=std::make_unique<sampling::NativePlayback>(backend,*nativeMemory,notify);
+            }
+            native->load(source.source.endpoint(),source.source.capture,source.asset,startPaused,startPosition);
+            native->gain(static_cast<float>(volume/100));return true;
+        }catch(const std::exception& e){error=e.what();active=loaded=false;return false;}
+    }
+    void updateMeter(){
+        const bool audible=loaded&&active&&!paused&&volume>0;
+        if(outputMeter){outputMeter->enable(audible);meterPeak=audible?outputMeter->read():0;meterAvailable=audible&&outputMeter->available();}
+        else{meterPeak=0;meterAvailable=false;}
+    }
+    bool pollNative(){
+        if(!native||current.empty()){updateMeter();return false;}
+        native->tick();const auto& state=native->state();
+        if(!state.error.empty()){error=state.error;loaded=active=false;updateMeter();return false;}
+        const bool eof=state.finished&&active;
+        if(state.rate>0){position=static_cast<double>(state.cursor)/state.rate;duration=static_cast<double>(state.frames)/state.rate;}
+        paused=state.paused;loaded=state.loaded&&!state.finished;active=!state.finished;
+        if(loaded&&loadedSerial!=serial){
+            loadedSerial=serial;const auto& descriptor=native->descriptor();
+            auto source=std::make_shared<prepared::CatalogSource>(*preparedSource);source->timeline=descriptor.at("timeline_id");
+            source->native={state.rate,prepared::integer(descriptor.at("channels")),state.frames,prepared::sampleType(descriptor.at("sample_format").get<std::string>())};
+            info.codec=source->codec;info.sampleRate=state.rate;info.channels=source->native.channels;info.sampleFormat=descriptor.at("sample_format");preparedSource=std::move(source);
+            if(logPlayback)debuglog::write("play.loaded","serial="+std::to_string(serial)+" ms="+std::to_string(debuglog::elapsed(loadStarted))+" native_rate="+std::to_string(state.rate));
+        }
+        if(pendingSeek&&!state.buffering){pendingSeek=0;seekPreview.reset();submitSeek();}
+        updateMeter();return eof;
     }
     void open(bool silent = false, std::initializer_list<std::pair<const char*, const char*>> options = {}, bool meter = true) {
         (void)debuglog::instance(); // Outlive playback actors during static teardown.
@@ -121,6 +172,10 @@ struct Audio {
     }
     void check(int result) { if (result < 0) throw std::runtime_error(error_string(result)); }
     bool run(std::initializer_list<const char*> args) {
+        if(nativeMode){
+            if(args.size()==1&&std::string_view(*args.begin())=="stop"){if(native)native->stop();loaded=active=false;current.clear();preparedSource.reset();queuedSeek.reset();seekPreview.reset();pendingSeek=0;return true;}
+            throw std::logic_error("Unsupported native playback command.");
+        }
         if (worker) {
             std::vector<std::string> owned; for (const auto* arg : args) owned.emplace_back(arg);
             enqueue(5,[owned=std::move(owned)](Audio& core){ std::vector<const char*> values; for(const auto& arg:owned)values.push_back(arg.c_str()); values.push_back(nullptr); const auto result=core.command(core.handle,values.data());if(result<0)core.error=core.error_string(result);else if(!owned.empty()&&owned[0]=="stop"){core.loaded=core.active=false;core.loadedSerial=0;core.desiredEntry=core.eventEntry=-1;core.current.clear();core.queuedSeek.reset();core.seekPreview.reset();core.pendingSeek=0;} });
@@ -138,6 +193,7 @@ struct Audio {
     }
     bool play(const fs::path& path, bool startPaused = false, double startPosition = 0,
               const std::string& streamUrl = {},const std::string& bearerToken = {}) {
+        if(nativeMode)throw std::logic_error("Native playback requires an indexed source.");
         loadStarted=Clock::now();
         preparedSource.reset();
         if (worker) {
@@ -189,6 +245,7 @@ struct Audio {
         positionTime = Clock::now(); error.clear(); return true;
     }
     void setPaused(bool value) {
+        if(nativeMode){paused=pauseRequested=value;if(native)native->pause(value);return;}
         if(worker){position=displayPosition();positionTime=Clock::now();paused=pauseRequested=value;if(!value)seekPreview.reset();enqueue(1,[value](Audio& core){core.setPaused(value);});return;}
         if (!active) { paused = pauseRequested = value; return; }
         int flag = value ? 1 : 0;
@@ -207,6 +264,11 @@ struct Audio {
     }
     void submitSeek() {
         if (pendingSeek || !queuedSeek) return;
+        if(nativeMode){
+            if(!native||native->state().rate<=0)return;
+            const auto target=std::llround(static_cast<long double>(*queuedSeek)*native->state().rate);
+            pendingSeek=++seekSequence;queuedSeek.reset();native->seek(target);return;
+        }
         const auto value = std::to_string(*queuedSeek);
         const char* args[] = {"seek",value.c_str(),"absolute+exact",nullptr};
         pendingSeek = ++seekSequence; queuedSeek.reset();
@@ -215,6 +277,7 @@ struct Audio {
         if (result < 0) { error = error_string(result); pendingSeek = 0; seekPreview.reset(); }
     }
     void setVolume(double value) {
+        if(nativeMode){if(!std::isfinite(value))return;volume=std::clamp(value,0.,100.);if(native)native->gain(static_cast<float>(volume/100*std::pow(10.,gain/20)));return;}
         if(worker){volume=value;enqueue(2,[value](Audio& core){core.setVolume(value);});return;}
         int result = set_property(handle, "volume", MPV_FORMAT_DOUBLE, &value);
         if (result < 0) error = error_string(result); else volume = value;
@@ -222,18 +285,20 @@ struct Audio {
     void setGain(double value) {
         if (!std::isfinite(value)) return;
         value = std::clamp(value, -96.0, 12.0);
+        if(nativeMode){gain=value;if(native)native->gain(static_cast<float>(volume/100*std::pow(10.,gain/20)));return;}
         if(worker){gain=value;enqueue(3,[value](Audio& core){core.setGain(value);});return;}
         const auto result = set_property(handle, "volume-gain", MPV_FORMAT_DOUBLE, &value);
         if (result < 0) error = error_string(result); else gain = value;
     }
     std::string textProperty(const char* name) const {
+        if(nativeMode)throw std::logic_error("libmpv properties are unavailable on native playback.");
         char* value = nullptr;
         if (get_property(handle, name, MPV_FORMAT_STRING, &value) < 0) return {};
         const std::unique_ptr<char, decltype(free)> owner(value, free);
         return value ? value : "";
     }
     std::vector<std::pair<std::string, std::string>> loadedTags() const {
-        if(worker)return cachedTags;
+        if(nativeMode||worker)return cachedTags;
         std::vector<std::pair<std::string, std::string>> result;
         if (!handle || !loaded || !free_node_contents) return result;
         mpv_node metadata{};
@@ -269,6 +334,7 @@ struct Audio {
         get_property(handle, "current-tracks/audio/demux-bitrate", MPV_FORMAT_DOUBLE, &info.bitrate);
     }
     bool poll() {
+        if(nativeMode)return pollNative();
         if(worker)return collectWorker();
         bool eof = false;
         for (;;) {
@@ -315,15 +381,7 @@ struct Audio {
             if (info.codec.empty() || info.sampleFormat.empty() || info.sampleRate <= 0 || info.channels <= 0) readInfo();
             submitSeek();
         }
-        if (outputMeter) {
-            // Integer device conversion may retain a one-LSB dither floor at
-            // mpv volume zero. Treat explicit mute like pause for the UI meter.
-            const bool audible = loaded && active && !paused && volume > 0;
-            outputMeter->enable(audible);
-            const auto peak = outputMeter->read();
-            meterPeak = audible ? peak : 0;
-            meterAvailable = audible && outputMeter->available();
-        } else { meterPeak = 0; meterAvailable = false; }
+        updateMeter();
         return eof;
     }
 };

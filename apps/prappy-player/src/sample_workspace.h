@@ -110,7 +110,7 @@ class Workspace {
     void waveform(Audio&,const std::function<void(const char*,bool)>&);
 public:
     bool open=false;
-    Workspace(fs::path,std::function<void()>,size_t pcmMib=256);
+    Workspace(fs::path,std::function<void()>,PcmBudget memory=PcmBudget{});
     ~Workspace();
     void connect();
     void returnToPlayer();

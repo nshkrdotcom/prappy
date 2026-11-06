@@ -297,7 +297,8 @@ int runPlayer(HINSTANCE instance) {
             debuglog::instance().configure(stateDirectory/"player-debug.log",settings.debugLog);
             debuglog::write("app.start","debug_log=true");
         } catch (const std::exception& e) { library.notice = e.what(); }
-        audio.open(windowTest);
+        sampling::PcmBudget pcmMemory(settings.editorPcmMib);
+        audio.openNative(windowTest,pcmMemory);
         audio.setNotify([wake] { wake->notify(UiWake::Audio); });
         HistoryFile historyFile(stateDirectory / "player-history.txt");
         historyFile.writer.notify = notify;
@@ -386,7 +387,7 @@ int runPlayer(HINSTANCE instance) {
         text::loadFonts();
         WaveformView waveformImage(renderer);
         text::Painter textPainter(renderer); text::active = &textPainter;
-        sampling::Workspace sampleWorkspace(stateDirectory,notify,settings.editorPcmMib);
+        sampling::Workspace sampleWorkspace(stateDirectory,notify,pcmMemory);
         PlayerSampleSelection waveformSelection;
         platform = ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
         graphics = ImGui_ImplSDLRenderer3_Init(renderer);

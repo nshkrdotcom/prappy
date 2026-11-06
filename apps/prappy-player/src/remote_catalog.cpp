@@ -89,9 +89,6 @@ std::function<bool(const fs::path&,bool,double)> preparedPlaybackLoader(Audio& a
             throw std::runtime_error("Recording is absent from the indexed library.");
         const auto& source=*found->prepared;
         if(!source.ready())throw prepared::NotReady("Recording is unavailable: "+source.state);
-        const auto loaded=audio.play(path,paused,position,library.backend->url+source.source.endpoint()+
-                                    "/playback",library.backend->token);
-        if(loaded)audio.preparedSource=std::make_shared<prepared::CatalogSource>(source);
-        return loaded;
+        return audio.playNative(path,source,*library.backend,paused,position);
     };
 }

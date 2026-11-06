@@ -23,7 +23,7 @@ Json strings(const std::string& text){Json out=Json::array();std::istringstream 
 std::string show(const Json& j){if(j.is_string())return j.get<std::string>();if(j.is_array()){std::string out;for(const auto& v:j){if(!out.empty())out+=", ";out+=v.get<std::string>();}return out;}return j.is_null()?"":j.dump();}
 int timeLabel(double x,char* buffer,int size,void* rate){return std::snprintf(buffer,static_cast<size_t>(size),"%.4fs",x/static_cast<double>(*static_cast<Frame*>(rate)));}
 }
-Workspace::Workspace(fs::path d,std::function<void()> n,size_t pcmMib):directory(std::move(d)),notify(std::move(n)),pcmBudget(pcmMib){
+Workspace::Workspace(fs::path d,std::function<void()> n,PcmBudget memory):directory(std::move(d)),notify(std::move(n)),pcmBudget(std::move(memory)){
     readOnly=!stateio::evaluationState(directory).is_null();
     tokenFile=utf8(fs::path(L"\\\\wsl.localhost\\ubuntu26-dev\\home\\home\\.config\\audioharvest\\server.token"));try{restore();}catch(const std::exception& e){storageBlocked=true;storageError=e.what();}
 }
