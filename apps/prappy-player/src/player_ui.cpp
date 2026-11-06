@@ -386,7 +386,7 @@ int runPlayer(HINSTANCE instance) {
         text::loadFonts();
         WaveformView waveformImage(renderer);
         text::Painter textPainter(renderer); text::active = &textPainter;
-        sampling::Workspace sampleWorkspace(stateDirectory,notify);
+        sampling::Workspace sampleWorkspace(stateDirectory,notify,settings.editorPcmMib);
         PlayerSampleSelection waveformSelection;
         platform = ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
         graphics = ImGui_ImplSDLRenderer3_Init(renderer);

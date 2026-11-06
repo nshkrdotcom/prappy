@@ -42,7 +42,7 @@ class Workspace {
     bool boundaryHeld=false;
     uint64_t generation=0,pcmEpoch=0;
     std::string library,notice,libraryQuery,facet,facetValue,regionName="New sample",kind="unknown",collectionName;
-    std::string pcmPath,detailPath,descriptorPath,decodeSession;
+    std::string pcmPath,detailPath,descriptorPath,decodeSession,sessionPath;
     Frame loadingStart=0,loadingEnd=0;
     struct AwaitingAudition {Frame origin;bool first;};
     std::optional<AwaitingAudition> awaitingRegion;
@@ -61,6 +61,7 @@ class Workspace {
     Span monitorRange()const;
     std::string audioEndpoint()const;
     void resetNativeSession();
+    void closeNativeSession();
     void requestPcm(Frame,Frame,bool,bool=false);
     void feedAudition(std::shared_ptr<const NativeSession::Buffer>,bool);
     AmplitudeScale amplitude;
@@ -75,7 +76,7 @@ class Workspace {
     std::vector<Json> anchors;
     std::string gridId;int gridRevision=0;
     float previewGain=.7f;
-    std::chrono::steady_clock::time_point detailDue{},persistDue{};
+    std::chrono::steady_clock::time_point detailDue{},persistDue{},overviewDue{},sessionDue{};
     Span persistedSpan;
     bool draftDirty=false;
     void get(std::string tag,std::string path);
@@ -92,6 +93,7 @@ class Workspace {
     void finishMark(const Json&);
     void openCapture(Json, std::optional<Span> = {},std::optional<Frame> cue = {});
     void loadDetails(bool refresh=false);
+    void loadOverview();
     Json draftSnapshot()const;
     void discardConflicts();
     void persist();
@@ -108,7 +110,7 @@ class Workspace {
     void waveform(Audio&,const std::function<void(const char*,bool)>&);
 public:
     bool open=false;
-    Workspace(fs::path,std::function<void()>);
+    Workspace(fs::path,std::function<void()>,size_t pcmMib=256);
     ~Workspace();
     void connect();
     void returnToPlayer();

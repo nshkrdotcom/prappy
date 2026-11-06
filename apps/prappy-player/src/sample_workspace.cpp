@@ -23,11 +23,11 @@ Json strings(const std::string& text){Json out=Json::array();std::istringstream 
 std::string show(const Json& j){if(j.is_string())return j.get<std::string>();if(j.is_array()){std::string out;for(const auto& v:j){if(!out.empty())out+=", ";out+=v.get<std::string>();}return out;}return j.is_null()?"":j.dump();}
 int timeLabel(double x,char* buffer,int size,void* rate){return std::snprintf(buffer,static_cast<size_t>(size),"%.4fs",x/static_cast<double>(*static_cast<Frame*>(rate)));}
 }
-Workspace::Workspace(fs::path d,std::function<void()> n):directory(std::move(d)),notify(std::move(n)){
+Workspace::Workspace(fs::path d,std::function<void()> n,size_t pcmMib):directory(std::move(d)),notify(std::move(n)),pcmBudget(pcmMib){
     readOnly=!stateio::evaluationState(directory).is_null();
     tokenFile=utf8(fs::path(L"\\\\wsl.localhost\\ubuntu26-dev\\home\\home\\.config\\audioharvest\\server.token"));try{restore();}catch(const std::exception& e){storageBlocked=true;storageError=e.what();}
 }
-Workspace::~Workspace(){try{persist();}catch(const std::exception& e){OutputDebugStringA(e.what());}}
+Workspace::~Workspace(){try{closeNativeSession();persist();}catch(const std::exception& e){OutputDebugStringA(e.what());}}
 void Workspace::get(std::string tag,std::string path){if(client){Json context=tag=="sampleMetadata"?draftSnapshot():Json();client->submit({std::move(tag),"GET",std::move(path),context,generation,{}});}}
 void Workspace::connect(){
     if(client)stopTransport();
@@ -49,9 +49,9 @@ void Workspace::browse(){
     get("collections",endpoint(library)+"/collections");
 }
 void Workspace::openCapture(Json item,std::optional<Span> selected,std::optional<Frame> cue){
-    stash();stopTransport();++generation;++waveformRevision;overviewBins.clear();detailBins.clear();pcmPath.clear();detailPath.clear();envelopePcm=false;envelope.clear();displayEnvelope.clear();projectedGain=-1;analysisJob.clear();
+    stash();stopTransport();++generation;++waveformRevision;overviewBins.clear();detailBins.clear();pcmPath.clear();detailPath.clear();overviewDue={};envelopePcm=false;envelope.clear();displayEnvelope.clear();projectedGain=-1;analysisJob.clear();
     capture=std::move(item);sourceLibrary=library;activeDraft.clear();region=nullptr;selectionDefined=false;sourceRegions=Json::array();
-    nativeSession.reset();decodeSession=uuid();beats.clear();onsets.clear();anchors.clear();overview=nullptr;timing=nullptr;gridId.clear();gridRevision=0;
+    closeNativeSession();decodeSession=uuid();beats.clear();onsets.clear();anchors.clear();overview=nullptr;timing=nullptr;gridId.clear();gridRevision=0;
     rate=capture.at("timeline").at("sample_rate");transport.rate=rate;
     const Frame total=capture.at("timeline").at("frame_count").get<Frame>();
     auto& ws=sampleLibrary.open(sourceRef(),total);const auto active=ws.active;const auto view=ws.view;
@@ -76,7 +76,7 @@ std::string Workspace::audioEndpoint()const{
 void Workspace::loadDetails(bool refresh){
     if(capture.is_null()||!client)return;
     const auto base=audioEndpoint();
-    if(descriptorPath!=base){descriptorPath=base;preparedManifest=nullptr;nativeSession.reset();pcmPath.clear();detailPath.clear();}
+    if(descriptorPath!=base){descriptorPath=base;preparedManifest=nullptr;closeNativeSession();pcmPath.clear();detailPath.clear();}
     if(preparedManifest.is_null()){get("capture",base);return;}
     if(!nativeSession){
         resetNativeSession();
@@ -86,6 +86,7 @@ void Workspace::loadDetails(bool refresh){
         const Frame last=std::min(editor.span.end,coverage.at("end_frame").get<Frame>());
         if(first<last)requestPcm(first,std::min(last,first+rate*3),false);
     }
+    loadOverview();
     const auto range=waveformRange(viewportStart,viewportEnd,editor.total);
     const auto coverage=preparedManifest.value("coverage",Json{{"start_frame",0},{"end_frame",editor.total}});
     const Frame start=std::max(range.start,coverage.at("start_frame").get<Frame>()),end=std::min(range.end,coverage.at("end_frame").get<Frame>());
@@ -99,6 +100,20 @@ void Workspace::loadDetails(bool refresh){
         client->submit({"source-waveform","GET",path,{{"source_key",preparedManifest.at("source_key")},{"timeline_id",capture.at("timeline_id")},
             {"channels",preparedManifest.at("channels")},{"start_bin",first},{"bin_count",last-first},{"frames_per_bin",stride},{"level",level},{"overview",false}},generation,{}});
     }
+}
+void Workspace::loadOverview(){
+    if(preparedManifest.is_null()||preparedManifest.value("access_mode",std::string{})=="frozen")return;
+    if(!preparedManifest.contains("waveform")){
+        if(overviewDue==std::chrono::steady_clock::time_point{})overviewDue=std::chrono::steady_clock::now()+std::chrono::seconds(1);
+        return;
+    }
+    overviewDue={};if(!overviewBins.empty())return;
+    int level=0;Frame stride=4096;while((editor.total+stride-1)/stride>2048){++level;stride*=2;}
+    const Frame count=(editor.total+stride-1)/stride;
+    const auto path=audioEndpoint()+"/waveform?source_key="+preparedManifest.at("source_key").get<std::string>()+"&timeline="+capture.at("timeline_id").get<std::string>()+
+        "&level="+std::to_string(level)+"&start=0&count="+std::to_string(count);
+    client->submit({"source-waveform","GET",path,{{"source_key",preparedManifest.at("source_key")},{"timeline_id",capture.at("timeline_id")},
+        {"channels",preparedManifest.at("channels")},{"start_bin",0},{"bin_count",count},{"frames_per_bin",stride},{"level",level},{"overview",true}},generation,{}});
 }
 void Workspace::metadataFields(const Json& values){editedFacets.clear();fields=Json::object();for(const char* key:{"title","artist","album","date","genres","moods","instruments","roles","tags","uses","key","tempo_bpm","energy","notes","character"})fields[key]=values.contains(key)?show(values[key]):"";}
 Json Workspace::humanFacts(bool forSample)const{
@@ -165,7 +180,7 @@ void Workspace::activateDraft(const std::string& id,bool fetch){
         {"name",regionName},{"kind",kind},{"span",{{"start_frame",d.value.span.start},{"end_frame",d.value.span.end}}}}:Json();
     viewportStart=static_cast<double>(std::max<Frame>(0,editor.span.start-rate));viewportEnd=static_cast<double>(std::min(editor.total,editor.span.end+rate));
     fit=true;transport.range=transport.bounds(editor.span,editor.total);transport.cursor=transport.range.start;
-    if(fetch){if(nativeSession&&!nativeSession->covers(editor.span.start,editor.span.end))nativeSession.reset();loadDetails();}draftDirty=true;
+    if(fetch){if(nativeSession&&!nativeSession->covers(editor.span.start,editor.span.end))closeNativeSession();loadDetails();}draftDirty=true;
     if(d.region&&!d.dirty()&&!d.saving)get("sampleMetadata",endpoint(sourceLibrary)+"/metadata/"+d.region->id+"?revision="+std::to_string(d.region->revision));
 }
 void Workspace::newDraft(Span span,bool variant,bool fetch){
@@ -271,10 +286,17 @@ Span Workspace::monitorRange()const{
     if(result.end<=result.start)throw std::runtime_error("Selection is outside the preserved audio span.");
     return result;
 }
+void Workspace::closeNativeSession(){
+    if(client&&!sessionPath.empty())client->submit({"source-session-close","DELETE",sessionPath,nullptr,generation,{}});
+    sessionPath.clear();nativeSession.reset();
+}
 void Workspace::resetNativeSession(){
     if(client)client->cancelReads(ReadScope::PCM);
-    ++pcmEpoch;decodeSession=uuid();pcmPath.clear();awaitingRegion.reset();
+    closeNativeSession();++pcmEpoch;decodeSession=uuid();pcmPath.clear();awaitingRegion.reset();
     const auto& t=preparedManifest;
+    if(t.value("access_mode",std::string{})!="frozen")sessionPath=audioEndpoint()+"/session?source_key="+t.at("source_key").get<std::string>()+
+        "&timeline="+t.at("timeline_id").get<std::string>()+"&owner="+decodeSession;
+    sessionDue=std::chrono::steady_clock::now()+std::chrono::seconds(15);
     nativeSession=std::make_unique<NativeSession>(prepared::NativeTimeline{t.at("sample_rate"),t.at("channels"),t.at("frame_count"),
         prepared::sampleType(t.at("sample_format").get<std::string>())},t.at("source_key"),t.at("timeline_id"),pcmEpoch,pcmBudget);
 }
@@ -356,7 +378,8 @@ bool Workspace::current(const Request& request)const{
     if(tag=="mark-prepared"&&(!pendingMark||request.body.at("mark")!=pendingMark->ticket))return false;
     if(tag=="collections"&&request.path!=endpoint(library)+"/collections")return false;
     if(tag=="browse"&&request.path!=browsePath)return false;
-    if(tag=="capture"&&request.path!=descriptorPath)return false;
+    if((tag=="capture"||tag=="source-analysis")&&request.path!=descriptorPath)return false;
+    if(tag=="source-session"&&request.path!=sessionPath)return false;
     if((tag=="source-pcm"||tag=="source-waveform")&&(preparedManifest.is_null()||request.body.at("source_key")!=preparedManifest.at("source_key")))return false;
     if(tag=="source-pcm"){
         if(request.body.at("pcm_epoch")!=pcmEpoch)return false;
@@ -456,12 +479,17 @@ void Workspace::process(){
                 openCapture(reply.body.at("capture"));
             }else{
                 capture=reply.body.at("capture");rate=preparedManifest.at("sample_rate");transport.rate=rate;
-                nativeSession.reset();pcmPath.clear();detailPath.clear();
+                closeNativeSession();pcmPath.clear();detailPath.clear();
                 const auto saved=reply.body.value("region",Json());
                 const auto pinned=activeDraft.empty()?std::optional<RegionRef>{}:sampleLibrary.draft(sourceRef(),activeDraft).region;
                 if(!saved.is_null()&&(!pinned||pinned->id!=saved.at("id").get<std::string>()||pinned->revision!=saved.at("revision").get<int>()))chooseRegion(saved);
                 else loadDetails();
             }
+        }else if(tag=="source-session"){
+            if(!reply.body.value("active",false))notice="Decoder session expired. Cached audio is retained; reopen this source before extending its window.";
+        }else if(tag=="source-analysis"){
+            if(preparedManifest.is_null()||reply.body.at("source_key")!=preparedManifest.at("source_key")||reply.body.at("timeline_id")!=preparedManifest.at("timeline_id"))continue;
+            if(reply.body.contains("waveform")){preparedManifest["waveform"]=reply.body.at("waveform");loadOverview();}
         }else if(tag=="sampleMetadata"){
             if(reply.request.body!=draftSnapshot()){notice="Metadata response retained on server; newer local edits preserved.";continue;}
             const bool clean=!activeDraft.empty()&&!sampleLibrary.draft(sourceRef(),activeDraft).dirty();
@@ -535,6 +563,10 @@ void Workspace::tick(Audio& audio){
             auto retries=std::move(preparedRetries);preparedRetries.clear();
             for(auto& [tag,request]:retries)if(current(request))client->submit(std::move(request));
         }
+        if(open&&client&&!sessionPath.empty()&&now>=sessionDue){sessionDue=now+std::chrono::seconds(15);get("source-session",sessionPath);}
+        if(open&&client&&overviewDue!=std::chrono::steady_clock::time_point{}&&now>=overviewDue){
+            overviewDue=now+std::chrono::seconds(1);get("source-analysis",descriptorPath);
+        }
         if(!analysisJob.empty()&&now>=jobDue){jobDue=now+std::chrono::seconds(1);get("job",endpoint(library)+"/jobs/"+analysisJob);}
         if(detailDue!=std::chrono::steady_clock::time_point{} && now>=detailDue){detailDue={};loadDetails();}
         if(draftDirty && now>=persistDue)persist();
@@ -572,7 +604,7 @@ void Workspace::waveform(Audio& audio,const std::function<void(const char*,bool)
     const bool fitNow=ImGui::Button("Fit now");observe("sample-amplitude-fit-now",fitNow);
     if(fitNow){amplitude.mode=AmplitudeMode::Manual;fitAmplitudeNow=true;}ImGui::SameLine();
     ImGui::Text("%.2fx / %+.1f dB",amplitude.gain,amplitude.db());
-    if(!envelopePcm){ImGui::SameLine();ImGui::TextDisabled(viewportEnd-viewportStart>rate*60?"Overview - zoom for detail":"Loading detailed waveform...");}
+    if(!envelopePcm){ImGui::SameLine();ImGui::TextDisabled(!detailBins.empty()?"Native detail":viewportEnd-viewportStart>rate*60?"Overview - zoom for detail":"Loading detailed waveform...");}
     const float height=std::max(180.f,ImGui::GetContentRegionAvail().y-360);
     const auto rulerPos=ImGui::GetCursorScreenPos();
     ImGui::InvisibleButton("##amplitude-ruler",{44,height});observe("sample-amplitude-ruler",false);

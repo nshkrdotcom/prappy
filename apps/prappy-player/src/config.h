@@ -5,7 +5,7 @@
 #include <cmath>
 #include <fstream>
 struct Config {
-    size_t historyLimit = 10000;
+    size_t historyLimit = 10000, editorPcmMib = 256;
     bool addNewListeningHistoryEntryWhenReplayingHistoryItem = false;
     bool debugLog = true;
     double normalizationTargetLufs = -18, normalizationUnmeasuredFallbackDb = 0;
@@ -41,12 +41,13 @@ inline Config readConfig(const fs::path& file) {
                 throw std::runtime_error("Config: invalid " + name + " (target -36..-5 LUFS; fallback -24..12 dB).");
             if (target) config.normalizationTargetLufs = number;
             else config.normalizationUnmeasuredFallbackDb = number;
-        } else if (name == "history_limit") {
+        } else if (name == "history_limit" || name == "editor_pcm_mib") {
             size_t limit = 0;
             const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), limit);
-            if (error != std::errc{} || end != value.data() + value.size() || limit == 0 || limit > stateio::MaxRecords)
-                throw std::runtime_error("Config: history_limit must be between 1 and 1000000.");
-            config.historyLimit = limit;
+            const bool editor=name=="editor_pcm_mib";
+            if (error != std::errc{} || end != value.data() + value.size() || limit < (editor?64:1) || limit > (editor?1024:stateio::MaxRecords))
+                throw std::runtime_error(editor?"Config: editor_pcm_mib must be 64..1024.":"Config: history_limit must be 1..1000000.");
+            if(editor)config.editorPcmMib=limit;else config.historyLimit=limit;
         } else throw std::runtime_error("Config line " + std::to_string(lineNumber) + ": unknown key " + name);
     }
     return config;
@@ -55,7 +56,7 @@ inline void createDefaultConfig(const fs::path& file) {
     if (fs::exists(file)) return;
     std::ofstream out(file);
     out << "# Libraries are configured by audioharvest's workstation.json in WSL.\n"
-        << "history_limit=10000\nadd_new_listening_history_entry_when_replaying_history_item=false\ndebug_log=true\n"
+        << "history_limit=10000\nadd_new_listening_history_entry_when_replaying_history_item=false\ndebug_log=true\neditor_pcm_mib=256\n"
         << "# Loudness matching is enabled/disabled in Options and saved with player-ui.txt.\n"
         << "normalization_target_lufs=-18\nnormalization_unmeasured_fallback_db=0\n";
     if (!out) throw std::runtime_error("Cannot create player.ini. Put the player in a writable folder.");

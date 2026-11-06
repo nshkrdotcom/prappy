@@ -235,8 +235,9 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
             selected->asset=std::string(64,'c');selected->state="Playable";selected->native={44100,1,441000,prepared::SampleType::Float32};
             Audio playing;playing.current=trial/"virtual.source";playing.duration=10;playing.position=2;playing.preparedSource=selected;
             {
-                sampling::Workspace readonly(trial,[]{});readonly.mark(playing,sampling::SecondsSpan{1.25,2.5});
+                sampling::Workspace readonly(trial,[]{},64);readonly.mark(playing,sampling::SecondsSpan{1.25,2.5});
                 const auto state=sampling::Json::parse(readonly.diagnostics());
+                require(state.at("pcm_budget_bytes")==64*1024*1024,"Configured editor memory did not reach the workspace.");
                 require(state.at("read_only")&&state.at("mark_pending"),"Evaluation did not retain its mark in memory.");
             }
             require(!fs::exists(trial/"sample-workspaces.json"),"Read-only evaluation persisted an editing gesture.");
@@ -468,6 +469,9 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
             out << setting << '\n';
         };
         writeTuning("");require(readConfig(tuning).debugLog,"Debug logging must default on for existing configs.");
+        require(readConfig(tuning).editorPcmMib==256,"Editor memory default changed.");
+        for(const auto mib:{64,1024}){writeTuning("editor_pcm_mib="+std::to_string(mib));require(readConfig(tuning).editorPcmMib==static_cast<size_t>(mib),"Editor memory setting did not round trip.");}
+        for(const auto invalid:{"63","1025","NaN","256extra","-1"}){writeTuning(std::string("editor_pcm_mib=")+invalid);rejects([&]{readConfig(tuning);},"Invalid editor memory limit was accepted.");}
         writeTuning("debug_log=false");require(!readConfig(tuning).debugLog,"Debug logging could not be disabled.");
         writeTuning("debug_log=true");require(readConfig(tuning).debugLog,"Debug logging could not be enabled.");
         writeTuning("debug_log=invalid");rejects([&]{readConfig(tuning);},"Invalid debug flag was accepted.");
