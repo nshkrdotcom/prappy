@@ -15,6 +15,7 @@
 #include "scan_async_tests.h"
 #include "debug_log_tests.h"
 #include "evaluation_state.h"
+#include "native_handoff_tests.h"
 #include <SDL3/SDL.h>
 #include <cmath>
 #include <fstream>
@@ -245,6 +246,7 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
             rejects([&]{stateio::evaluationState(trial,true);},"Evaluation accepted overlapping stable state.");
             log<<"PASS evaluation state: distinct roots, fixed endpoint and independent credentials\n";
         }
+        nativeHandoffTests(logPath.parent_path()/sampling::uuid(),log);
         waveformRenderTests(log);
         {
             require(Browse::tokens("  artist \"NU NU\" mix ") == std::vector<std::wstring>({L"artist",L"nu nu",L"mix"}),

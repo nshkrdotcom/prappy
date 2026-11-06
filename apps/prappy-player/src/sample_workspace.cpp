@@ -23,7 +23,7 @@ Json strings(const std::string& text){Json out=Json::array();std::istringstream 
 std::string show(const Json& j){if(j.is_string())return j.get<std::string>();if(j.is_array()){std::string out;for(const auto& v:j){if(!out.empty())out+=", ";out+=v.get<std::string>();}return out;}return j.is_null()?"":j.dump();}
 int timeLabel(double x,char* buffer,int size,void* rate){return std::snprintf(buffer,static_cast<size_t>(size),"%.4fs",x/static_cast<double>(*static_cast<Frame*>(rate)));}
 }
-Workspace::Workspace(fs::path d,std::function<void()> n,PcmBudget memory):directory(std::move(d)),notify(std::move(n)),pcmBudget(std::move(memory)){
+Workspace::Workspace(fs::path d,std::function<void()> n,PcmBudget memory,Client::Transport transport):directory(std::move(d)),notify(std::move(n)),pcmBudget(std::move(memory)),backendTransport(std::move(transport)){
     readOnly=!stateio::evaluationState(directory).is_null();
     tokenFile=utf8(fs::path(L"\\\\wsl.localhost\\ubuntu26-dev\\home\\home\\.config\\audioharvest\\server.token"));try{restore();}catch(const std::exception& e){storageBlocked=true;storageError=e.what();}
 }
@@ -37,7 +37,7 @@ void Workspace::connect(){
         connection.token.clear();connection.credentialFile=stateio::pathFromText(tokenFile);
         stateio::evaluationConnection(directory,connection.url,connection.credentialFile);
         connection.startWorkstation=serverUrl=="http://127.0.0.1:8765";
-        client=std::make_unique<Client>(connection,notify);get("capabilities","/v1/capabilities");notice="Connecting...";
+        client=std::make_unique<Client>(connection,notify,backendTransport);get("capabilities","/v1/capabilities");notice="Connecting...";
         stateio::write(directory/"sampling-connection.json",Json{{"url",serverUrl},{"token_file",tokenFile},{"library",library}}.dump(2));
     }catch(const std::exception& e){notice=e.what();}
 }
@@ -49,9 +49,9 @@ void Workspace::browse(){
     get("collections",endpoint(library)+"/collections");
 }
 void Workspace::openCapture(Json item,std::optional<Span> selected,std::optional<Frame> cue){
-    stash();stopTransport();++generation;++waveformRevision;overviewBins.clear();detailBins.clear();pcmPath.clear();detailPath.clear();overviewDue={};envelopePcm=false;envelope.clear();displayEnvelope.clear();projectedGain=-1;analysisJob.clear();
+    stash();stopTransport();++generation;++waveformRevision;overviewBins.clear();detailBins.clear();detailPath.clear();overviewDue={};envelopePcm=false;envelope.clear();displayEnvelope.clear();projectedGain=-1;analysisJob.clear();
     capture=std::move(item);sourceLibrary=library;activeDraft.clear();region=nullptr;selectionDefined=false;sourceRegions=Json::array();
-    closeNativeSession();decodeSession=uuid();beats.clear();onsets.clear();anchors.clear();overview=nullptr;timing=nullptr;gridId.clear();gridRevision=0;
+    closeNativeSession();beats.clear();onsets.clear();anchors.clear();overview=nullptr;timing=nullptr;gridId.clear();gridRevision=0;
     rate=capture.at("timeline").at("sample_rate");transport.rate=rate;
     const Frame total=capture.at("timeline").at("frame_count").get<Frame>();
     auto& ws=sampleLibrary.open(sourceRef(),total);const auto active=ws.active;const auto view=ws.view;
@@ -76,7 +76,7 @@ std::string Workspace::audioEndpoint()const{
 void Workspace::loadDetails(bool refresh){
     if(capture.is_null()||!client)return;
     const auto base=audioEndpoint();
-    if(descriptorPath!=base){descriptorPath=base;preparedManifest=nullptr;closeNativeSession();pcmPath.clear();detailPath.clear();}
+    if(descriptorPath!=base){descriptorPath=base;preparedManifest=nullptr;closeNativeSession();detailPath.clear();}
     if(preparedManifest.is_null()){get("capture",base);return;}
     if(!nativeSession){
         resetNativeSession();
@@ -84,7 +84,7 @@ void Workspace::loadDetails(bool refresh){
         const auto coverage=t.value("coverage",Json{{"start_frame",0},{"end_frame",editor.total}});
         const Frame first=std::max(editor.span.start,coverage.at("start_frame").get<Frame>());
         const Frame last=std::min(editor.span.end,coverage.at("end_frame").get<Frame>());
-        if(first<last)requestPcm(first,std::min(last,first+rate*3),false);
+        if(first<last){nativePlayback->start({first,last},first,false,true);nativePlayback->cache({first,last});}
     }
     loadOverview();
     const auto range=waveformRange(viewportStart,viewportEnd,editor.total);
@@ -242,16 +242,16 @@ void Workspace::restore(){
     notice="Opening saved sample...";
 }
 void Workspace::returnToPlayer(){
-    handoff.cancel();pendingMark.reset();preparedRetries.clear();
+    handoff.cancel();pendingMark.reset();
     auto cursor=transport.cursor;
-    if(transport.engaged()){const auto current=audition.snapshot();if(current.submitted>0)cursor=current.cursor;}
-    stopTransport();transport.cursor=cursor;open=false;persist();
+    if(transport.engaged()){const auto current=nativePlayback?nativePlayback->state():NativePlayback::State{};if(current.submitted>0)cursor=current.cursor;}
+    stopTransport();transport.cursor=cursor;open=false;nativeSession.reset();nativePlayback.reset();incomingPlayback.reset();persist();
 }
 void Workspace::mark(Audio& audio,std::optional<SecondsSpan> selection,OpenSource action){
     if(storageBlocked){open=true;return;}
     if(!audio.preparedSource||!audio.preparedSource->ready()||audio.duration<=0){notice="Choose a recording in the player first.";return;}
     const auto intent=handoff.begin(utf8(audio.current),selection?OpenSource::Selection:action,audio.displayPosition(),audio.duration,selection);
-    open=true;audio.setPaused(true);stopTransport();++generation;
+    open=true;audio.setPaused(true);stopTransport();incomingPlayback=audio.takeNativeForEditor();++generation;
     const auto& source=*audio.preparedSource;
     pendingMark=PlayingSongMark{source.source,source.asset,source.timeline,source.native.rate,
         static_cast<Frame>(std::llround(intent.cue*static_cast<double>(source.native.rate))),intent.ticket};
@@ -262,6 +262,7 @@ void Workspace::mark(Audio& audio,std::optional<SecondsSpan> selection,OpenSourc
 void Workspace::submitMark(){
     if(!pendingMark||pendingMark->submitted||pendingMark->failed||!client||libraries.empty())return;
     pendingMark->submitted=true;notice="Opening recording...";
+    if(incomingPlayback&&incomingPlayback->reference()==pendingMark->source.endpoint()){finishMark(incomingPlayback->descriptor());return;}
     client->submit({"mark-prepared","GET",pendingMark->source.endpoint(),{{"mark",pendingMark->ticket}},generation,{}});
 }
 void Workspace::finishMark(const Json& match){
@@ -279,7 +280,7 @@ void Workspace::finishMark(const Json& match){
         !resolved->selection&&resolved->intent.action==OpenSource::Cue?std::optional<Frame>(resolved->cue):std::nullopt);
     notice=resolved->selection?"Selection opened in sample editor.":"Song opened in sample editor.";
 }
-void Workspace::stopTransport(){if(client)client->cancelReads(ReadScope::Audition);awaitingRegion.reset();auditionSubmitted=0;++transportEpoch;auditionPath.clear();waitingAudition.reset();audition.stop();transport.stop();}
+void Workspace::stopTransport(){if(nativePlayback)nativePlayback->pause(true);auditionSubmitted=0;transport.stop();}
 Span Workspace::monitorRange()const{
     const auto coverage=preparedManifest.value("coverage",Json{{"start_frame",0},{"end_frame",editor.total}});
     Span result{std::max(transport.range.start,coverage.at("start_frame").get<Frame>()),std::min(transport.range.end,coverage.at("end_frame").get<Frame>())};
@@ -287,52 +288,19 @@ Span Workspace::monitorRange()const{
     return result;
 }
 void Workspace::closeNativeSession(){
-    if(client&&!sessionPath.empty())client->submit({"source-session-close","DELETE",sessionPath,nullptr,generation,{}});
-    sessionPath.clear();nativeSession.reset();
+    if(nativePlayback&&nativePlayback!=incomingPlayback)nativePlayback->stop();
+    nativeSession.reset();nativePlayback.reset();sharedPlayerSession=false;
 }
 void Workspace::resetNativeSession(){
-    if(client)client->cancelReads(ReadScope::PCM);
-    closeNativeSession();++pcmEpoch;decodeSession=uuid();pcmPath.clear();awaitingRegion.reset();
-    const auto& t=preparedManifest;
-    if(t.value("access_mode",std::string{})!="frozen")sessionPath=audioEndpoint()+"/session?source_key="+t.at("source_key").get<std::string>()+
-        "&timeline="+t.at("timeline_id").get<std::string>()+"&owner="+decodeSession;
-    sessionDue=std::chrono::steady_clock::now()+std::chrono::seconds(15);
-    nativeSession=std::make_unique<NativeSession>(prepared::NativeTimeline{t.at("sample_rate"),t.at("channels"),t.at("frame_count"),
-        prepared::sampleType(t.at("sample_format").get<std::string>())},t.at("source_key"),t.at("timeline_id"),pcmEpoch,pcmBudget);
-}
-void Workspace::requestPcm(Frame origin,Frame end,bool playing,bool first){
-    const auto channels=preparedManifest.at("channels").get<Frame>();
-    const auto stride=channels*prepared::sampleBytes(prepared::sampleType(preparedManifest.at("sample_format").get<std::string>()));
-    const auto headroom=pcmBudget.limit()-pcmBudget.used();
-    const auto limit=std::min<size_t>(32*1024*1024,headroom/2);
-    end=std::min(end,origin+static_cast<Frame>(limit/stride));
-    if(end<=origin)throw std::runtime_error("Editor PCM budget is full; release an inactive window before decoding more audio.");
-    const auto path=audioEndpoint()+"/pcm?source_key="+preparedManifest.at("source_key").get<std::string>()+"&timeline="+capture.at("timeline_id").get<std::string>()+
-        "&session="+decodeSession+"&start="+std::to_string(origin)+"&count="+std::to_string(end-origin);
-    auto context=prepared::pcmContext(preparedManifest,origin,end-origin);
-    context["pcm_epoch"]=pcmEpoch;context["epoch"]=transportEpoch;context["first"]=first;context["audition"]=playing;context["region_end"]=editor.span.end;
-    Request request{"source-pcm","GET",path,std::move(context),generation,{}};
-    const auto bytes=static_cast<size_t>(end-origin)*stride;
-    request.incomingMemory=pcmBudget.reserve(bytes);request.pcmMemory=pcmBudget.reserve(bytes);
-    if(playing)auditionPath=path;else{pcmPath=path;loadingStart=origin;loadingEnd=end;}
-    if(client&&connectionReady)client->submit(std::move(request));else waitingAudition=std::move(request);
-}
-void Workspace::feedAudition(std::shared_ptr<const NativeSession::Buffer> buffer,bool first){
-    auditionPath.clear();++auditionChunks;
-    if(first){
-        const bool paused=transport.state==PlaybackState::Paused;
-        audition.start(std::move(buffer),monitorRange(),transport.cursor,transport.effectiveLoop(),paused);
-        audition.gain(previewGain);transport.state=paused?PlaybackState::Paused:PlaybackState::Playing;
-    }else audition.enqueue(std::move(buffer));
-}
-void Workspace::requestAudition(Frame origin,bool first){
-    if(capture.is_null()||preparedManifest.is_null()||!nativeSession)return;
-    const auto range=monitorRange();if(origin>=range.end)return;
-    if(auto cached=nativeSession->find(origin)){feedAudition(std::move(cached),first);return;}
-    if(!pcmPath.empty()&&origin>=loadingStart&&origin<loadingEnd){awaitingRegion=AwaitingAudition{origin,first};return;}
-    if(origin!=nativeSession->last())resetNativeSession();
-    nativeSession->retain(std::max<Frame>(0,origin-rate*5),std::min(editor.total,origin+rate*30));
-    requestPcm(origin,std::min(range.end,origin+rate*3),true,first);
+    closeNativeSession();
+    if(incomingPlayback&&incomingPlayback->reference()==audioEndpoint()&&incomingPlayback->descriptor().at("source_key")==preparedManifest.at("source_key")){
+        nativePlayback=std::move(incomingPlayback);sharedPlayerSession=true;
+    }else{
+        if(incomingPlayback)incomingPlayback->stop();incomingPlayback.reset();
+        nativePlayback=std::make_shared<NativePlayback>(connection,pcmBudget,notify,backendTransport);
+        nativePlayback->load(audioEndpoint(),capture.at("id"),capture.at("blob_sha256"),true,static_cast<double>(editor.span.start)/rate,preparedManifest);
+    }
+    nativeSession=nativePlayback->session();
 }
 void Workspace::beginAudition(Audio& audio,BoundaryCheck check,std::optional<Frame> cue,bool paused){
     if(capture.is_null())return;
@@ -342,11 +310,11 @@ void Workspace::beginAudition(Audio& audio,BoundaryCheck check,std::optional<Fra
     transport.range=transport.bounds(editor.span,editor.total);transport.range=monitorRange();
     transport.cursor=std::clamp(cue.value_or(transport.range.start),transport.range.start,transport.range.end-1);
     transport.state=paused?PlaybackState::Paused:PlaybackState::Loading;
-    requestAudition(transport.cursor,true);
+    if(nativePlayback){nativePlayback->start(transport.range,transport.cursor,transport.effectiveLoop(),paused);nativePlayback->gain(previewGain);nativeSession=nativePlayback->session();}
 }
 void Workspace::toggleTransport(Audio& audio){
-    if(transport.state==PlaybackState::Playing||transport.state==PlaybackState::Buffering){audition.pause(true);transport.cursor=audition.snapshot().cursor;transport.state=PlaybackState::Paused;}
-    else if(transport.state==PlaybackState::Paused){audio.setPaused(true);audition.pause(false);transport.state=auditionPath.empty()?PlaybackState::Playing:PlaybackState::Loading;}
+    if(transport.state==PlaybackState::Playing||transport.state==PlaybackState::Buffering){if(nativePlayback)nativePlayback->pause(true);transport.cursor=nativePlayback?nativePlayback->state().cursor:transport.cursor;transport.state=PlaybackState::Paused;}
+    else if(transport.state==PlaybackState::Paused){audio.setPaused(true);if(nativePlayback)nativePlayback->pause(false);transport.state=PlaybackState::Playing;}
     else if(transport.state!=PlaybackState::Loading){
         const auto span=transport.bounds(editor.span,editor.total);
         const auto cursor=transport.cursor>=span.start&&transport.cursor<span.end?transport.cursor:span.start;
@@ -379,35 +347,21 @@ bool Workspace::current(const Request& request)const{
     if(tag=="collections"&&request.path!=endpoint(library)+"/collections")return false;
     if(tag=="browse"&&request.path!=browsePath)return false;
     if((tag=="capture"||tag=="source-analysis")&&request.path!=descriptorPath)return false;
-    if(tag=="source-session"&&request.path!=sessionPath)return false;
-    if((tag=="source-pcm"||tag=="source-waveform")&&(preparedManifest.is_null()||request.body.at("source_key")!=preparedManifest.at("source_key")))return false;
-    if(tag=="source-pcm"){
-        if(request.body.at("pcm_epoch")!=pcmEpoch)return false;
-        if(request.body.value("audition",false))return request.path==auditionPath&&request.body.at("epoch")==transportEpoch;
-        return request.path==pcmPath;
-    }
+    if(tag=="source-waveform"&&(preparedManifest.is_null()||request.body.at("source_key")!=preparedManifest.at("source_key")))return false;
     return tag!="source-waveform"||request.body.value("overview",false)||request.path==detailPath;
 }
 void Workspace::process(){
     if(!client)return;
     for(auto& reply:client->collect()){
         const auto& tag=reply.request.tag;
-        const bool listening=tag=="source-pcm"&&reply.request.body.value("audition",false);
         if(!current(reply.request))continue;
-        if(reply.status==202&&(tag=="mark-prepared"||tag=="capture"||tag=="source-pcm"||tag=="source-waveform")){
-            preparedRetries.insert_or_assign(tag+(listening?"-audition":tag=="source-waveform"&&reply.request.body.value("overview",false)?"-overview":""),reply.request);
-            preparedRetryDue=std::chrono::steady_clock::now()+std::chrono::milliseconds(500);
-            notice="Recording preparation: "+reply.body.value("state",std::string("Queued"))+". Your selection is retained.";
-            continue;
-        }
-        if(!reply.error.empty()){if(pendingMark&&(tag=="mark-prepared"||tag=="libraries"||tag=="capabilities"))pendingMark->failed=true;if(listening){auditionPath.clear();audition.stop();transport.state=PlaybackState::Error;}notice=reply.error;if(reply.status==409){notice="Conflict: local draft retained. Reload the saved sample or Fork before saving. "+notice;if(tag=="command")for(auto& row:pending)if(row.at("command").at("request_id")==reply.request.body.at("request_id")){row["conflict"]=true;if(row.contains("source"))sampleLibrary.conflict(SourceRef::parse(row.at("source")),row.at("draft_id"),row.at("command").at("request_id"));}persist();}continue;}
+        if(!reply.error.empty()){if(pendingMark&&(tag=="mark-prepared"||tag=="libraries"||tag=="capabilities"))pendingMark->failed=true;notice=reply.error;if(reply.status==409){notice="Conflict: local draft retained. Reload the saved sample or Fork before saving. "+notice;if(tag=="command")for(auto& row:pending)if(row.at("command").at("request_id")==reply.request.body.at("request_id")){row["conflict"]=true;if(row.contains("source"))sampleLibrary.conflict(SourceRef::parse(row.at("source")),row.at("draft_id"),row.at("command").at("request_id"));}persist();}continue;}
         if(tag=="capabilities"){
             if(reply.body.value("protocol",0)!=3||!reply.body.value("indexed_source",false))throw std::runtime_error("Indexed audio requires backend protocol 3.");
             readOnly=reply.body.value("read_only",false);get("libraries","/v1/libraries");
         }else if(tag=="libraries"){
             libraries=reply.body;connectionReady=true;notice="Connected";
             if(library.empty()&&!libraries.empty())library=libraries[0].at("id");
-            if(waitingAudition){client->submit(std::move(*waitingAudition));waitingAudition.reset();}
             browse();
             if(pendingMark)submitMark();
             else if(!capture.is_null()){loadDetails();fetchSourceRegions();}
@@ -438,22 +392,6 @@ void Workspace::process(){
             }
             ++waveformRevision;
         }
-        else if(tag=="source-pcm"){
-            const auto& block=*reply.preparedPcm;
-            if(!nativeSession)continue;
-            auto owned=nativeSession->adopt(reply.preparedPcm,reply.request.pcmMemory,reply.request.body.at("source_key"),reply.request.body.at("timeline_id"),reply.request.body.at("pcm_epoch").get<uint64_t>(),reply.body.at("decoder_epoch").get<std::string>());
-            if(!owned)continue;
-            if(listening)feedAudition(std::move(owned),reply.request.body.at("first"));
-            else{
-                pcmPath.clear();
-                if(awaitingRegion&&nativeSession->find(awaitingRegion->origin)){
-                    const auto waiting=*awaitingRegion;awaitingRegion.reset();feedAudition(nativeSession->find(waiting.origin),waiting.first);
-                }
-                const Frame end=block.start()+block.frames();
-                if(!transport.engaged()&&end<editor.span.end&&reply.request.body.at("region_end")==editor.span.end&&pcmBudget.limit()-pcmBudget.used()>2*1024*1024)
-                    requestPcm(end,editor.span.end,false);
-            }
-        }
         else if(tag=="timing"){
             timing=reply.body;anchors.clear();onsets.clear();gridId.clear();gridRevision=0;
             for(const auto& result:timing.value("results",Json::array())){
@@ -479,14 +417,12 @@ void Workspace::process(){
                 openCapture(reply.body.at("capture"));
             }else{
                 capture=reply.body.at("capture");rate=preparedManifest.at("sample_rate");transport.rate=rate;
-                closeNativeSession();pcmPath.clear();detailPath.clear();
+                closeNativeSession();detailPath.clear();
                 const auto saved=reply.body.value("region",Json());
                 const auto pinned=activeDraft.empty()?std::optional<RegionRef>{}:sampleLibrary.draft(sourceRef(),activeDraft).region;
                 if(!saved.is_null()&&(!pinned||pinned->id!=saved.at("id").get<std::string>()||pinned->revision!=saved.at("revision").get<int>()))chooseRegion(saved);
                 else loadDetails();
             }
-        }else if(tag=="source-session"){
-            if(!reply.body.value("active",false))notice="Decoder session expired. Cached audio is retained; reopen this source before extending its window.";
         }else if(tag=="source-analysis"){
             if(preparedManifest.is_null()||reply.body.at("source_key")!=preparedManifest.at("source_key")||reply.body.at("timeline_id")!=preparedManifest.at("timeline_id"))continue;
             if(reply.body.contains("waveform")){preparedManifest["waveform"]=reply.body.at("waveform");loadOverview();}
@@ -546,11 +482,14 @@ void Workspace::tick(Audio& audio){
         if(open && !connectionAttempted)connect();
         process();
         if(!open&&transport.engaged())stopTransport();
-        if(transport.engaged() && transport.state!=PlaybackState::Loading && (transport.state!=PlaybackState::Paused||auditionPath.empty())){
-            const auto state=audition.snapshot();transport.cursor=state.cursor;auditionSubmitted=state.submitted;
-            if(state.finished){transport.state=PlaybackState::Stopped;transport.cursor=transport.range.end;auditionPath.clear();audition.stop();}
-            else if(transport.state!=PlaybackState::Paused)transport.state=state.buffering?PlaybackState::Buffering:PlaybackState::Playing;
-            if(state.needed>=0&&auditionPath.empty()&&!state.finished)requestAudition(state.needed,false);
+        if(open&&nativePlayback){
+            nativePlayback->tick();nativeSession=nativePlayback->session();
+            const auto& state=nativePlayback->state();auditionChunks=state.transfers;
+            if(!state.error.empty()){notice=state.error;transport.state=PlaybackState::Error;}
+            else if(transport.engaged()){
+                transport.cursor=state.cursor;auditionSubmitted=state.submitted;
+                transport.state=state.finished?PlaybackState::Stopped:state.paused?PlaybackState::Paused:state.buffering?PlaybackState::Buffering:PlaybackState::Playing;
+            }
         }
         if(!capture.is_null() && transport.engaged() && editor.span!=auditionSelection && transport.scope!=PlaybackScope::Recording && !ImGui::IsMouseDown(0))beginAudition(audio,transport.boundary,{},transport.state==PlaybackState::Paused);
         if(transport.follow&&animating()){
@@ -559,11 +498,6 @@ void Workspace::tick(Audio& audio){
         }
         if(previousState!=transport.state&&notify)notify();
         const auto now=std::chrono::steady_clock::now();
-        if(open&&now>=preparedRetryDue&&!preparedRetries.empty()){
-            auto retries=std::move(preparedRetries);preparedRetries.clear();
-            for(auto& [tag,request]:retries)if(current(request))client->submit(std::move(request));
-        }
-        if(open&&client&&!sessionPath.empty()&&now>=sessionDue){sessionDue=now+std::chrono::seconds(15);get("source-session",sessionPath);}
         if(open&&client&&overviewDue!=std::chrono::steady_clock::time_point{}&&now>=overviewDue){
             overviewDue=now+std::chrono::seconds(1);get("source-analysis",descriptorPath);
         }
@@ -804,8 +738,8 @@ void Workspace::draw(Audio& audio,const std::function<void(const char*,bool)>& o
             const bool loopChanged=ImGui::Checkbox("Loop",&transport.loop);
             if(loopChanged){
                 if(transport.engaged()){
-                    if(transport.state==PlaybackState::Loading||(transport.state==PlaybackState::Paused&&!auditionPath.empty()))beginAudition(audio,transport.boundary,transport.cursor,transport.state==PlaybackState::Paused);
-                    else{audition.loop(transport.effectiveLoop());++transportEpoch;auditionPath.clear();}
+                    if(transport.state==PlaybackState::Loading)beginAudition(audio,transport.boundary,transport.cursor,transport.state==PlaybackState::Paused);
+                    else{if(nativePlayback)nativePlayback->loop(transport.effectiveLoop());}
                 }
                 draftDirty=true;
             }observe("sample-loop",loopChanged);ImGui::SameLine();
@@ -815,7 +749,7 @@ void Workspace::draw(Audio& audio,const std::function<void(const char*,bool)>& o
             if(button("Stop","sample-stop")){stopTransport();transport.range=transport.bounds(editor.span,editor.total);transport.cursor=transport.range.start;}ImGui::SameLine();
             if(button("Hear start","sample-start"))beginAudition(audio,BoundaryCheck::Start);ImGui::SameLine();
             if(button("Hear end","sample-end"))beginAudition(audio,BoundaryCheck::End);ImGui::SameLine();
-            ImGui::SetNextItemWidth(100);if(ImGui::SliderFloat("Preview gain",&previewGain,0,1))audition.gain(previewGain);
+            ImGui::SetNextItemWidth(100);if(ImGui::SliderFloat("Preview gain",&previewGain,0,1))if(nativePlayback)nativePlayback->gain(previewGain);
             ImGui::Text("%s %s%s | %.3f / %.3f s | source %.3f s",transport.status(),transport.label(),transport.effectiveLoop()?" (Loop)":"",static_cast<double>(transport.cursor-transport.range.start)/rate,static_cast<double>(transport.range.end-transport.range.start)/rate,static_cast<double>(transport.cursor)/rate);
             if(transport.engaged()&&editor.span!=auditionSelection)ImGui::TextDisabled("Boundary edits apply to audition on release");
             if(ImGui::Shortcut(ImGuiKey_Space)&&!ImGui::GetIO().WantTextInput)toggleTransport(audio);

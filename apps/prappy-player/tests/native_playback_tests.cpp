@@ -45,6 +45,10 @@ int main(){
             require(player.state().paused&&player.state().cursor==origin,"Paused source frame shifted");
             require(player.session()->first()==origin&&player.session()->find(origin),"First native span differs");
             require(*reads>=1&&memory.used()<=memory.limit(),"Native transport bypassed its shared budget");
+            const Frame cachedEnd=std::min(total,origin+rate*7);
+            player.cache({origin,cachedEnd});
+            until(player,[&]{return player.session()->covers(origin,cachedEnd);});
+            require(player.state().cursor==origin&&player.state().paused,"Background region fill changed audition or cursor");
             player.seek(rate*6+17);
             until(player,[&]{return player.session()&&player.session()->find(rate*6+17);});
             require(player.state().cursor==rate*6+17&&player.state().paused,"Seek frame or pause state changed");
@@ -105,6 +109,30 @@ int main(){
             while(player.state().error.empty()&&std::chrono::steady_clock::now()<deadline){player.tick();SDL_Delay(1);}
             require(!player.state().loaded&&!player.state().error.empty()&&!player.session(),"Wrong original identity entered playback");
         }
+    }
+    {
+        const Frame rate=48000,total=rate*300;
+        const Json description={{"source_key",key},{"timeline_id",timeline},{"frame_count",total},{"sample_rate",rate},{"channels",2},{"sample_format","float32"},{"access_mode","indexed"},
+            {"capture",{{"id",capture},{"blob_sha256",sha}}}};
+        auto reads=std::make_shared<std::atomic<int>>(0);
+        Client::Transport transport=[=](const Connection&,const Request& request,std::stop_token){
+            Reply reply;reply.status=200;
+            if(request.tag=="source-descriptor")reply.body=description;
+            else if(request.tag=="source-pcm"){
+                ++*reads;const Frame first=request.body.at("origin_frame"),count=request.body.at("frame_count");
+                reply.preparedPcm=std::make_shared<Block>(NativeTimeline{rate,2,total,SampleType::Float32},first,count,std::vector<std::byte>(static_cast<size_t>(count)*8));
+                reply.body={{"decoder_epoch","five-minute"}};
+            }else reply.body={{"active",true}};
+            return reply;
+        };
+        PcmBudget memory(256);Connection connection;connection.token=std::string(48,'t');
+        NativePlayback player(connection,memory,[]{},transport);player.load("/track/audio",capture,sha,true,0);
+        until(player,[&]{return player.state().loaded;});player.cache({0,total});
+        until(player,[&]{require(memory.used()<=memory.limit(),"Five-minute cache exceeded client budget");return player.session()->covers(0,total);});
+        const auto before=reads->load();const auto session=player.session();
+        player.start({total-100,total},total-100,false,true);player.tick();
+        require(player.session()==session&&reads->load()==before&&player.state().cursor==total-100,"Whole-track cached chop decoded or shifted the region");
+        require(player.session()->frames()==total,"Five-minute session lost retained PCM");
     }
     {
         SDL_SetHint(SDL_HINT_AUDIO_DUMMY_TIMESCALE,"0.1");SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES,"2048");

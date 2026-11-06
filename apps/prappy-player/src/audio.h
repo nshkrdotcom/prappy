@@ -43,7 +43,9 @@ struct Audio {
     Audio& operator=(const Audio&) = delete;
     bool nativeMode=false;
     std::optional<sampling::PcmBudget> nativeMemory;
-    std::unique_ptr<sampling::NativePlayback> native;
+    std::shared_ptr<sampling::NativePlayback> native;
+    bool nativeEditing=false;
+    sampling::Frame nativeReturnFrame=0;
     sampling::Connection nativeConnection;
     HMODULE dll = nullptr;
     mpv_handle* handle = nullptr;
@@ -104,7 +106,7 @@ struct Audio {
     }
     bool playNative(const fs::path& path,const prepared::CatalogSource& source,const sampling::Connection& backend,bool startPaused,double startPosition){
         if(!nativeMode)throw std::logic_error("Catalog playback requires the native transport.");
-        loadStarted=Clock::now();++serial;current=path;loaded=false;loadedSerial=0;active=true;info={};
+        nativeEditing=false;loadStarted=Clock::now();++serial;current=path;loaded=false;loadedSerial=0;active=true;info={};
         paused=pauseRequested=startPaused;position=startPosition;duration=source.duration;error.clear();gain=0;
         queuedSeek.reset();seekPreview.reset();pendingSeek=0;cachedTags=source.tags;
         preparedSource=std::make_shared<prepared::CatalogSource>(source);
@@ -112,11 +114,29 @@ struct Audio {
         try{
             if(!native||nativeConnection.url!=backend.url||nativeConnection.token!=backend.token||nativeConnection.credentialFile!=backend.credentialFile){
                 native.reset();nativeConnection=backend;
-                native=std::make_unique<sampling::NativePlayback>(backend,*nativeMemory,notify);
+                native=std::make_shared<sampling::NativePlayback>(backend,*nativeMemory,notify);
             }
             native->load(source.source.endpoint(),source.source.capture,source.asset,startPaused,startPosition);
             native->gain(static_cast<float>(volume/100));return true;
         }catch(const std::exception& e){error=e.what();active=loaded=false;return false;}
+    }
+    std::shared_ptr<sampling::NativePlayback> takeNativeForEditor(){
+        if(!nativeMode||!native||!loaded)return {};
+        native->pause(true);native->tick();nativeReturnFrame=native->state().cursor;
+        position=static_cast<double>(nativeReturnFrame)/native->state().rate;
+        paused=pauseRequested=true;nativeEditing=true;return native;
+    }
+    void resumeNative(){
+        if(!nativeEditing)return;
+        nativeEditing=false;
+        if(!native||!preparedSource)return;
+        const auto& source=*preparedSource;
+        if(native->reference()==source.source.endpoint()&&!native->descriptor().is_null()){
+            const auto& d=native->descriptor();
+            native->start({0,prepared::integer(d.at("frame_count"))},nativeReturnFrame,false,true);
+            native->clearCache();
+        }else native->load(source.source.endpoint(),source.source.capture,source.asset,true,position);
+        native->gain(static_cast<float>(volume/100*std::pow(10.,gain/20)));
     }
     void updateMeter(){
         const bool audible=loaded&&active&&!paused&&volume>0;
@@ -124,7 +144,7 @@ struct Audio {
         else{meterPeak=0;meterAvailable=false;}
     }
     bool pollNative(){
-        if(!native||current.empty()){updateMeter();return false;}
+        if(nativeEditing||!native||current.empty()){updateMeter();return false;}
         native->tick();const auto& state=native->state();
         if(!state.error.empty()){error=state.error;loaded=active=false;updateMeter();return false;}
         const bool eof=state.finished&&active;
@@ -245,7 +265,7 @@ struct Audio {
         positionTime = Clock::now(); error.clear(); return true;
     }
     void setPaused(bool value) {
-        if(nativeMode){paused=pauseRequested=value;if(native)native->pause(value);return;}
+        if(nativeMode){paused=pauseRequested=value;if(native&&!nativeEditing)native->pause(value);return;}
         if(worker){position=displayPosition();positionTime=Clock::now();paused=pauseRequested=value;if(!value)seekPreview.reset();enqueue(1,[value](Audio& core){core.setPaused(value);});return;}
         if (!active) { paused = pauseRequested = value; return; }
         int flag = value ? 1 : 0;
@@ -277,7 +297,7 @@ struct Audio {
         if (result < 0) { error = error_string(result); pendingSeek = 0; seekPreview.reset(); }
     }
     void setVolume(double value) {
-        if(nativeMode){if(!std::isfinite(value))return;volume=std::clamp(value,0.,100.);if(native)native->gain(static_cast<float>(volume/100*std::pow(10.,gain/20)));return;}
+        if(nativeMode){if(!std::isfinite(value))return;volume=std::clamp(value,0.,100.);if(native&&!nativeEditing)native->gain(static_cast<float>(volume/100*std::pow(10.,gain/20)));return;}
         if(worker){volume=value;enqueue(2,[value](Audio& core){core.setVolume(value);});return;}
         int result = set_property(handle, "volume", MPV_FORMAT_DOUBLE, &value);
         if (result < 0) error = error_string(result); else volume = value;
@@ -285,7 +305,7 @@ struct Audio {
     void setGain(double value) {
         if (!std::isfinite(value)) return;
         value = std::clamp(value, -96.0, 12.0);
-        if(nativeMode){gain=value;if(native)native->gain(static_cast<float>(volume/100*std::pow(10.,gain/20)));return;}
+        if(nativeMode){gain=value;if(native&&!nativeEditing)native->gain(static_cast<float>(volume/100*std::pow(10.,gain/20)));return;}
         if(worker){gain=value;enqueue(3,[value](Audio& core){core.setGain(value);});return;}
         const auto result = set_property(handle, "volume-gain", MPV_FORMAT_DOUBLE, &value);
         if (result < 0) error = error_string(result); else gain = value;

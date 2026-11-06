@@ -84,14 +84,16 @@ public:
     prepared::Frame last()const{
         prepared::Frame end=0;for(const auto& buffer:buffers)end=std::max(end,buffer->pcm->start()+buffer->pcm->frames());return end;
     }
-    prepared::Frame frames()const{
-        prepared::Frame count=0,end=0;
+    prepared::Frame frames(prepared::Frame first,prepared::Frame last)const{
+        if(first<0||last<first||last>source.frames)throw std::runtime_error("Invalid native cache interval.");
+        prepared::Frame count=0,end=first;
         for(const auto& buffer:buffers){
-            const auto stop=buffer->pcm->start()+buffer->pcm->frames();
+            const auto stop=std::min(last,buffer->pcm->start()+buffer->pcm->frames());
             count+=std::max<prepared::Frame>(0,stop-std::max(end,buffer->pcm->start()));end=std::max(end,stop);
         }
         return count;
     }
+    prepared::Frame frames()const{return frames(0,source.frames);}
     void retain(prepared::Frame start,prepared::Frame end){
         if(start<0||end<start||end>source.frames)throw std::runtime_error("Invalid native session window.");
         std::erase_if(buffers,[&](const auto& b){return b->pcm->start()>=end||b->pcm->start()+b->pcm->frames()<=start;});

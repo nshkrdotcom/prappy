@@ -544,7 +544,7 @@ int runPlayer(HINSTANCE instance) {
         bool samplingWasOpen=false;
         int listeningWidth=Width,listeningHeight=MinHeight;
         while (!done) {
-            sampleWorkspace.tick(audio);
+            sampleWorkspace.tick(audio);if(!sampleWorkspace.active())audio.resumeNative();if(!sampleWorkspace.active())audio.resumeNative();
             if (sampleWorkspace.active()!=samplingWasOpen) {
                 if (sampleWorkspace.active()) { SDL_GetWindowSize(window,&listeningWidth,&listeningHeight); SDL_SetWindowSize(window,std::max(1100,listeningWidth),std::max(850,listeningHeight)); }
                 else SDL_SetWindowSize(window,listeningWidth,listeningHeight);
