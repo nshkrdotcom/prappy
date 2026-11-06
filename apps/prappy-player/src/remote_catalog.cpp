@@ -1,6 +1,7 @@
 #include "remote_catalog.h"
 #include "audio.h"
 #include "debug_log.h"
+#include "evaluation_state.h"
 
 bool refreshPreparedCatalog(Library& library,const fs::path& config,std::stop_token stop,ScanProgress& progress) {
     const auto began=debuglog::Clock::now();
@@ -14,6 +15,7 @@ bool refreshPreparedCatalog(Library& library,const fs::path& config,std::stop_to
             connection.url=saved.at("url");
             connection.credentialFile=stateio::pathFromText(saved.at("token_file"));
         }
+        stateio::evaluationConnection(config.parent_path(),connection.url,connection.credentialFile);
         connection.startWorkstation=connection.url=="http://127.0.0.1:8765";
         sampling::Request request;request.tag="catalog";request.path="/v1/catalog";
         struct Signal {std::mutex mutex;std::condition_variable_any wake;std::atomic<uint64_t> epoch{0};};

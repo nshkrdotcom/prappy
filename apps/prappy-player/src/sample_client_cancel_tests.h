@@ -15,13 +15,27 @@ inline void sampleClientCancellationTests(std::ostream& log) {
             [](const Connection&,const Request&,std::stop_token){return Reply{};},
             [&,gate](const fs::path&,std::stop_token){entered.set_value();gate.wait();return std::string(32,'x');});
         require(entered.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready,"Prepared coalescing barrier did not start.");
-        client.submit({"prepared-pcm","GET","native-old",{{"domain","native"}},1,{}});
-        client.submit({"prepared-pcm","GET","monitor",{{"domain","listening"}},1,{}});
-        client.submit({"prepared-pcm","GET","native-latest",{{"domain","native"}},1,{}});
+        client.submit({"source-pcm","GET","native-old",{{"domain","native"},{"audition",false}},1,{}});
+        client.submit({"source-pcm","GET","monitor",{{"domain","native"},{"audition",true}},1,{}});
+        client.submit({"source-pcm","GET","native-latest",{{"domain","native"},{"audition",false}},1,{}});
         release.set_value();
-        require(completed.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready,"Native waveform detail cancelled pending audition audio.");
+        require(completed.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready,"Region window replacement cancelled pending audition audio.");
         const auto result=client.collect();
-        require(result.size()==2&&result[0].request.path=="monitor"&&result[1].request.path=="native-latest","Prepared domain coalescing retained obsolete detail.");
+        require(result.size()==2&&result[0].request.path=="monitor"&&result[1].request.path=="native-latest","Native request coalescing retained an obsolete region window.");
+    }
+    {
+        std::promise<void> entered,latest;std::mutex mutex;std::condition_variable_any wake;
+        Connection connection;connection.token=std::string(32,'x');
+        Client client(connection,[]{},[&](const Connection&,const Request& request,std::stop_token stop){
+            if(request.path=="old-window"){
+                entered.set_value();std::unique_lock lock(mutex);wake.wait(lock,stop,[]{return false;});
+            }else latest.set_value();
+            Reply result;result.request=request;return result;
+        });
+        client.submit({"source-pcm","GET","old-window",{{"audition",false}},1,{}});
+        require(entered.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready,"Old source read did not begin.");
+        client.submit({"source-waveform","GET","latest-view",{{"overview",false}},2,{}});
+        require(latest.get_future().wait_for(std::chrono::milliseconds(100))==std::future_status::ready,"New source waited for an obsolete in-flight decode.");
     }
     // The release gate is deliberately independent of cancellation. Destruction
     // must return while a filesystem/provider call has not acknowledged stop.
@@ -74,7 +88,7 @@ inline void sampleClientCancellationTests(std::ostream& log) {
             // Client must retain the submitted request even with a custom transport.
             Reply result;return result;
         });
-        Request pcm;pcm.tag="prepared-pcm";pcm.path="foreground";pcm.generation=71;replacement.submit(pcm);
+        Request pcm;pcm.tag="source-pcm";pcm.path="foreground";pcm.generation=71;replacement.submit(pcm);
         const bool foregroundCompleted=played.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready;
         release.set_value();
         require(foregroundCompleted,"Foreground PCM waited behind retired overview/source work.");
@@ -88,7 +102,7 @@ inline void sampleClientCancellationTests(std::ostream& log) {
         Connection connection;
         Client client(connection,[&]{if(++finished==2)completed.set_value();},[](const Connection&,const Request&,std::stop_token){return Reply{};},
             [&,gate](const fs::path&,std::stop_token){++reads;entered.set_value();gate.wait();return std::string(32,'x');});
-        Request pcm;pcm.tag="prepared-pcm";client.submit(pcm);Request browse;browse.tag="browse";client.submit(browse);
+        Request pcm;pcm.tag="source-pcm";client.submit(pcm);Request browse;browse.tag="browse";client.submit(browse);
         const bool reading=entered.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready;
         if(!reading){release.set_value();require(false,"Credential read did not start.");}
         require(client.collect().empty(),"HTTP work began before startup credentials were ready.");
@@ -120,7 +134,7 @@ inline void sampleClientCancellationTests(std::ostream& log) {
         },[&](const fs::path&,std::stop_token){
             ++reads;if(!bootstraps)throw std::runtime_error("Credential not created yet.");return std::string(32,'c');
         },[&]{++bootstraps;});
-        Request pcm;pcm.tag="prepared-pcm";client.submit(pcm);Request browse;browse.tag="browse";client.submit(browse);
+        Request pcm;pcm.tag="source-pcm";client.submit(pcm);Request browse;browse.tag="browse";client.submit(browse);
         require(completed.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready,"Cold workstation credential creation never released pending HTTP work.");
         const auto replies=client.collect();
         require(reads==2&&bootstraps==1&&replies.size()==2&&replies[0].error.empty()&&replies[1].error.empty(),"Cold bootstrap did not cache its first successful credential read.");

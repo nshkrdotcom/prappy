@@ -14,6 +14,7 @@
 #include "sample_client_cancel_tests.h"
 #include "scan_async_tests.h"
 #include "debug_log_tests.h"
+#include "evaluation_state.h"
 #include <SDL3/SDL.h>
 #include <cmath>
 #include <fstream>
@@ -218,6 +219,31 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
         const auto defaults=logPath.parent_path()/fs::path("defaults-"+sampling::uuid()+".ini");
         createDefaultConfig(defaults);
         require(readConfig(defaults).debugLog,"Generated player defaults do not load with debug logging enabled.");
+        {
+            const auto scope=logPath.parent_path()/fs::path("evaluation-scope-"+sampling::uuid());
+            const auto stable=scope/"stable",trial=scope/"trial";
+            fs::create_directories(stable);fs::create_directories(trial);
+            sampling::Json marker={{"mode","indexed-evaluation"},{"protocol",3},{"state_root",utf8(trial)},
+                {"source_state_root",utf8(stable)},{"url","http://127.0.0.1:18816"},{"token_file",utf8(scope/"trial.token")}};
+            stateio::write(trial/"evaluation-state.json",marker.dump());
+            require(!stateio::evaluationState(trial,true).is_null(),"Evaluation state scope validation failed.");
+            stateio::evaluationConnection(trial,"http://127.0.0.1:18816",scope/"trial.token");
+            rejects([&]{stateio::evaluationConnection(trial,"http://127.0.0.1:8765",scope/"trial.token");},"Evaluation redirected to production.");
+            rejects([&]{stateio::evaluationConnection(trial,"http://127.0.0.1:18816",scope/"production.token");},"Evaluation reused production credentials.");
+            stateio::write(trial/"sampling-connection.json",sampling::Json{{"url",marker.at("url")},{"token_file",marker.at("token_file")},{"library",""}}.dump());
+            auto selected=std::make_shared<prepared::CatalogSource>();selected->source={"lib_"+std::string(32,'a'),"cap_"+std::string(32,'b')};
+            selected->asset=std::string(64,'c');selected->state="Playable";selected->native={44100,1,441000,prepared::SampleType::Float32};
+            Audio playing;playing.current=trial/"virtual.source";playing.duration=10;playing.position=2;playing.preparedSource=selected;
+            {
+                sampling::Workspace readonly(trial,[]{});readonly.mark(playing,sampling::SecondsSpan{1.25,2.5});
+                const auto state=sampling::Json::parse(readonly.diagnostics());
+                require(state.at("read_only")&&state.at("mark_pending"),"Evaluation did not retain its mark in memory.");
+            }
+            require(!fs::exists(trial/"sample-workspaces.json"),"Read-only evaluation persisted an editing gesture.");
+            marker["source_state_root"]=utf8(trial);stateio::write(trial/"evaluation-state.json",marker.dump());
+            rejects([&]{stateio::evaluationState(trial,true);},"Evaluation accepted overlapping stable state.");
+            log<<"PASS evaluation state: distinct roots, fixed endpoint and independent credentials\n";
+        }
         waveformRenderTests(log);
         {
             require(Browse::tokens("  artist \"NU NU\" mix ") == std::vector<std::wstring>({L"artist",L"nu nu",L"mix"}),

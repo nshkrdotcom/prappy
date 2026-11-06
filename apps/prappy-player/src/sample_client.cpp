@@ -160,12 +160,21 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
             if (!output) throw std::runtime_error("Cannot create downloaded audio.");
         }
         std::vector<char> bytes,chunk(65536);size_t total=0;
+        size_t capacity=64ULL*1024*1024;
+        if(status==200&&(request.tag=="source-pcm"||request.tag=="source-waveform")){
+            const auto channels=request.body.at("channels").get<int64_t>();
+            const auto count=request.body.at(request.tag=="source-pcm"?"frame_count":"bin_count").get<int64_t>();
+            const auto stride=request.tag=="source-pcm"?prepared::sampleBytes(prepared::sampleType(request.body.at("sample_format").get<std::string>())):8;
+            if(channels<1||channels>32||count<1||static_cast<uint64_t>(count)>32ULL*1024*1024/(channels*stride))
+                throw std::runtime_error("Invalid or oversized native response context.");
+            capacity=static_cast<size_t>(count)*static_cast<size_t>(channels)*stride;bytes.reserve(capacity);
+        }
         for (;;) {
             DWORD count=0;
             if (!WinHttpReadData(operation.value,chunk.data(),static_cast<DWORD>(chunk.size()),&count)) throw std::runtime_error("Backend response interrupted.");
             if (!count) break;
             total+=count;
-            if (total>(output.is_open()?2ULL*1024*1024*1024:((request.tag=="pcm" || request.tag=="audition")?48000ULL*600*8:64ULL*1024*1024))) throw std::runtime_error("Backend response exceeds resource limit.");
+            if (total>(output.is_open()?2ULL*1024*1024*1024:capacity)) throw std::runtime_error("Backend response exceeds resource limit.");
             if (output.is_open()) {output.write(chunk.data(),count);if(!output) throw std::runtime_error("Cannot write downloaded audio.");}
             else bytes.insert(bytes.end(),chunk.begin(),chunk.begin()+count);
         }
@@ -179,7 +188,7 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
             if(!MoveFileExW(temporary.c_str(),request.download.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))throw std::runtime_error("Cannot publish downloaded audio.");reply.body={{"path",utf8(request.download)}};
         }
         else if (status==202){reply.body=Json::parse(bytes.begin(),bytes.end());}
-        else if (request.tag=="prepared-pcm" || request.tag=="prepared-waveform") {
+        else if (request.tag=="source-pcm" || request.tag=="source-waveform") {
             const auto header=[&](const wchar_t* name){
                 std::array<wchar_t,256> value{};DWORD size=static_cast<DWORD>(sizeof(value));
                 if(!WinHttpQueryHeaders(operation.value,WINHTTP_QUERY_CUSTOM,name,value.data(),&size,nullptr))throw std::runtime_error("Missing prepared audio identity.");
@@ -196,14 +205,15 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
             if(hash!=header(L"X-PCM-SHA256"))throw std::runtime_error("Prepared audio hash differs.");
             {
                 const auto& expected=request.body;
-                if(header(L"X-Asset-Key")!=expected.at("asset_key").get<std::string>()||
+                if(header(L"X-Source-Key")!=expected.at("source_key").get<std::string>()||
                    header(L"X-Channels")!=std::to_string(expected.at("channels").get<int64_t>())||
                    header(L"X-Timeline-Id")!=expected.at("timeline_id").get<std::string>())
                     throw std::runtime_error("Prepared response source or channel identity differs.");
-                if(request.tag=="prepared-pcm"&&header(L"X-Audio-Domain")!=expected.at("domain").get<std::string>())
+                if(request.tag=="source-pcm"&&header(L"X-Audio-Domain")!=expected.at("domain").get<std::string>())
                     throw std::runtime_error("Prepared response audio domain differs.");
                 reply.body=expected;
-                if(request.tag=="prepared-pcm") {
+                if(request.tag=="source-pcm")reply.body["decoder_epoch"]=header(L"X-Decoder-Epoch");
+                if(request.tag=="source-pcm") {
                     const auto start=expected.at("origin_frame").get<int64_t>(),count=expected.at("frame_count").get<int64_t>();
                     if(header(L"X-Origin-Frame")!=std::to_string(start)||header(L"X-Frame-Count")!=std::to_string(count)||
                        header(L"X-Sample-Rate")!=std::to_string(expected.at("sample_rate").get<int64_t>())||
@@ -228,6 +238,7 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
             reply.body=Json::parse(bytes.begin(),bytes.end());
         }
     } catch(const std::exception& e) {reply.error=e.what();if(!temporary.empty()){std::error_code ec;fs::remove(temporary,ec);}}
+    reply.request.incomingMemory.reset();
     return reply;
 }
 
@@ -248,7 +259,7 @@ struct ClientState {
 };
 namespace {
 size_t requestLane(const Request& request) {
-    if(request.tag=="prepared-pcm" || request.tag=="prepared-waveform")return 0;
+    if(request.tag=="source-pcm" || request.tag=="source-waveform")return 0;
     if(request.tag=="libraries"||request.method!="GET")return 1;
     return 2;
 }
@@ -257,7 +268,7 @@ size_t requestLane(const Request& request) {
 // three active slots bound retired state even when a redirector ignores cancel.
 // Workers join at process teardown, after the UI and instance lock are gone.
 class ClientExecutor {
-    struct Lane {size_t index=0;std::jthread worker;std::shared_ptr<ClientState> active;};
+    struct Lane {size_t index=0;std::jthread worker;std::shared_ptr<ClientState> active;std::optional<Request> request;std::stop_source cancel;};
     std::array<Lane,3> lanes;
     std::vector<std::weak_ptr<ClientState>> clients;
     std::shared_ptr<ClientState> find(size_t index) {
@@ -280,10 +291,13 @@ class ClientExecutor {
                 else {
                     const auto next=std::find_if(state->pending.begin(),state->pending.end(),[&](const Request& item){return requestLane(item)==lane.index&&state->credentialsReady;});
                     request=std::move(*next);state->pending.erase(next);
+                    lane.cancel=std::stop_source{};lane.request=request;
                 }
                 connection=state->connection;
             }
-            const auto stop=state->stop.get_token();
+            const auto stop=credentials?state->stop.get_token():lane.cancel.get_token();
+            auto cancellation=lane.cancel;
+            std::stop_callback retired(state->stop.get_token(),[cancellation]() mutable{cancellation.request_stop();});
             if(credentials) {
                 const auto credentialsStart=debuglog::Clock::now();
                 std::string error;
@@ -327,9 +341,9 @@ class ClientExecutor {
                     }
                 }catch(const std::exception& e){result.error=e.what();}
                 // Transport implementations cannot change a request's identity.
-                result.request=request;
+                result.request=request;result.request.incomingMemory.reset();request.incomingMemory.reset();
                 bool deliver=false;
-                {std::lock_guard guard(mutex);if(!state->retired){state->completed.push_back(std::move(result));deliver=true;}lane.active.reset();}
+                {std::lock_guard guard(mutex);if(!state->retired&&!stop.stop_requested()){state->completed.push_back(std::move(result));deliver=true;}lane.active.reset();lane.request.reset();}
                 if(deliver){std::lock_guard guard(state->notificationMutex);if(state->notify)state->notify();}
             }
         }
@@ -365,6 +379,44 @@ public:
         std::erase_if(clients,[](const auto& weak){auto value=weak.lock();return !value||value->retired;});
         clients.push_back(state);wake.notify_all();
     }
+    static bool transient(const Request& request){
+        return request.method=="GET"&&request.download.empty()&&request.tag!="libraries"&&request.tag!="capabilities"&&request.tag!="catalog"&&request.tag!="collections";
+    }
+    static bool sameRead(const Request& old,const Request& request){
+        if(old.tag!=request.tag)return false;
+        const auto flag=[](const Request& item,const char* key){return item.body.is_object()&&item.body.value(key,false);};
+        if(request.tag=="source-pcm")return flag(old,"audition")==flag(request,"audition");
+        if(request.tag=="source-waveform")return flag(old,"overview")==flag(request,"overview");
+        return request.tag!="collectionMember"||old.path==request.path;
+    }
+    void submit(const std::shared_ptr<ClientState>& state,Request request){
+        std::vector<std::stop_source> stops;
+        {
+            std::lock_guard guard(mutex);
+            if(request.method=="GET"&&request.download.empty()){
+                const auto superseded=[&](const Request& old){
+                    return old.method=="GET"&&old.download.empty()&&((transient(old)&&old.generation<request.generation)||sameRead(old,request));
+                };
+                std::erase_if(state->pending,superseded);
+                for(auto& lane:lanes)if(lane.active==state&&lane.request&&superseded(*lane.request))stops.push_back(lane.cancel);
+            }
+            if(state->pending.size()>=512)throw std::runtime_error("Backend request queue is full.");
+            state->pending.push_back(std::move(request));wake.notify_all();
+        }
+        for(auto& stop:stops)stop.request_stop();
+    }
+    void cancelReads(const std::shared_ptr<ClientState>& state,ReadScope scope){
+        std::vector<std::stop_source> stops;
+        const auto selected=[&](const Request& request){
+            if(request.tag=="source-waveform")return scope==ReadScope::Audio;
+            return request.tag=="source-pcm"&&(scope!=ReadScope::Audition||(request.body.is_object()&&request.body.value("audition",false)));
+        };
+        {
+            std::lock_guard guard(mutex);std::erase_if(state->pending,selected);
+            for(auto& lane:lanes)if(lane.active==state&&lane.request&&selected(*lane.request))stops.push_back(lane.cancel);
+        }
+        for(auto& stop:stops)stop.request_stop();
+    }
     void retire(const std::shared_ptr<ClientState>& state) {
         {std::lock_guard guard(state->notificationMutex);state->notify={};}
         {
@@ -391,15 +443,8 @@ Client::Client(Connection connection,std::function<void()> notify,Transport tran
 Client::~Client(){ClientExecutor::instance().retire(state);}
 void Client::submit(Request request) {
     request.queuedAt=debuglog::Clock::now();request.diagnosticId=++nextDiagnosticId;
-    auto& executor=ClientExecutor::instance();std::lock_guard guard(executor.mutex);
-    if(request.method=="GET"&&request.tag!="download")std::erase_if(state->pending,[&](const auto& old){
-        if(old.tag!=request.tag)return false;
-        if(request.tag=="prepared-pcm")return old.body.at("domain")==request.body.at("domain");
-        if(request.tag=="prepared-waveform")return old.body.value("overview",false)==request.body.value("overview",false);
-        return request.tag!="collectionMember"||old.path==request.path;
-    });
-    if(state->pending.size()>=512)throw std::runtime_error("Backend request queue is full.");
-    state->pending.push_back(std::move(request));executor.wake.notify_all();
+    ClientExecutor::instance().submit(state,std::move(request));
 }
+void Client::cancelReads(ReadScope scope){ClientExecutor::instance().cancelReads(state,scope);}
 std::vector<Reply> Client::collect(){std::lock_guard guard(ClientExecutor::instance().mutex);auto result=std::move(state->completed);state->completed.clear();return result;}
 }

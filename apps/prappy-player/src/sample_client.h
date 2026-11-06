@@ -1,6 +1,7 @@
 #pragma once
 #include "paths.h"
 #include "prepared_audio.h"
+#include "native_session.h"
 #include <json.hpp>
 #include <condition_variable>
 #include <deque>
@@ -22,6 +23,7 @@ struct Request {
     fs::path download;
     std::chrono::steady_clock::time_point queuedAt{};
     uint64_t diagnosticId=0;
+    PcmBudget::Permit pcmMemory,incomingMemory;
 };
 struct Reply {
     Request request;
@@ -33,6 +35,7 @@ struct Reply {
 };
 Reply perform(const Connection&, const Request&, std::stop_token = {});
 std::string uuid();
+enum class ReadScope { Audition, PCM, Audio };
 struct ClientState;
 class Client {
 public:
@@ -47,6 +50,7 @@ public:
     Client(const Client&) = delete;
     Client& operator=(const Client&) = delete;
     void submit(Request);
+    void cancelReads(ReadScope);
     std::vector<Reply> collect();
 };
 }

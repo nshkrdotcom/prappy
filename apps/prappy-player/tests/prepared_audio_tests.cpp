@@ -1,5 +1,6 @@
 #include "prepared_audio.h"
 #include "native_session.h"
+#include "analysis_dsp.h"
 #include "prepared_catalog.h"
 #include "prepared_requests.h"
 #include "sample_handoff.h"
@@ -44,22 +45,25 @@ int main() {
         {"state","Playable"},{"analysis_state","Queued"},{"title","Test song"},{"artist",nullptr},
         {"library_name","Music"},{"original_bytes",1200},{"original_path","/original/music"},
         {"media",{{"codec","aac"},{"sample_rate",44100},{"channels",1},{"duration_seconds",2.0}}}};
-    const auto catalog=parseCatalog({{"items",nlohmann::json::array({row})}});
+    const auto catalog=parseCatalog({{"protocol",3},{"items",nlohmann::json::array({row})}});
     require(catalog.size()==1&&catalog[0].source==source&&catalog[0].native.rate==44100);
     require(catalog[0].native.frames==0&&catalog[0].ready()&&!catalog[0].loudness);
     require(catalog[0].timeline.empty());
-    rejects([&]{parseCatalog({{"items",nlohmann::json::array({row,row})}});});
+    rejects([&]{parseCatalog({{"protocol",3},{"items",nlohmann::json::array({row,row})}});});
+    rejects([&]{parseCatalog({{"protocol",2},{"items",nlohmann::json::array({row})}});});
     row["media"]["sample_rate"]=1.5;
-    rejects([&]{parseCatalog({{"items",nlohmann::json::array({row})}});});
+    rejects([&]{parseCatalog({{"protocol",3},{"items",nlohmann::json::array({row})}});});
     sampling::SourceHandoff handoff;
     const auto intent=handoff.begin("stable-recording",sampling::OpenSource::Selection,1,2,sampling::SecondsSpan{.5,1.5});
     const auto resolved=handoff.resolve(intent.ticket,{library,capture,"tl_"+std::string(32,'d')},88200,44100);
     require(resolved&&resolved->selection&&resolved->selection->start==22050&&resolved->selection->end==66150);
-    nlohmann::json manifest={{"key",std::string(64,'a')},{"sample_rate",192000},{"channels",32},
-        {"frames",1920000},{"sample_format","float64"},{"capture",{{"timeline_id","tl_"+std::string(32,'d')}}}};
+    nlohmann::json manifest={{"source_key",std::string(64,'a')},{"sample_rate",192000},{"channels",32},
+        {"frame_count",1920000},{"sample_format","float64"},{"timeline_id","tl_"+std::string(32,'d')}};
     require(pcmContext(manifest,13,100).at("channels")==32);
     rejects([&]{pcmContext(manifest,0,1920000);});
     rejects([&]{pcmContext(manifest,1920000,1);});
+    analysis::Result nativeWaveform;nativeWaveform.frames=44100;nativeWaveform.sampleRate=44100;
+    require(nativeWaveform.duration()==1.);
     sampling::PcmBudget memory(64);
     auto incoming=memory.reserve(40ULL*1024*1024);
     rejects([&]{memory.reserve(25ULL*1024*1024);});
@@ -71,7 +75,9 @@ int main() {
     auto native=std::make_shared<const Block>(high,4999999999LL,1,
         std::as_bytes(std::span(&precise,size_t{1})));
     sampling::NativeSession session(high,"source-key","timeline",7,memory);
-    auto stored=session.adopt(native,memory.reserve(8),"source-key","timeline",7);
+    auto stored=session.adopt(native,memory.reserve(8),"source-key","timeline",7,"decoder-a");
+    require(session.covers(4999999999LL,5000000000LL)&&!session.covers(4999999998LL,5000000000LL));
+    rejects([&]{session.adopt(native,memory.reserve(8),"source-key","timeline",7,"decoder-b");});
     require(stored&&memory.used()==8);
     require(session.find(4999999999LL)->pcm->sample(0,0)==precise);
     require(!session.adopt(native,memory.reserve(8),"source-key","timeline",6));

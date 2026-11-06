@@ -13,21 +13,21 @@ inline void featureTests(const fs::path& root, const Library& fixture, std::ostr
     const auto require = [](bool value, const char* message) { if (!value) throw std::runtime_error(message); };
     {
         Library staged=fixture;
-        for(auto& track:staged.tracks){track.prepared=prepared::CatalogSource{};track.prepared->state="Queued";}
+        for(auto& track:staged.tracks){track.prepared=prepared::CatalogSource{};track.prepared->state="Offline";}
         Audio source;source.open(true);History visits;HistoryFile storage(root/"waiting-prepared-playback.txt");
         bool ready=false;int loads=0;
         Playback session(source,staged,visits,storage,[&](const fs::path& path,bool paused,double position){
-            ++loads;if(!ready)throw prepared::NotReady("Recording preparation: Queued");
+            ++loads;if(!ready)throw prepared::NotReady("Recording unavailable: Offline");
             return source.play(path,paused,position);
         });
-        require(session.request(staged.tracks[0].path)&&session.request(staged.tracks[1].path),"Preparing playback intent was discarded.");
+        require(session.request(staged.tracks[0].path)&&session.request(staged.tracks[1].path),"Offline playback intent was discarded.");
         for(int i=0;i<5;++i)session.tick();
-        require(session.pending&&visits.entries.empty()&&loads==2,"Waiting preparation loaded or committed a stale recording.");
-        session.toggle();ready=true;staged.tracks[1].prepared->state="Ready";
+        require(session.pending&&visits.entries.empty()&&loads==2,"Waiting for a source loaded or committed a stale recording.");
+        session.toggle();ready=true;staged.tracks[1].prepared->state="Playable";
         for(int i=0;i<1000&&session.pending;++i){session.tick();SDL_Delay(5);}
-        require(!session.pending&&source.loaded&&source.paused&&loads==3,"Ready transition lost latest playback or pause intent.");
-        require(visits.entries.size()==1&&key(visits.current()->path)==staged.tracks[1].id,"Ready transition committed the superseded source.");
-        log<<"PASS preparing playback: retained intent, supersession, automatic Ready transition and pending pause\n";
+        require(!session.pending&&source.loaded&&source.paused&&loads==3,"Source availability transition lost latest playback or pause intent.");
+        require(visits.entries.size()==1&&key(visits.current()->path)==staged.tracks[1].id,"Source availability transition committed the superseded source.");
+        log<<"PASS offline playback: retained intent, supersession, source availability transition and pending pause\n";
     }
     {
         const auto overflow = [](size_t) { return 65.0f; };

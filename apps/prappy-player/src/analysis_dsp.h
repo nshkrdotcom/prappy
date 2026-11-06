@@ -11,7 +11,8 @@ struct Result {
     uint64_t frames = 0;
     std::optional<double> loudness;
     std::vector<std::vector<Peak>> levels;
-    double duration() const { return static_cast<double>(frames) / SampleRate; }
+    uint64_t sampleRate = SampleRate;
+    double duration() const { return static_cast<double>(frames) / sampleRate; }
 };
 // Streaming accumulator shared by the Windows pipe decoder and portable DSP tests.
 class Accumulator {

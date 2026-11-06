@@ -83,7 +83,7 @@ public:
         timeline.validate();
         const auto stride=static_cast<size_t>(timeline.channels)*sampleBytes(timeline.type);
         if(origin<0||origin>timeline.frames||count<0||count>timeline.frames-origin||
-           static_cast<uint64_t>(count)>64*1024*1024/stride||payload.size()!=static_cast<size_t>(count)*stride)
+           static_cast<uint64_t>(count)>32*1024*1024/stride||payload.size()!=static_cast<size_t>(count)*stride)
             throw std::runtime_error("Invalid or oversized prepared PCM block.");
         data.assign(payload.begin(),payload.end());
         if(timeline.type!=SampleType::Int32)

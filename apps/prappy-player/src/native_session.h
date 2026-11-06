@@ -42,7 +42,7 @@ public:
     struct Buffer {std::shared_ptr<const prepared::Block> pcm;PcmBudget::Permit memory;};
 private:
     prepared::NativeTimeline source;
-    std::string sourceKey,timeline;
+    std::string sourceKey,timeline,decoderEpoch;
     uint64_t generation;
     PcmBudget budget;
     std::vector<std::shared_ptr<const Buffer>> buffers;
@@ -52,12 +52,14 @@ public:
         source.validate();
     }
     std::shared_ptr<const Buffer> adopt(std::shared_ptr<const prepared::Block> pcm,PcmBudget::Permit memory,
-                                      std::string_view key,std::string_view id,uint64_t epoch){
+                                      std::string_view key,std::string_view id,uint64_t epoch,std::string_view decoder={}){
         if(epoch!=generation)return {};
         if(key!=sourceKey||id!=timeline||!pcm||!budget.owns(memory)||memory->bytes!=pcm->bytes().size()||
            pcm->bytes().size()>32ULL*1024*1024||pcm->source().rate!=source.rate||pcm->source().channels!=source.channels||
            pcm->source().type!=source.type||pcm->source().frames!=source.frames)
             throw std::runtime_error("Native session response identity, memory or clock differs.");
+        if(!decoderEpoch.empty()&&decoder!=decoderEpoch)throw std::runtime_error("Decoder session changed; reopen the bounded region before extending its audio.");
+        decoderEpoch=decoder;
         auto buffer=std::make_shared<const Buffer>(Buffer{std::move(pcm),std::move(memory)});
         buffers.push_back(buffer);
         std::sort(buffers.begin(),buffers.end(),[](const auto& a,const auto& b){return a->pcm->start()<b->pcm->start();});
@@ -67,6 +69,28 @@ public:
         const auto found=std::find_if(buffers.rbegin(),buffers.rend(),[&](const auto& b){
             return frame>=b->pcm->start()&&frame-b->pcm->start()<b->pcm->frames();});
         return found==buffers.rend()?nullptr:*found;
+    }
+    bool covers(prepared::Frame start,prepared::Frame end)const{
+        if(start<0||end<=start||end>source.frames)return false;
+        auto cursor=start;
+        for(const auto& buffer:buffers){
+            if(buffer->pcm->start()>cursor)return false;
+            cursor=std::max(cursor,buffer->pcm->start()+buffer->pcm->frames());
+            if(cursor>=end)return true;
+        }
+        return false;
+    }
+    prepared::Frame first()const{return buffers.empty()?0:buffers.front()->pcm->start();}
+    prepared::Frame last()const{
+        prepared::Frame end=0;for(const auto& buffer:buffers)end=std::max(end,buffer->pcm->start()+buffer->pcm->frames());return end;
+    }
+    prepared::Frame frames()const{
+        prepared::Frame count=0,end=0;
+        for(const auto& buffer:buffers){
+            const auto stop=buffer->pcm->start()+buffer->pcm->frames();
+            count+=std::max<prepared::Frame>(0,stop-std::max(end,buffer->pcm->start()));end=std::max(end,stop);
+        }
+        return count;
     }
     void retain(prepared::Frame start,prepared::Frame end){
         if(start<0||end<start||end>source.frames)throw std::runtime_error("Invalid native session window.");

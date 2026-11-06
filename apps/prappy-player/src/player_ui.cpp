@@ -1,3 +1,4 @@
+#include "evaluation_state.h"
 // UI setup follows Dear ImGui's MIT-licensed example_sdl3_sdlrenderer3.
 #include "player_ui.h"
 #include "analysis_dsp.h"
@@ -241,16 +242,29 @@ int runPlayer(HINSTANCE instance) {
     std::unique_ptr<void, decltype(&CloseHandle)> singleton(nullptr, CloseHandle);
     try {
         const bool windowTest = !args.empty() && args[0] == L"--window-test";
+        const bool evaluation = args.size()==2&&args[0]==L"--evaluation";
+        if(!args.empty()&&!windowTest&&!evaluation)throw std::runtime_error("Unknown Prappy arguments.");
+        const auto stateDirectory = windowTest ? (args.size()==2?fs::absolute(args[1]):executableDir()/"window-test") :
+            evaluation?fs::absolute(args[1]):executableDir();
+        const auto marker=stateio::evaluationState(stateDirectory,evaluation);
+        const bool trial=!marker.is_null();
+        if(trial){
+            const auto connection=sampling::Json::parse(stateio::read(stateDirectory/"sampling-connection.json"));
+            stateio::evaluationConnection(stateDirectory,connection.at("url"),stateio::pathFromText(connection.at("token_file")));
+        }
         uiProbe.enabled = windowTest;
         const auto testInstance = windowTest ? SDL_GetEnvironmentVariable(SDL_GetEnvironment(),"PRAPPY_TEST_INSTANCE") : nullptr;
-        if (!windowTest || testInstance) {
-            const auto mutexName = testInstance ? fs::path(testInstance).wstring() : L"Local\\PrappyPlayer.Instance";
+        if (!windowTest || testInstance || trial) {
+            uint64_t scope=1469598103934665603ULL;
+            for(const auto c:key(fs::weakly_canonical(stateDirectory))){scope^=static_cast<uint64_t>(c);scope*=1099511628211ULL;}
+            const auto mutexName = trial?std::wstring(L"Local\\PrappyPlayer.Evaluation.")+std::to_wstring(scope):
+                testInstance?fs::path(testInstance).wstring():L"Local\\PrappyPlayer.Instance";
             HANDLE mutex = CreateMutexW(nullptr, FALSE, mutexName.c_str());
             const bool alreadyRunning = GetLastError() == ERROR_ALREADY_EXISTS;
             if (!mutex) throw std::runtime_error("Cannot create player instance lock.");
             singleton.reset(mutex);
             if (alreadyRunning) {
-                if (auto existing = !windowTest ? FindWindowW(nullptr, L"Prappy Player") : nullptr) {
+                if (auto existing = !windowTest ? FindWindowW(nullptr, trial?L"Prappy Player - Evaluation":L"Prappy Player") : nullptr) {
                     ShowWindow(existing, SW_RESTORE); SetForegroundWindow(existing);
                 }
                 return 0;
@@ -265,7 +279,6 @@ int runPlayer(HINSTANCE instance) {
         SetCurrentProcessExplicitAppUserModelID(AppId);
         SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON, "1");
         SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON_SMALL, "1");
-        const auto stateDirectory = windowTest ? (args.size() == 2 ? fs::absolute(args[1]) : executableDir() / "window-test") : executableDir();
         fs::create_directories(stateDirectory);
         const auto config = stateDirectory / "player.ini";
         auto preferences = Preferences::load(stateDirectory / "player-ui.txt");
@@ -348,7 +361,7 @@ int runPlayer(HINSTANCE instance) {
             waveform=preparedWaveform.value();
         };
         constexpr int StripHeight = 86;
-        window = SDL_CreateWindow("Prappy Player", preferences.session.width, preferences.strip ? StripHeight : std::max(MinHeight,preferences.session.height),
+        window = SDL_CreateWindow(trial?"Prappy Player - Evaluation":"Prappy Player", preferences.session.width, preferences.strip ? StripHeight : std::max(MinHeight,preferences.session.height),
             SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE);
         if (!window) throw std::runtime_error(SDL_GetError());
         uiProbe.windowID = SDL_GetWindowID(window);

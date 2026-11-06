@@ -90,13 +90,22 @@ inline int integrationTest(const fs::path& manifestPath,const fs::path& logPath)
         require(!corrupt.error.empty() && !fs::exists(logPath.parent_path()/"rejected.flac.partial"),"Corrupt download must be removed");
         std::stop_source stopped;stopped.request_stop();require(!perform(connection,{"libraries","GET","/v1/libraries",nullptr,0,{}},stopped.get_token()).error.empty(),"Cancelled request should stop");
         SDL_SetHint(SDL_HINT_AUDIO_DRIVER,"dummy");
-        Audition preview;preview.start(std::move(pcm),1000,{1000,2000},1000,true);SDL_Delay(100);
+        PcmBudget memory;NativeSession native({44100,2,2000,prepared::SampleType::Float32},"test","timeline",1,memory);
+        const auto bytes=std::as_bytes(std::span(pcm));
+        auto block=std::make_shared<const prepared::Block>(prepared::NativeTimeline{44100,2,2000,prepared::SampleType::Float32},1000,1000,bytes);
+        auto buffer=native.adopt(block,memory.reserve(bytes.size()),"test","timeline",1);
+        Audition preview(memory);preview.start(buffer,{1000,2000},1000,true);SDL_Delay(100);
         require(!preview.snapshot().finished&&preview.snapshot().cursor>=1000&&preview.snapshot().cursor<2000,"Loop playhead must map into absolute source frames");
         preview.pause(true);const auto paused=preview.snapshot().cursor;SDL_Delay(80);require(preview.snapshot().cursor==paused,"Paused playhead must not advance");
         preview.loop(false);preview.pause(false);
         const auto until=SDL_GetTicks()+2000;while(!preview.snapshot().finished&&SDL_GetTicks()<until)SDL_Delay(10);
         require(preview.snapshot().finished&&preview.snapshot().cursor==2000,"Live loop disable must drain once and end at Out");preview.stop();
-        preview.start(std::vector<float>(2000,.1f),0,{0,2000},0,false);preview.enqueue(std::vector<float>(2000,.1f),1000);
+        const auto segment=[&](Frame origin){
+            std::vector<float> values(2000,.1f);const auto data=std::as_bytes(std::span(values));
+            auto item=std::make_shared<const prepared::Block>(prepared::NativeTimeline{44100,2,2000,prepared::SampleType::Float32},origin,1000,data);
+            return native.adopt(item,memory.reserve(data.size()),"test","timeline",1);
+        };
+        preview.start(segment(0),{0,2000},0,false);preview.enqueue(segment(1000));
         const auto streamed=SDL_GetTicks()+2000;while(!preview.snapshot().finished&&SDL_GetTicks()<streamed)SDL_Delay(10);
         require(preview.snapshot().finished&&preview.snapshot().cursor==2000,"Prefetched PCM block handoff must preserve playback timeline");preview.stop();
         log<<"PASS native save/edit/replay, metadata search, collection, verified export and SDL loop lifetime\nALL PASS\n";

@@ -27,7 +27,7 @@ int main(int argc,char** argv) {
         sampling::Request inspect;inspect.tag="prepared-manifest";inspect.path=source.source.endpoint();
         const auto manifest=sampling::perform(*library.backend,inspect);
         if(!manifest.error.empty())throw std::runtime_error(manifest.error);
-        sampling::Request range;range.tag="prepared-pcm";
+        sampling::Request range;range.tag="source-pcm";
         range.path=source.source.endpoint()+"/pcm?asset="+source.asset+"&start=100&count=1000";
         range.body=prepared::pcmContext(manifest.body,100,1000);
         const auto reply=sampling::perform(*library.backend,range);

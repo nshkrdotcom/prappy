@@ -24,6 +24,7 @@ inline int64_t integer(const nlohmann::json& value) {
     return value.get<int64_t>();
 }
 inline std::vector<CatalogSource> parseCatalog(const nlohmann::json& snapshot) {
+    if(snapshot.value("protocol",0)!=3)throw std::runtime_error("Indexed audio requires backend protocol 3.");
     const auto& items=snapshot.at("items");
     if(!items.is_array()||items.size()>1000000)throw std::runtime_error("Prepared catalog exceeds source limit.");
     std::set<std::pair<std::string,std::string>> seen;

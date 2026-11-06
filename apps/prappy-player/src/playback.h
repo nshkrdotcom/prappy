@@ -16,7 +16,7 @@ struct Playback {
     Loader load;
     std::optional<Pending> pending;
     std::optional<fs::path> waitingSource;
-    debuglog::Clock::time_point preparationStarted{};
+    debuglog::Clock::time_point availabilityStarted{};
     std::set<std::wstring> unavailable;
     std::string notice;
     uint64_t generation = 0;
@@ -49,7 +49,7 @@ struct Playback {
             if(!load(path,true,kind==Kind::Restore?0:position)){notice=audio.error;return false;}
         } catch(const prepared::NotReady& error){
             waitingSource=path;pending=Pending{kind,0,targetId,oldPaused,position,paused};
-            preparationStarted=debuglog::Clock::now();debuglog::write("play.preparing","state="+std::string(error.what()));
+            availabilityStarted=debuglog::Clock::now();debuglog::write("play.waiting","state="+std::string(error.what()));
             notice=error.what();++generation;return true;
         } catch(const std::exception& error){notice=error.what();return false;}
         waitingSource.reset();
@@ -140,12 +140,12 @@ struct Playback {
             if(track!=library.tracks.end()&&track->prepared&&track->prepared->ready()){
                 try{
                     if(load(*waitingSource,true,pending->kind==Kind::Restore?0:pending->position)){
-                        debuglog::write("play.prepared","wait_ms="+std::to_string(debuglog::elapsed(preparationStarted)));
+                        debuglog::write("play.available","wait_ms="+std::to_string(debuglog::elapsed(availabilityStarted)));
                         pending->serial=audio.serial;waitingSource.reset();notice.clear();
                     }else{notice=audio.error;pending.reset();waitingSource.reset();++generation;}
                 }catch(const prepared::NotReady& error){notice=error.what();}
                 catch(const std::exception& error){notice=error.what();pending.reset();waitingSource.reset();++generation;}
-            }else if(track!=library.tracks.end()&&track->prepared)notice="Recording preparation: "+track->prepared->state;
+            }else if(track!=library.tracks.end()&&track->prepared)notice="Recording unavailable: "+track->prepared->state;
         }
         if (pending && !waitingSource && audio.loadedSerial == pending->serial) {
             debuglog::write("play.ready","serial="+std::to_string(pending->serial)+" ms="+std::to_string(debuglog::elapsed(audio.loadStarted)));
