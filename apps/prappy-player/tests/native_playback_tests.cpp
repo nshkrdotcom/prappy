@@ -110,20 +110,21 @@ int main(){
             require(!player.state().loaded&&!player.state().error.empty()&&!player.session(),"Wrong original identity entered playback");
         }
     }
-    for(const int mode:{0,1,2})for(const Frame origin:{Frame{0},Frame{(mode==1?48000:44100)*5/4}})for(const bool looping:{false,true}){
-        const Frame rate=mode==1?48000:44100;
+    for(const int mode:{0,1,2,3,4})for(const Frame origin:{Frame{0},Frame{((mode==1||mode==4)?48000:44100)*5/4}})for(const bool looping:{false,true}){
+        const Frame rate=(mode==1||mode==4)?48000:44100;
         SDL_SetHint(SDL_HINT_AUDIO_DUMMY_TIMESCALE,"0.1");
+        const int channels=mode==3?1:mode==4?5:2;
         const Frame total=rate*7+113;
-        const Json description={{"source_key",key},{"timeline_id",timeline},{"frame_count",total},{"sample_rate",rate},{"channels",2},{"sample_format","float32"},{"access_mode","indexed"},
+        const Json description={{"source_key",key},{"timeline_id",timeline},{"frame_count",total},{"sample_rate",rate},{"channels",channels},{"sample_format","float32"},{"access_mode","indexed"},
             {"capture",{{"id",capture},{"blob_sha256",sha}}}};
         const auto signal=[](Frame frame,int channel){return static_cast<float>(((static_cast<uint64_t>(frame)*1664525+1013904223+channel*71237)%65536)/131072.-.25);};
         Client::Transport transport=[=](const Connection&,const Request& request,std::stop_token){
             Reply reply;reply.status=200;
             if(request.tag=="source-descriptor")reply.body=description;
             else if(request.tag=="source-pcm"){
-                const Frame first=request.body.at("origin_frame"),count=request.body.at("frame_count");std::vector<std::byte> bytes(static_cast<size_t>(count)*8);
-                for(Frame i=0;i<count;++i)for(int c=0;c<2;++c){float value=signal(first+i,c);std::memcpy(bytes.data()+static_cast<size_t>(i*2+c)*4,&value,4);}
-                reply.preparedPcm=std::make_shared<Block>(NativeTimeline{rate,2,total,SampleType::Float32},first,count,std::move(bytes));reply.body={{"decoder_epoch","digital"}};
+                const Frame first=request.body.at("origin_frame"),count=request.body.at("frame_count");std::vector<std::byte> bytes(static_cast<size_t>(count)*channels*4);
+                for(Frame i=0;i<count;++i)for(int c=0;c<channels;++c){float value=signal(first+i,c);std::memcpy(bytes.data()+static_cast<size_t>(i*channels+c)*4,&value,4);}
+                reply.preparedPcm=std::make_shared<Block>(NativeTimeline{rate,channels,total,SampleType::Float32},first,count,std::move(bytes));reply.body={{"decoder_epoch","digital"}};
             }else reply.body={{"active",true}};
             return reply;
         };
@@ -133,7 +134,7 @@ int main(){
             ~Device(){if(id){SDL_CloseAudioDevice(id);SDL_QuitSubSystem(SDL_INIT_AUDIO);}}
         } forcedOutput(mode==2);
         struct Capture{
-            std::vector<float> samples=std::vector<float>(48000*20);std::atomic<size_t> count{0};std::atomic<int> rate{0},channels{0};
+            std::vector<float> samples=std::vector<float>(48000*45);std::atomic<size_t> count{0};std::atomic<int> rate{0},channels{0};
             static void SDLCALL receive(void* context,const SDL_AudioSpec* spec,float* pcm,int bytes){
                 auto& self=*static_cast<Capture*>(context);const auto first=self.count.load();const auto size=std::min(static_cast<size_t>(bytes)/4,self.samples.size()-first);
                 std::memcpy(self.samples.data()+first,pcm,size*4);self.rate=spec->freq;self.channels=spec->channels;self.count.store(first+size);
@@ -149,13 +150,13 @@ int main(){
         until(player,[&]{return looping?player.state().submitted>=rate*2:player.state().finished;});
         player.pause(true);
         require(SDL_SetAudioPostmixCallback(player.device(),nullptr,nullptr),"Cannot detach digital output capture");
-        require(captureOutput.rate==(mode==2?48000:rate)&&captureOutput.channels==2,"Digital test did not use the expected output domain");
+        require(captureOutput.rate==(mode==2?48000:rate)&&captureOutput.channels>=1,"Digital test did not use the expected output domain");
         const auto count=captureOutput.count.load();size_t first=0;while(first<count&&captureOutput.samples[first]==0)++first;
         const Frame expectedFrames=looping?rate:total-origin;
-        std::vector<float> reference(static_cast<size_t>(expectedFrames)*2);
-        for(Frame i=0;i<expectedFrames;++i)for(int c=0;c<2;++c)reference[static_cast<size_t>(i)*2+c]=signal(origin+(looping?i%loopFrames:i),c)*.5f;
-        if(mode==2){
-            const SDL_AudioSpec input{SDL_AUDIO_F32,2,static_cast<int>(rate)},output{SDL_AUDIO_F32,2,48000};
+        std::vector<float> reference(static_cast<size_t>(expectedFrames)*channels);
+        for(Frame i=0;i<expectedFrames;++i)for(int c=0;c<channels;++c)reference[static_cast<size_t>(i)*channels+c]=signal(origin+(looping?i%loopFrames:i),c)*.5f;
+        if(captureOutput.rate!=rate||captureOutput.channels!=channels){
+            const SDL_AudioSpec input{SDL_AUDIO_F32,channels,static_cast<int>(rate)},output{SDL_AUDIO_F32,captureOutput.channels,captureOutput.rate};
             auto* stream=SDL_CreateAudioStream(&input,&output);require(stream!=nullptr,"Cannot create continuous resampling reference");
             require(SDL_PutAudioStreamData(stream,reference.data(),static_cast<int>(reference.size()*4))&&SDL_FlushAudioStream(stream),"Cannot feed continuous resampling reference");
             reference.resize(static_cast<size_t>(SDL_GetAudioStreamAvailable(stream))/4);
@@ -164,7 +165,7 @@ int main(){
         if(looping)reference.resize(reference.size()-256);
         require(first+reference.size()<=count,"Digital output truncated the selected span");
         float maximum=0;for(size_t i=0;i<reference.size();++i)maximum=std::max(maximum,std::abs(captureOutput.samples[first+i]-reference[i]));
-        std::cout<<"DIGITAL source_rate="<<rate<<" output_rate="<<captureOutput.rate<<" looping="<<looping<<" start_frame="<<origin<<" compared_samples="<<reference.size()<<" maximum_error="<<maximum<<"\n";
+        std::cout<<"DIGITAL source_rate="<<rate<<" source_channels="<<channels<<" output_channels="<<captureOutput.channels<<" output_rate="<<captureOutput.rate<<" looping="<<looping<<" start_frame="<<origin<<" compared_samples="<<reference.size()<<" maximum_error="<<maximum<<"\n";
         require(maximum<=(mode==2?2e-6f:0.f),"SDL digital output shifted, duplicated, omitted or changed a native sample");
 
     }
