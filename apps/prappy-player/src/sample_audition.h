@@ -120,6 +120,7 @@ public:
             else if(next&&contains(*next,cursor))current.swap(next);
         }
         SDL_ClearAudioStream(stream);repeat=value;initial=feeding=std::min(cursor,range.end-1);submitted=0;done=starved=false;next.reset();lastFeed=SDL_GetTicksNS();
+        fill(stream,static_cast<int>(sizeof(scratch)));
         SDL_UnlockAudioStream(stream);if(!paused)SDL_ResumeAudioStreamDevice(stream);
     }
     void stop(){if(stream){SDL_PauseAudioStreamDevice(stream);SDL_LockAudioStream(stream);SDL_ClearAudioStream(stream);current.reset();next.reset();retired.reset();paused=false;SDL_UnlockAudioStream(stream);}}

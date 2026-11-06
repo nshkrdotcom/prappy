@@ -110,7 +110,7 @@ int main(){
             require(!player.state().loaded&&!player.state().error.empty()&&!player.session(),"Wrong original identity entered playback");
         }
     }
-    for(const int mode:{0,1,2})for(const Frame origin:{Frame{0},Frame{(mode==1?48000:44100)*5/4}}){
+    for(const int mode:{0,1,2})for(const Frame origin:{Frame{0},Frame{(mode==1?48000:44100)*5/4}})for(const bool looping:{false,true}){
         const Frame rate=mode==1?48000:44100;
         SDL_SetHint(SDL_HINT_AUDIO_DUMMY_TIMESCALE,"0.1");
         const Frame total=rate*7+113;
@@ -143,12 +143,17 @@ int main(){
         NativePlayback player(connection,memory,[]{},transport);player.load("/digital/audio",capture,sha,true,static_cast<double>(origin)/rate);
         until(player,[&]{return player.state().loaded;});
         require(SDL_SetAudioPostmixCallback(player.device(),Capture::receive,&captureOutput),"Cannot install digital output capture");
-        player.gain(.5f);player.pause(false);until(player,[&]{return player.state().finished;});
+        const Frame loopFrames=rate/7+13;
+        if(looping){player.start({origin,origin+loopFrames},origin,true,true);player.loop(false);player.loop(true);}
+        player.gain(.5f);player.pause(false);
+        until(player,[&]{return looping?player.state().submitted>=rate*2:player.state().finished;});
+        player.pause(true);
         require(SDL_SetAudioPostmixCallback(player.device(),nullptr,nullptr),"Cannot detach digital output capture");
         require(captureOutput.rate==(mode==2?48000:rate)&&captureOutput.channels==2,"Digital test did not use the expected output domain");
         const auto count=captureOutput.count.load();size_t first=0;while(first<count&&captureOutput.samples[first]==0)++first;
-        std::vector<float> reference(static_cast<size_t>(total-origin)*2);
-        for(Frame i=0;i<total-origin;++i)for(int c=0;c<2;++c)reference[static_cast<size_t>(i)*2+c]=signal(origin+i,c)*.5f;
+        const Frame expectedFrames=looping?rate:total-origin;
+        std::vector<float> reference(static_cast<size_t>(expectedFrames)*2);
+        for(Frame i=0;i<expectedFrames;++i)for(int c=0;c<2;++c)reference[static_cast<size_t>(i)*2+c]=signal(origin+(looping?i%loopFrames:i),c)*.5f;
         if(mode==2){
             const SDL_AudioSpec input{SDL_AUDIO_F32,2,static_cast<int>(rate)},output{SDL_AUDIO_F32,2,48000};
             auto* stream=SDL_CreateAudioStream(&input,&output);require(stream!=nullptr,"Cannot create continuous resampling reference");
@@ -156,9 +161,10 @@ int main(){
             reference.resize(static_cast<size_t>(SDL_GetAudioStreamAvailable(stream))/4);
             require(SDL_GetAudioStreamData(stream,reference.data(),static_cast<int>(reference.size()*4))==static_cast<int>(reference.size()*4),"Cannot read continuous resampling reference");SDL_DestroyAudioStream(stream);
         }
+        if(looping)reference.resize(reference.size()-256);
         require(first+reference.size()<=count,"Digital output truncated the selected span");
         float maximum=0;for(size_t i=0;i<reference.size();++i)maximum=std::max(maximum,std::abs(captureOutput.samples[first+i]-reference[i]));
-        std::cout<<"DIGITAL source_rate="<<rate<<" output_rate="<<captureOutput.rate<<" start_frame="<<origin<<" compared_samples="<<reference.size()<<" maximum_error="<<maximum<<"\n";
+        std::cout<<"DIGITAL source_rate="<<rate<<" output_rate="<<captureOutput.rate<<" looping="<<looping<<" start_frame="<<origin<<" compared_samples="<<reference.size()<<" maximum_error="<<maximum<<"\n";
         require(maximum<=(mode==2?2e-6f:0.f),"SDL digital output shifted, duplicated, omitted or changed a native sample");
 
     }
