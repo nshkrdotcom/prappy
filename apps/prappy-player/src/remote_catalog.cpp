@@ -46,11 +46,12 @@ bool refreshPreparedCatalog(Library& library,const fs::path& config,std::stop_to
             Track track;
             track.sourceRoot=fs::absolute(config.parent_path())/"sources"/source.source.library;
             track.path=track.sourceRoot/(source.source.capture+".source");
+            track.sourceId=L"\\"+key(fs::path("sources")/source.source.library/(source.source.capture+".source"));
             track.id=key(track.path);track.name=source.title;track.directory=source.libraryName;
             track.type=source.codec;track.bytes=source.originalBytes;
             track.label=source.libraryName+" / "+(source.artist.empty()?std::string{}:source.artist+" - ")+source.title;
             labels.insert_or_assign(key(track.sourceRoot),source.libraryName);
-            labels.insert_or_assign(track.id,track.label);
+            labels.insert_or_assign(track.id,track.label);labels.insert_or_assign(track.sourceId,track.label);
             track.duration=source.duration;track.offline=source.state=="Offline";
             roots.insert(track.sourceRoot);extensions.insert("."+source.codec);
             track.prepared=std::move(source);tracks.push_back(std::move(track));

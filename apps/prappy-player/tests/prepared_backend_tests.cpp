@@ -22,6 +22,11 @@ int main(int argc,char** argv) {
         const auto track=std::find_if(library.tracks.begin(),library.tracks.end(),[&](const auto& t){return t.prepared&&t.prepared->source.capture==fixture.at("capture_id").get<std::string>();});
         if(track==library.tracks.end()||!track->prepared->ready())throw std::runtime_error("Fixture original is not playable.");
         const auto& source=*track->prepared;
+        const auto relocated=directory/"another-state"/"sources"/source.source.library/(source.source.capture+".source");
+        if(!Library::matches(*track,key(relocated))||library.pathLabel(relocated)!=track->label)
+            throw std::runtime_error("Relocating player state lost native source identity or its history label.");
+        const auto unrelated=directory/"sources"/("lib_"+std::string(32,'0'))/(source.source.capture+".source");
+        if(Library::matches(*track,key(unrelated)))throw std::runtime_error("Native source identity crossed library UUIDs.");
         if(argc==3&&std::string(argv[2])=="--latency"){
             struct Probe {
                 std::atomic<Uint64> first{0};
@@ -80,7 +85,7 @@ int main(int argc,char** argv) {
         if(!waveform.value()||waveform.value()->frames!=manifest.body.at("frame_count").get<uint64_t>()||waveform.value()->sampleRate!=manifest.body.at("sample_rate").get<uint64_t>()||waveform.value()->levels[0].empty())
             throw std::runtime_error("Native waveform failed: "+waveform.status());
         sampling::PcmBudget memory(64);Audio audio;audio.openNative(true,memory);const auto load=preparedPlaybackLoader(audio,library,[]{});
-        if(!load(track->path,true,0))throw std::runtime_error(audio.error);
+        if(!load(relocated,true,0))throw std::runtime_error(audio.error);
         const auto loadDeadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
         while(!audio.loaded&&audio.error.empty()&&std::chrono::steady_clock::now()<loadDeadline){audio.poll();Sleep(5);}
         if(!audio.loaded||!audio.paused||std::abs(audio.duration-source.duration)>1)

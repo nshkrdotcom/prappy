@@ -26,6 +26,7 @@ struct Track {
     std::string sortName;
     std::optional<double> duration;
     std::optional<prepared::CatalogSource> prepared;
+    std::wstring sourceId;
 };
 struct ScanProgress {
     std::atomic<size_t> found{0};
@@ -42,10 +43,15 @@ struct Library {
     int order = 0;
     std::string notice;
     std::string pathLabel(const fs::path& path) const {
-        const auto found=labels.find(key(path));return found==labels.end()?readablePath(path,roots):found->second;
+        const auto id=key(path);auto found=labels.find(id);
+        if(found==labels.end()&&id.ends_with(L".source")){
+            const auto parent=path.parent_path();
+            found=labels.find(L"\\"+key(parent.parent_path().filename()/parent.filename()/path.filename()));
+        }
+        return found==labels.end()?readablePath(path,roots):found->second;
     }
     static bool matches(const Track& track, const std::wstring& id) {
-        return track.id == id || std::any_of(track.copies.begin(), track.copies.end(), [&](auto& p) { return key(p) == id; });
+        return track.id == id || (!track.sourceId.empty() && id.ends_with(track.sourceId)) || std::any_of(track.copies.begin(), track.copies.end(), [&](auto& p) { return key(p) == id; });
     }
     static fs::path pathInFolder(const Track& track, const fs::path& folder) {
         const auto id = key(folder);
