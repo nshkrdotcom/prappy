@@ -154,5 +154,23 @@ inline void nativeHandoffTests(const fs::path& root,std::ostream& log){
         require(started->load()==1&&Json::parse(opening.diagnostics()).at("start")==341775,"Opening an in-flight selection duplicated or displaced its PCM request");
         opening.returnToPlayer();audio.resumeNative();
     }
-    log<<"PASS native handoff: shared immutable windows, pending adoption, bounded/cancellable selection prefetch, source switches and exact return cue\n";
+    {
+        auto coarseAttempts=std::make_shared<std::atomic<int>>(0),analysisPolls=std::make_shared<std::atomic<int>>(0);
+        Client::Transport recovering=[=](const Connection& c,const Request& request,std::stop_token stop){
+            auto reply=transport(c,request,stop);
+            if(request.tag=="source-descriptor"||request.tag=="source-analysis"||request.tag=="mark-prepared")reply.body["waveform"]=Json::object();
+            if(request.tag=="source-analysis")++*analysisPolls;
+            if(request.tag=="source-waveform"&&request.body.value("overview",false)&&coarseAttempts->fetch_add(1)==0){reply.status=422;reply.error="waveform block checksum mismatch";}
+            return reply;
+        };
+        Audio recoveringAudio;recoveringAudio.openNative(true,memory);recoveringAudio.nativeConnection=connection;
+        recoveringAudio.native=std::make_shared<NativePlayback>(connection,memory,[]{},recovering);
+        require(recoveringAudio.playNative(trial/"recovering.source",source,connection,true,0),"Peak recovery fixture failed");
+        wait([&]{return recoveringAudio.loaded;},[&]{recoveringAudio.poll();});
+        Workspace repairing(trial,[]{},memory,recovering);repairing.mark(recoveringAudio);
+        wait([&]{return coarseAttempts->load()>=2&&analysisPolls->load()>0;},[&]{repairing.tick(recoveringAudio);},"Coarse peak regeneration");
+        require(Json::parse(repairing.diagnostics()).at("pcm_frames").get<Frame>()>0,"Peak repair discarded authoritative editing PCM");
+        repairing.returnToPlayer();recoveringAudio.resumeNative();
+    }
+    log<<"PASS native handoff: shared immutable windows, pending adoption, bounded/cancellable prefetch, coarse-peak recovery and exact return cue\n";
 }

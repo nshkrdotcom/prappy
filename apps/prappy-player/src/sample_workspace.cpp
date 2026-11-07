@@ -431,6 +431,9 @@ void Workspace::process(){
         if(!current(reply.request))continue;
         if(tag=="command"||tag=="native-save-hash")for(auto& entry:pending)
             if(entry.at("command").at("request_id")==reply.request.body.at("request_id"))entry["sending"]=false;
+        if(!reply.error.empty()&&tag=="source-waveform"&&reply.request.body.value("overview",false)){
+            preparedManifest.erase("waveform");overviewBins.clear();overviewDue=std::chrono::steady_clock::now()+std::chrono::seconds(1);
+        }
         if(!reply.error.empty()){if(pendingMark&&(tag=="mark-prepared"||tag=="libraries"||tag=="capabilities"))pendingMark->failed=true;notice=reply.error;if(reply.status==409){notice="Conflict: local draft retained. Reload the saved sample or Fork before saving. "+notice;if(tag=="command")for(auto& row:pending)if(row.at("command").at("request_id")==reply.request.body.at("request_id")){row["conflict"]=true;if(row.contains("source"))sampleLibrary.conflict(SourceRef::parse(row.at("source")),row.at("draft_id"),row.at("command").at("request_id"));}persist();}continue;}
         if(tag=="native-save-hash"){
             auto row=std::find_if(pending.begin(),pending.end(),[&](const auto& entry){return entry.at("command").at("request_id")==reply.request.body.at("request_id");});
