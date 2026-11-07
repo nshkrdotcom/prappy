@@ -1,7 +1,8 @@
-# Sampling prepared recordings
+# Sampling indexed recordings
 
 Prappy stays native Windows; audioharvest serves explicit libraries from WSL.
-Original recordings, permanent working masters and listening renders are separate.
+Compressed originals stay intact; bounded native regions supply playback/editing.
+This branch is validated in isolated state; production migration is pending.
 
 ## Open and select
 
@@ -17,23 +18,23 @@ Confirming a handoff pauses listening. Editor playback initially loops the
 selected range. Opening a source alone does not save a sample. Use **New sample
 at cue**, or choose a saved sample. Return to player preserves editor work.
 
-Every source carries its library/capture IDs, prepared asset and immutable
-native timeline. Opening a Ready source reads metadata, stored peaks and short
-native sample ranges. It does not register, hash or decode the original song.
-A temporary not-ready response retains the cue/range and retries. Returning
-or choosing a newer source cancels the superseded handoff.
+Every source carries library/capture, original-byte and immutable native-clock
+identities. Opening the editor adopts the player's retained PCM or seeks directly
+to a bounded region. It does not register, hash or decode the whole song.
+Optional waveform analysis may still be queued. A newer source/range cancels the
+superseded handoff; an unavailable source retains its latest playback intent.
 
 ## Native editing and listening
 
 In/Out boundaries are half-open native frames: In is included, Out excluded.
 The source's sample rate determines seconds. Mono, stereo and multichannel
-masters retain every channel; integer32 and float64 are not silently quantized.
-Wide views read stored min/max levels. Fine detail reads bounded typed samples.
+sessions retain every channel; integer32 and float64 are not silently quantized.
+Waveforms use compact native min/max bins, refined for the visible viewport.
 
-Audition plays the separate 48-kHz stereo float32 listening domain, converting
-positions explicitly to/from native frames. Source identity and playback gain
-remain pinned while library preparation creates newer profiles. A saved region
-continues to identify its exact native timeline.
+Playback and audition share the native frame clock and retained PCM. One
+continuous device-boundary adapter handles resampling, declared channel layout
+and listening gain. Saved regions freeze authoritative pre-effect native bits;
+they are never reconstructed from the lossy original.
 
 The editor provides zoom, precise boundaries, undo/redo, beat/onset snapping,
 loop audition, metadata corrections and verified lossless export. Machine
@@ -47,43 +48,28 @@ active draft, cursor, viewport and editing preferences across restart.
 
 Native exports preserve source rate, channel count and supported precision:
 WavPack for float32/integer32, Wave64 for float64. Default exports stream bounded
-blocks and verify sample bits before publication. Project rendering explicitly
-uses the prepared 48-kHz stereo domain and retains native source maps.
+blocks and verify sample bits before publication. Project rendering uses
+preserved frozen clips, explicit output adapters and native source maps. Current
+new saves require the selection to fit retained PCM; larger-than-RAM save streaming
+is still being implemented.
 
-## Backend and preparation
+## Backend and analysis
 
-In the scraper checkout, `~/.config/audioharvest/workstation.json` names explicit
-`libraries` and `source_roots` arrays of absolute paths. The HTTP service and
-independent preparer share it. Set `working_root` in
-`~/.config/audioharvest/storage.json` to an adequately sized permanent volume.
+Use an initialized isolated evaluation root with copied canonical state and
+read-only original references. Configure its URL/token in
+`sampling-connection.json`; keep the private token in its own file. The player
+and root's evaluation marker must agree. See [backend setup](../README.md#backend-setup).
 
-```bash
-./scripts/install-preparation-service.sh
-./prappy.sh
-```
-
-The user preparation service keeps working after HTTP/player shutdown and
-restarts after failure. It observes the configured libraries, persists jobs,
-checks original identity, prepares/verifies audio and peaks, then publishes Ready.
-Jobs reserve working space before encoding. CapacityBlocked and Offline are
-explicit states and recover automatically when their resources return. The
-default free-space floor is 20 GiB, configurable as `reserve_gib` in storage.json.
-Complete-corpus readiness requires sufficient storage and
-successful preparation of every required source.
-
-The local player connects automatically to localhost:8765 using the existing
-private token file. A custom server uses `sampling-connection.json` beside the
-executable, containing `url`, `token_file` and `library`. Credentials remain in
-the private token file. Standalone explicit-root serving remains available:
-
-```bash
-./scripts/serve.sh --root /absolute/library --source-root /absolute/originals \
-  --working-root /absolute/working --token-file /absolute/private-token
-```
+The independent native analysis worker streams and discards audio, publishing
+small regenerable peaks through durable fenced jobs. Playback/editor access does
+not wait for library-wide analysis. Classifiers use explicit bounded input
+adapters; there is no persistent library-wide listening render. Current trial
+service deployment and final production migration are tracked in the implementation
+checklist rather than the retired preparation-service instructions.
 
 Source acquisition/import is explicit background/operator work. Editor opening
-never starts an original-file import. Import authorization checks the opened
-Linux descriptor against configured source roots before reading bytes.
+never imports an original. Import authorization checks the opened Linux descriptor
+against configured source roots before reading bytes.
 
 ## Persistence, saves and errors
 
@@ -97,24 +83,25 @@ Switching sources or editing while a request runs cannot apply its acknowledgmen
 to a different draft. Human metadata corrections remain scoped to their target;
 recording-level and sample-level facts are distinct.
 
-Compact logging defaults to on: `player-debug.log` records preparation waits,
+Compact logging defaults to on: `player-debug.log` records source waits,
 HTTP timing and bounded request IDs without credentials/payloads. WSL HTTP logs
-are under `~/.local/state/audioharvest/`; preparation logs use
-`journalctl --user -u audioharvest-preparation.service`.
+for the current isolated services live in the evaluation root's `logs/` directory.
 
 ## Isolated verification
 
 `tests/create_cold_start_fixture.py --port PORT --manifest PATH` runs through the
 scraper's pinned studio Python and creates a disposable library/server. Optional
-rate/channel/subtype arguments cover native precision. `--source` imports a
+rate/channel/subtype arguments cover native precision; `--codec opus` or
+`--codec aac` generates compressed-source fixtures. `--source` imports a
 read-only copy of a chosen original into that isolated fixture.
 
 ```powershell
-pwsh scripts/verify-prepared-editor.ps1 -Manifest C:\absolute\fixture.json
-pwsh scripts/verify-prepared-editor.ps1 -Manifest C:\absolute\fixture.json -InjectNotReady
-pwsh scripts/verify-prepared-editor.ps1 -Manifest C:\absolute\fixture.json -InjectCatalogNotReady
+pwsh scripts/verify-native-editor.ps1 -Manifest C:\absolute\fixture.json
+pwsh scripts/verify-native-editor.ps1 -Manifest C:\absolute\fixture.json -InjectAnalysisPending
+pwsh scripts/verify-native-editor.ps1 -Manifest C:\absolute\fixture.json -InjectCatalogOffline
 ```
 
 The verifier checks native opening, audition prefetch and restart. Use
-`-Iterations 100` for random-position measurements. `-EvictPreparedPages`
-requests advisory page eviction of that fixture's converted audio only.
+`-Iterations 100` for random-position measurements. `-EvictSourcePages` requests
+advisory page eviction of that fixture's encoded source copy. Analysis-pending
+injection must leave editing usable; catalog-offline injection verifies recovery.

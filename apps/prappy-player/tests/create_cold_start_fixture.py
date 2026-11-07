@@ -44,17 +44,19 @@ def request_json(url, token, *, method='GET', timeout=2):
 def gated_app(config):
     from fastapi import Depends, Header, HTTPException
     from fastapi.responses import JSONResponse
-    from audioharvest.server import create_app
+    from audioharvest.indexed_server import create_app
+    from audioharvest.native_sources import NativeCatalog
+    from audioharvest.services.native_saves import NativeRegionSaves
 
     token = Path(config['token_file']).read_text().strip()
-    app = create_app([Path(config['library'])], token,
-                     working_root=Path(config['directory']) / 'working',
-                     source_roots=[Path(config['directory']) / 'media'])
+    sources=NativeCatalog([Path(config['library'])],analysis_root=Path(config['directory'])/'analysis')
+    sources.analysis.start()
+    app=create_app(sources,token,saves=NativeRegionSaves(sources),source_roots=[Path(config['directory'])/'media'])
     gate = asyncio.Event()
     gate.set()
     held_requests = waiting_requests = cancelled_requests = cancellation_epoch = 0
-    not_ready = {}
-    catalog_not_ready = 0
+    analysis_pending = 0
+    catalog_offline = 0
 
     def state():
         return {'ready': True, 'pid': os.getpid(), 'library_id': config['library_id'],
@@ -67,7 +69,7 @@ def gated_app(config):
 
     @app.middleware('http')
     async def hold_product_requests(request, call_next):
-        nonlocal held_requests, waiting_requests, cancelled_requests,catalog_not_ready
+        nonlocal held_requests, waiting_requests, cancelled_requests,catalog_offline,analysis_pending
         if request.url.path.startswith('/v1/') and not gate.is_set():
             if not hmac.compare_digest(request.headers.get('Authorization', ''), 'Bearer ' + token):
                 return JSONResponse({'error': 'invalid credentials'}, status_code=401)
@@ -83,45 +85,41 @@ def gated_app(config):
                 return JSONResponse({'error': {'code': 'fixture_cancelled',
                                               'message': 'Held fixture request cancelled'}}, status_code=503)
         route = request.url.path
-        kind = 'manifest' if route.endswith('/prepared') else 'pcm' if route.endswith('/prepared/pcm') else 'waveform' if route.endswith('/prepared/waveform') else None
-        if kind and not_ready.get(kind, 0) and hmac.compare_digest(request.headers.get('Authorization', ''), 'Bearer ' + token):
-            not_ready[kind] -= 1
-            return JSONResponse({'state': 'Queued', 'error': None}, status_code=202)
         response=await call_next(request)
-        if route=='/v1/catalog' and response.status_code==200 and catalog_not_ready:
-            catalog_not_ready-=1
+        if response.status_code==200 and ((route.endswith('/audio') and analysis_pending) or (route=='/v1/catalog' and catalog_offline)):
+            if route.endswith('/audio'):analysis_pending-=1
+            else:catalog_offline-=1
             body=json.loads(b''.join([chunk async for chunk in response.body_iterator]))
-            for item in body['items']:item.update(state='Queued',analysis=None,timeline_id=None)
+            if route.endswith('/audio'):
+                body['analysis_state']='Queued';body.pop('waveform',None)
+            else:
+                for item in body['items']:item['state']='Offline'
             return JSONResponse(body)
         return response
 
-    @app.post('/_fixture/catalog-not-ready', dependencies=[Depends(authenticate)])
-    async def inject_catalog_not_ready():
-        nonlocal catalog_not_ready
-        catalog_not_ready=1
-        return {'catalog_not_ready':catalog_not_ready}
+    @app.post('/_fixture/catalog-offline', dependencies=[Depends(authenticate)])
+    async def inject_catalog_offline():
+        nonlocal catalog_offline
+        catalog_offline=1
+        return {'catalog_offline':catalog_offline}
 
-    @app.post('/_fixture/not-ready', dependencies=[Depends(authenticate)])
-    async def inject_not_ready(count: int = 2):
-        if not 0 <= count <= 10:raise HTTPException(400, 'invalid fixture count')
-        not_ready.update(manifest=count, pcm=count, waveform=count)
-        return dict(not_ready)
+    @app.post('/_fixture/analysis-pending', dependencies=[Depends(authenticate)])
+    async def inject_analysis_pending(count:int=2):
+        nonlocal analysis_pending
+        if not 0<=count<=10:raise HTTPException(400,'invalid fixture count')
+        analysis_pending=count
+        return {'analysis_pending':count}
 
     @app.get('/_fixture/state', dependencies=[Depends(authenticate)])
     async def inspect_gate():
         return state()
 
     @app.post('/_fixture/evict', dependencies=[Depends(authenticate)])
-    def evict_prepared_pages(asset: str):
-        # Advisory eviction touches only this fixture's converted files.
-        store=app.state.preparation.store
-        manifest=store.manifest(asset)
-        if manifest is None:raise HTTPException(404,'fixture asset absent')
-        directory=store.asset_path(asset)
-        for relative in {manifest['audio'],manifest['listening']['audio']}:
-            with (directory/relative).open('rb') as handle:
-                os.posix_fadvise(handle.fileno(),0,0,os.POSIX_FADV_DONTNEED)
-        return {'asset':asset,'advisory':'POSIX_FADV_DONTNEED'}
+    def evict_source_pages(capture:str):
+        # Only this fixture's imported encoded copy; no global cache drop.
+        with sources.original(config['library_id'],capture).open('rb') as handle:
+            os.posix_fadvise(handle.fileno(),0,0,os.POSIX_FADV_DONTNEED)
+        return {'capture':capture,'advisory':'POSIX_FADV_DONTNEED'}
 
     @app.post('/_fixture/hold', dependencies=[Depends(authenticate)])
     async def hold_gate():
@@ -150,14 +148,15 @@ def serve(state_path):
                 log_level='warning', access_log=False)
 
 
-def create(port, manifest, directory, rate=48000, channels=2, subtype='PCM_16', source=None):
+def create(port, manifest, directory, rate=48000, channels=2, subtype='PCM_16', source=None,codec='pcm',layout=None):
     import numpy as np
     import soundfile as sf
     from audioharvest.catalog.commits import Catalog
     from audioharvest.catalog.config import init_library
     from audioharvest.services.sources import SourceService
-    from audioharvest.library_preparation import LibraryPreparation
+    from audioharvest.toolchain import binary
 
+    if source and (codec!='pcm' or layout):raise ValueError('choose an untouched source original or generated codec/layout fixture')
     if port == 8765 or not 1024 <= port <= 65535:
         raise ValueError('choose a disposable port from 1024 through 65535, excluding production port 8765')
     if manifest.exists():
@@ -174,22 +173,30 @@ def create(port, manifest, directory, rate=48000, channels=2, subtype='PCM_16', 
     if not 8000 <= rate <= 192000 or not 1 <= channels <= 32:
         raise ValueError('invalid fixture timeline')
     frames = np.arange(rate * 15, dtype=np.float64)
+    generated={}
     for name, hz in [('previous', 440), ('mark', 660)]:
         # The standard editor regression navigates from the loud opening to a
         # quieter final passage to verify viewport-dependent amplitude fitting.
         amplitude = np.where(frames < 9 * rate, .2, .02)
         tone = amplitude * np.sin(frames * (2 * np.pi * hz / rate))
         sf.write(media / (name + '.wav'), np.repeat(tone[:, None], channels, axis=1), rate, subtype=subtype)
+        generated[name]=media/(name+'.wav')
+        if layout:
+            mapped=media/(name+'-mapped.wav')
+            subprocess.run([binary('ffmpeg'),'-v','error','-i',str(generated[name]),'-c:a','copy',
+                            '-ch_layout',layout,str(mapped)],check=True)
+            generated[name]=mapped
     library = directory / 'library'
     init_library(library, registry=directory / 'registry.json')
-    service = SourceService(library, working_root=directory / 'working')
-    previous = service.import_file(media / 'previous.wav', complete=True, title='Previous 440 Hz')
-    marked = service.import_file(source or media / 'mark.wav', complete=True,
+    service = SourceService(library)
+    previous = service.import_file(generated['previous'], complete=True, title='Previous 440 Hz')
+    marked_path=source or generated['mark']
+    if codec!='pcm':
+        marked_path=media/('mark.mka' if codec=='opus' else 'mark.m4a')
+        subprocess.run([binary('ffmpeg'),'-v','error','-i',str(generated['mark']),'-c:a',
+                        'libopus' if codec=='opus' else 'aac',str(marked_path)],check=True)
+    marked = service.import_file(marked_path, complete=True,
                                  title='Marked recording' if source else 'Marked 660 Hz')
-    preparation = LibraryPreparation([library], directory / 'working')
-    preparation.refresh()
-    while preparation.prepare_one():
-        pass
     library_id = Catalog(library).config.id
     token = secrets.token_urlsafe(48)
     token_file = directory / 'server.token'
@@ -222,13 +229,14 @@ def create(port, manifest, directory, rate=48000, channels=2, subtype='PCM_16', 
             if time.monotonic() >= deadline:
                 raise TimeoutError(f'fixture server did not become ready; inspect {log}')
             retry.wait(.05)
-        previous_capture = request_json(url + '/v1/libraries/' + library_id + '/entities/' + previous['capture_id'], token)
-        marked_capture = request_json(url + '/v1/libraries/' + library_id + '/entities/' + marked['capture_id'], token)
+        previous_capture = request_json(url + '/v1/libraries/' + library_id + '/captures/' + previous['capture_id'] + '/audio', token)['capture']
+        marked_capture = request_json(url + '/v1/libraries/' + library_id + '/captures/' + marked['capture_id'] + '/audio', token)['capture']
         result = {'url': url, 'token_file': windows_path(token_file), 'library_id': library_id,
-                  'previous_capture': previous_capture, 'mark_song': windows_path(media / 'mark.wav'),
-                  'mark_capture_id': marked['capture_id'], 'mark_capture':marked_capture,
+                  'previous_capture': previous_capture,
+                  'capture_id': marked['capture_id'], 'expected_sources':2, 'mark_capture':marked_capture,
                   'tone_hz': None if source else 660, 'gate_url': url + '/_fixture',
-                  'fixture_pid': child.pid, 'fixture_directory': windows_path(directory),
+                  'fixture_pid': child.pid, 'fixture_start_ticks':Path(f'/proc/{child.pid}/stat').read_text().split()[21],
+                  'generated_codec':None if source else codec,'channel_layout':layout,'fixture_directory': windows_path(directory),
                   'fixture_log': windows_path(log)}
         manifest.parent.mkdir(parents=True, exist_ok=True)
         with manifest.open('x') as stream:
@@ -252,6 +260,8 @@ def main():
     parser.add_argument('--rate', type=int, default=48000)
     parser.add_argument('--channels', type=int, default=2)
     parser.add_argument('--subtype', choices=['PCM_16','PCM_32','FLOAT','DOUBLE'], default='PCM_16')
+    parser.add_argument('--layout',help='explicit speaker layout for generated WAV headers; never inferred for originals')
+    parser.add_argument('--codec',choices=['pcm','opus','aac'],default='pcm',help='generated marked-source format')
     parser.add_argument('--source', type=Path, help='read-only original to import into this isolated fixture')
     parser.add_argument('--serve-state', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -260,7 +270,7 @@ def main():
     else:
         if args.port is None or args.manifest is None:
             parser.error('--port and --manifest are required')
-        create(args.port, args.manifest.resolve(), args.directory, args.rate, args.channels, args.subtype,args.source)
+        create(args.port, args.manifest.resolve(), args.directory, args.rate, args.channels, args.subtype,args.source,args.codec,args.layout)
 
 
 if __name__ == '__main__':

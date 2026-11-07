@@ -42,7 +42,7 @@ function Read-Ui {
     if (!$text) { return $script:cachedUi }
     $lines = $text -split '\r?\n'; $ready = $lines[0] -split ' '
     if ($ready[0] -ne 'READY') { return $null }
-    $state = [pscustomobject]@{Width=[int]$ready[1];Height=[int]$ready[2];Repeat=[int]$ready[3];Cursor=[uint64]$ready[4];Count=[int]$ready[5];Pending=[bool][int]$ready[6];Paused=[bool][int]$ready[7];History=[bool][int]$ready[8];Visible=[int]$ready[9];Ack=[uint64]$ready[10];Controls=@{};Activations=@{};Tooltip='';ScrollY=0;ScrollMaxY=0;SortOrder=0;Topmost=$false;Strip=$false;Normalize=$false;Gain=0;Position=0;Duration=0;Waveform=0;Queued=0;View=0;Scoped=$false;Peak=0}
+    $state = [pscustomobject]@{Width=[int]$ready[1];Height=[int]$ready[2];Repeat=[int]$ready[3];Cursor=[uint64]$ready[4];Count=[int]$ready[5];Pending=[bool][int]$ready[6];Paused=[bool][int]$ready[7];History=[bool][int]$ready[8];Visible=[int]$ready[9];Ack=[uint64]$ready[10];Controls=@{};Activations=@{};Tooltip='';ScrollY=0;ScrollMaxY=0;SortOrder=0;Topmost=$false;Strip=$false;Normalize=$false;Gain=0;Position=0;Duration=0;Waveform=0;Queued=0;View=0;Scoped=$false;Peak=0;Sample=$null;Catalog=$null}
     foreach ($line in $lines) {
         if ($line -match '^CONTROL "([^"]+)" ([^ ]+) ([^ ]+) ([^ ]+) ([^ ]+) ([01]) ([01]) ([0-9]+)$') {
             $state.Controls[$matches[1]] = [pscustomobject]@{
@@ -59,6 +59,8 @@ function Read-Ui {
             $state.ScrollY=[double]::Parse($matches[2],[Globalization.CultureInfo]::InvariantCulture)
             $state.ScrollMaxY=[double]::Parse($matches[3],[Globalization.CultureInfo]::InvariantCulture)
         }
+        elseif ($line.StartsWith('SAMPLER ')) { $state.Sample=$line.Substring(8)|ConvertFrom-Json }
+        elseif ($line.StartsWith('CATALOG ')) { $state.Catalog=$line.Substring(8)|ConvertFrom-Json }
         elseif ($line -match '^ORDER ([0-9]+)$') { $state.SortOrder=[int]$matches[1] }
         elseif ($line -match '^SESSION (.+)$') { $state | Add-Member Session $matches[1] -Force }
         elseif ($line -match '^RENDERER (.+)$') { $state | Add-Member Renderer $matches[1] -Force }
@@ -103,9 +105,9 @@ function Read-Ui {
     $script:cachedUi=$state
     return $state
 }
-function Wait-Ui([scriptblock]$condition,[string]$description) {
+function Wait-Ui([scriptblock]$condition,[string]$description,[int]$Timeout=10) {
     $timer=[Diagnostics.Stopwatch]::StartNew(); $state=$null
-    while ($timer.Elapsed.TotalSeconds -lt 10) {
+    while ($timer.Elapsed.TotalSeconds -lt $Timeout) {
         if ($hwnd -ne [IntPtr]::Zero -and [FeatureNative]::IsIconic($hwnd)) { [FeatureNative]::ShowWindow($hwnd,9) | Out-Null }
         $state=Read-Ui
         if ($null -ne $state -and (& $condition $state)) { return $state }
@@ -114,7 +116,7 @@ function Wait-Ui([scriptblock]$condition,[string]$description) {
         Start-Sleep -Milliseconds 10
     }
     try { Capture 'failure' } catch { Write-Warning ('Failure screenshot unavailable: '+$_.Exception.Message) }
-    throw "UI condition timed out: $description. State: $($state | ConvertTo-Json -Compress -Depth 3)"
+    throw "UI condition timed out: $description. Probe: $stateDirectory/ui-status.txt. Playback: $($state.PlaybackError) Editor: $($state.Sample.notice)"
 }
 function Wait-State([string]$pattern) {
     $timer=[Diagnostics.Stopwatch]::StartNew()
@@ -142,12 +144,18 @@ function Move-Control([string]$name) {
     }
     throw "Control $name did not settle in its popup."
 }
-function Click([string]$name) {
-    $control=Move-Control $name; $before=$control.Clicks
+function Press-Control([string]$name) {
+    $before=(Read-Ui).Controls[$name].Clicks
     Send-UiInput 'DOWN'
     try { $null=Wait-Ui {param($s) $s.Controls.ContainsKey($name) -and $s.Controls[$name].Active} "control $name pressed" }
     finally { Send-UiInput 'UP' }
     $null=Wait-Ui {param($s) $s.Activations.ContainsKey($name) -and $s.Activations[$name] -gt $before} "control $name activated"
+}
+function Click([string]$name) { $null=Move-Control $name; Press-Control $name }
+function Click-At([string]$name,[double]$X,[double]$Y) {
+    Send-UiInput ('MOVE {0} {1}' -f $X.ToString([Globalization.CultureInfo]::InvariantCulture),$Y.ToString([Globalization.CultureInfo]::InvariantCulture))
+    $null=Wait-Ui {param($s) $s.Controls.ContainsKey($name) -and $s.Controls[$name].Hovered} "control $name hovered"
+    Press-Control $name
 }
 function Dismiss-Popup {
     for($attempt=0;$attempt -lt 3;$attempt++) {

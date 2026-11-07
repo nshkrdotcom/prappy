@@ -31,7 +31,7 @@ try {
         }
         $report = Join-Path $out "$variant-ui-$([Guid]::NewGuid().ToString('N')).log"
         $env:PRAPPY_LEAK_REPORT = $report
-        & "$PSScriptRoot/verify-prepared-editor.ps1" -Manifest $Manifest -BuildVariant $buildVariant -VerifySaveExport
+        & "$PSScriptRoot/verify-native-editor.ps1" -Manifest $Manifest -BuildVariant $buildVariant -VerifySaveExport
         if ($variant -eq 'Debug') { Require-LeakReport $report }
         $report = Join-Path $out "$variant-window-$([Guid]::NewGuid().ToString('N')).log"
         $env:PRAPPY_LEAK_REPORT = $report

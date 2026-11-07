@@ -49,7 +49,7 @@ void Workspace::browse(){
     get("collections",endpoint(library)+"/collections");
 }
 void Workspace::openCapture(Json item,std::optional<Span> selected,std::optional<Frame> cue){
-    stash();stopTransport();++generation;++waveformRevision;overviewBins.clear();detailBins.clear();detailPath.clear();overviewDue={};envelopePcm=false;envelope.clear();displayEnvelope.clear();projectedGain=-1;analysisJob.clear();
+    stash();stopTransport();++generation;++waveformRevision;overviewBins.clear();detailBins.clear();detailPath.clear();overviewDue={};envelope.clear();displayEnvelope.clear();projectedGain=-1;analysisJob.clear();
     capture=std::move(item);sourceLibrary=library;activeDraft.clear();region=nullptr;selectionDefined=false;sourceRegions=Json::array();
     closeNativeSession();beats.clear();onsets.clear();anchors.clear();overview=nullptr;timing=nullptr;gridId.clear();gridRevision=0;
     rate=capture.at("timeline").at("sample_rate");transport.rate=rate;
@@ -646,7 +646,7 @@ void Workspace::waveform(Audio& audio,const std::function<void(const char*,bool)
     const bool fitNow=ImGui::Button("Fit now");observe("sample-amplitude-fit-now",fitNow);
     if(fitNow){amplitude.mode=AmplitudeMode::Manual;fitAmplitudeNow=true;}ImGui::SameLine();
     ImGui::Text("%.2fx / %+.1f dB",amplitude.gain,amplitude.db());
-    if(!envelopePcm){ImGui::SameLine();ImGui::TextDisabled(!detailBins.empty()?"Native detail":viewportEnd-viewportStart>rate*60?"Overview - zoom for detail":"Loading detailed waveform...");}
+    ImGui::SameLine();ImGui::TextDisabled(!detailBins.empty()?"Native detail":viewportEnd-viewportStart>rate*60?"Overview - zoom for detail":"Loading detailed waveform...");
     const float height=std::max(180.f,ImGui::GetContentRegionAvail().y-360);
     const auto rulerPos=ImGui::GetCursorScreenPos();
     ImGui::InvisibleButton("##amplitude-ruler",{44,height});observe("sample-amplitude-ruler",false);
@@ -675,7 +675,7 @@ void Workspace::waveform(Audio& audio,const std::function<void(const char*,bool)
         const bool settled=detailDue==std::chrono::steady_clock::time_point{} || now>=detailDue;
         const bool changed=envelopeRevision!=waveformRevision || envelopeStart!=first || envelopeEnd!=end || envelopeBudget!=budget;
         if(changed && (settled || envelope.x.empty() || fitAmplitudeNow)){
-            envelopePcm=false;envelope.fromOverview(detailBins.empty()?overviewBins:detailBins,first,end);
+            envelope.fromOverview(detailBins.empty()?overviewBins:detailBins,first,end);
             envelopeRevision=waveformRevision;envelopeStart=first;envelopeEnd=end;envelopeBudget=budget;++envelopeBuilds;projectedGain=-1;
             if(amplitude.mode==AmplitudeMode::Visible && !envelope.x.empty())amplitude.fit(envelope.peak,true);
         }

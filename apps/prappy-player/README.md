@@ -116,13 +116,13 @@ excluded. See [diagnostics](docs/diagnostics.md).
 ctest --test-dir build/Release --output-on-failure
 pwsh scripts/test-state.ps1
 pwsh scripts/test-state.ps1 -BuildVariant Debug
-pwsh scripts/verify-prepared-editor.ps1 -Manifest C:\absolute\fixture.json
+pwsh scripts/verify-native-editor.ps1 -Manifest C:\absolute\fixture.json
 ```
 
-The state suite creates two short audio fixtures. Prepared backend/UI tests use
+The state suite creates two short audio fixtures. Native backend/UI tests use
 isolated WSL libraries from `tests/create_cold_start_fixture.py`. The editor
-verifier supports `-Iterations 100`, `-EvictPreparedPages`, `-InjectNotReady`
-and `-InjectCatalogNotReady`. Eviction is advisory, not a cold-disk guarantee.
+verifier supports `-Iterations 100`, `-EvictSourcePages`, `-InjectAnalysisPending`
+and `-InjectCatalogOffline`. Eviction is advisory, not a cold-disk guarantee.
 `scripts/test-output-meter.ps1` is an explicit audible WASAPI test.
 
 Historical implementation/verification reports retain earlier measurements.
