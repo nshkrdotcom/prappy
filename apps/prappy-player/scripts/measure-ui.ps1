@@ -1,8 +1,9 @@
 #Requires -Version 7.0
-param([string]$BuildVariant='Release-Unicode',[string]$StateSource='', [ValidateRange(2,30)][int]$Seconds=4)
+param([Parameter(Mandatory)][string]$StateSource,[string]$BuildVariant='Release', [ValidateRange(2,30)][int]$Seconds=4)
 $ErrorActionPreference='Stop'
 $app=Split-Path $PSScriptRoot -Parent
-if (!$StateSource) { $StateSource=Join-Path $app 'build/Release' }
+$marker=Get-Content (Join-Path $StateSource 'evaluation-state.json') -Raw|ConvertFrom-Json
+if($marker.mode -ne 'indexed-evaluation'){throw 'Use a closed, isolated indexed evaluation state as the benchmark source.'}
 . "$PSScriptRoot/ui-test-helpers.ps1"
 $results=@()
 function Percentile($values,[double]$p) {
@@ -11,11 +12,10 @@ function Percentile($values,[double]$p) {
 }
 foreach($driver in @('software','direct3d11')) {
     $stateDirectory=Join-Path $app ('build/perf-'+$driver+'-'+[Guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Force "$stateDirectory/player-analysis-v2" | Out-Null
-    foreach($name in @('player.ini','player-catalog.bin','player-history.txt')) { Copy-Item -LiteralPath (Join-Path $StateSource $name) -Destination $stateDirectory }
-    foreach($file in Get-ChildItem (Join-Path $StateSource 'player-analysis-v2') -File) {
-        Copy-Item -LiteralPath $file.FullName -Destination "$stateDirectory/player-analysis-v2"
-    }
+    $null=New-Item -ItemType Directory $stateDirectory
+    foreach($name in @('player.ini','player-ui.txt','player-history.txt','sample-workspaces.json','sampling-connection.json')) { Copy-Item -LiteralPath (Join-Path $StateSource $name) -Destination $stateDirectory }
+    $marker.state_root=$stateDirectory
+    [IO.File]::WriteAllText((Join-Path $stateDirectory 'evaluation-state.json'),($marker|ConvertTo-Json -Depth 20),[Text.UTF8Encoding]::new($false))
     $script:inputSequence=0; $hwnd=[IntPtr]::Zero
     if ($driver -eq 'software') { $env:PRAPPY_TEST_SOFTWARE='1' } else { Remove-Item Env:PRAPPY_TEST_SOFTWARE -ErrorAction SilentlyContinue }
     $process=Start-Process "$app/build/$BuildVariant/PrappyPlayer.exe" -WindowStyle Hidden -PassThru -ArgumentList '--window-test',('"{0}"' -f $stateDirectory)
@@ -26,7 +26,7 @@ foreach($driver in @('software','direct3d11')) {
         foreach($scene in @('compact','4k-list','4k-scroll','4k-waveform')) {
             if($scene -eq 'compact') { [FeatureNative]::SetWindowPos($hwnd,[IntPtr]::Zero,30,30,522,306,0x14) | Out-Null }
             if($scene -eq '4k-list') {
-                Click 'list'
+                Click 'list'; if((Read-Ui).Controls.ContainsKey('Clear')){Click 'Clear'}
                 [FeatureNative]::SetWindowPos($hwnd,[IntPtr]::Zero,0,0,3862,2216,0x14) | Out-Null
                 $null=Wait-Ui {param($s) $s.Width -ge 3800 -and $s.Visible -gt 100} '4K expanded library ready'
             }
