@@ -3,12 +3,7 @@ param([string]$BuildVariant='Release-Unicode',[string]$StateSource='', [Validate
 $ErrorActionPreference='Stop'
 $app=Split-Path $PSScriptRoot -Parent
 if (!$StateSource) { $StateSource=Join-Path $app 'build/Release' }
-$code=Get-Content "$PSScriptRoot/verify-features.ps1" -Raw
-$start=$code.IndexOf('Add-Type -AssemblyName'); $end=$code.IndexOf('$process = Start-Process')
-. ([scriptblock]::Create($code.Substring($start,$end-$start)))
-$start=$code.IndexOf('function Require('); $end=$code.IndexOf("`ntry {`n    `$timer=")
-if ($end -lt $start) { throw 'Cannot find UI verification helpers.' }
-. ([scriptblock]::Create($code.Substring($start,$end-$start)))
+. "$PSScriptRoot/ui-test-helpers.ps1"
 $results=@()
 function Percentile($values,[double]$p) {
     $sorted=@($values | Sort-Object); if (!$sorted.Count) { return $null }
