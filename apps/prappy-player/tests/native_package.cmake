@@ -4,3 +4,8 @@ endif()
 if(EXISTS "${PLAYER_DIRECTORY}/libmpv-2.dll")
   message(FATAL_ERROR "The player directory still ships the independent MPV test oracle")
 endif()
+file(STRINGS "${PLAYER_DIRECTORY}/PrappyPlayer.exe" regression_dispatch
+  REGEX "--(sampling|state|meter)-test" ENCODING UTF-16LE)
+if(regression_dispatch)
+  message(FATAL_ERROR "The player still embeds explicit regression dispatch: ${regression_dispatch}")
+endif()

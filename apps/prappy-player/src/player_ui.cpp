@@ -17,7 +17,6 @@
 #include "presentation.h"
 #include "sample_workspace.h"
 #include "player_sample_ui.h"
-#include "sample_tests.h"
 #include "implot.h"
 #include <windowsx.h>
 #include <shellapi.h>
@@ -231,7 +230,6 @@ int runPlayer(HINSTANCE instance) {
     if (!argv) throw std::runtime_error("Cannot read player command line.");
     const std::unique_ptr<void, decltype(&LocalFree)> arguments(argv, LocalFree);
     std::vector<std::wstring> args; for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
-    if (args.size() == 3 && args[0] == L"--sampling-test") return sampling::integrationTest(args[1],args[2]);
     SDL_Window* window = nullptr; SDL_Renderer* renderer = nullptr;
     Presentation presentation;
     bool imgui = false, platform = false, graphics = false;
