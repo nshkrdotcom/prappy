@@ -1,6 +1,7 @@
 #include "sample_client.h"
 #include "state_io.h"
 #include "debug_log.h"
+#include <SDL3/SDL_thread.h>
 #include <winhttp.h>
 #include <objbase.h>
 #include <bcrypt.h>
@@ -383,7 +384,7 @@ class ClientExecutor {
     }
     ClientExecutor() {
         try {
-            for(size_t index=0;index<lanes.size();++index){lanes[index].index=index;lanes[index].worker=std::jthread([this,index](std::stop_token stop){run(lanes[index],stop);});}
+            for(size_t index=0;index<lanes.size();++index){lanes[index].index=index;lanes[index].worker=std::jthread([this,index](std::stop_token stop){run(lanes[index],stop);SDL_CleanupTLS();});}
         }catch(...) {
             for(auto& lane:lanes)lane.worker.request_stop();
             wake.notify_all();

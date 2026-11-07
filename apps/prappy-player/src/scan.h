@@ -1,5 +1,6 @@
 #pragma once
 #include "library.h"
+#include <SDL3/SDL_thread.h>
 #include <condition_variable>
 #include <future>
 namespace scan_detail {
@@ -47,14 +48,13 @@ class Executor {
                 try {
                     if(!stop.stop_requested())success=task->action(task->next,task->config,stop,task->state->progress);
                     if(stop.stop_requested())success=false;
-                    if(stop.stop_requested())success=false;
                 }catch(const std::exception& error){task->next.notice=error.what();}
             }
             task->complete(success);
             {std::lock_guard guard(mutex);active.reset();}
         }
     }
-    Executor():worker([this](std::stop_token stop){run(stop);}){}
+    Executor():worker([this](std::stop_token stop){run(stop);SDL_CleanupTLS();}){}
 public:
     static Executor& instance(){static Executor executor;return executor;}
     ~Executor() {
