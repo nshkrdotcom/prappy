@@ -10,7 +10,6 @@
 #include "sample_library_tests.h"
 #include "sample_handoff_tests.h"
 #include "sample_workspace_tests.h"
-#include "audio_async_tests.h"
 #include "sample_client_cancel_tests.h"
 #include "scan_async_tests.h"
 #include "debug_log_tests.h"
@@ -26,14 +25,14 @@ int outputMeterTests(const fs::path& signal, const fs::path& logPath) {
     const auto require = [](bool value,const char* message) { if (!value) throw std::runtime_error(message); };
     try {
         Audio audio; audio.volume = 70;
-        audio.open(false,{{"audio-buffer","1"},{"ao","wasapi"},{"audio-exclusive","no"}});
-        require(audio.play(signal),"Cannot play meter timing fixture.");
+        const auto load=fixturePlayback(audio,false);
+        require(load(signal,false,0),"Cannot play meter timing fixture.");
         int tone = 0, silence = 0, wrong = 0;
         const auto start = Audio::Clock::now();
         while (std::chrono::duration<double>(Audio::Clock::now()-start).count() < 9) {
             audio.poll();
             double position = 0;
-            if (audio.loaded && audio.get_property(audio.handle,"audio-pts",MPV_FORMAT_DOUBLE,&position) >= 0 &&
+            if (audio.loaded && (position=audio.position) >= 0 &&
                 position >= 1 && position < 6) {
                 const double fraction = position - std::floor(position);
                 if (fraction > .2 && fraction < .8) {
@@ -57,8 +56,8 @@ int outputMeterTests(const fs::path& signal, const fs::path& logPath) {
         log << "gain ratio=" << reduced/normal << '\n';
         require(reduced/normal > .4 && reduced/normal < .6,"Output meter ignores application gain.");
         audio.setVolume(0); const auto muted=settle();
-        log << "muted peak=" << muted << " mpv volume=" << audio.textProperty("volume")
-            << " audio-pts=" << audio.textProperty("audio-pts") << '\n' << std::flush;
+        log << "muted peak=" << muted << " volume=" << audio.volume
+            << " native position=" << audio.position << '\n' << std::flush;
         require(muted < .00001,"Zero volume still shows output signal.");
         require(!audio.meterAvailable,"Zero-volume output meter remains active.");
         audio.setVolume(70); audio.setGain(0); require(settle() > .001,"Restored volume lost meter.");
@@ -72,23 +71,16 @@ int outputMeterTests(const fs::path& signal, const fs::path& logPath) {
 }
 static void playbackStateTests(const fs::path& root, Library& fixture, std::ostream& log) {
     const auto require = [](bool value, const char* message) { if (!value) throw std::runtime_error(message); };
-        Audio audio; audio.open(true);
+        Audio audio;
         History visits; HistoryFile sessionFile(root / "session.txt"); Playback player(audio, fixture, visits, sessionFile,fixturePlayback(audio));
         double availableLufs = -24;
         player.decideGain = [&](const fs::path& path, uint64_t serial) {
-            int paused = 0;
-            require(audio.get_property(audio.handle, "pause", MPV_FORMAT_FLAG, &paused) >= 0 && paused,
+            require(audio.native->state().paused,
                 "Gain selection ran after playback unpaused.");
-            return gain::choose(serial, utf8(path), {true, -18, 0}, {},
+            return gain::choose(serial, player.sourceIdentity(path), {true, -18, 0}, {},
                 {availableLufs, 0.1});
         };
-        const auto actualGain = [&] {
-            audio.waitIdle();
-            double value = 0;
-            require(audio.get_property(audio.handle, "volume-gain", MPV_FORMAT_DOUBLE, &value) >= 0,
-                "Pinned libmpv volume-gain property unavailable.");
-            return value;
-        };
+        const auto actualGain = [&] { return audio.gain; };
         const auto wait = [&](Playback& session, Audio& source) {
             for (int i = 0; i < 1000; ++i) {
                 session.tick();
@@ -99,6 +91,8 @@ static void playbackStateTests(const fs::path& root, Library& fixture, std::ostr
         };
         const auto play = [&](const fs::path& path) { require(player.request(path), "Playback request failed."); wait(player, audio); };
         play(fixture.tracks[0].path); const auto visitA = visits.current()->id;
+        require(audio.nativeMode && audio.native && audio.native->session(),"Playback state tests still use the legacy decoder instead of native PCM.");
+        require(audio.displayPosition(Audio::Clock::now()+std::chrono::seconds(2))==audio.position,"Native marker extrapolated beyond the device frame clock.");
         const auto gainEpochA = audio.loadedSerial;
         require(player.gainDecision.current() && player.gainDecision.current()->serial == gainEpochA &&
             std::abs(actualGain() - 6) < .001, "Gain was not locked before playback unpaused.");
@@ -139,7 +133,7 @@ static void playbackStateTests(const fs::path& root, Library& fixture, std::ostr
         const auto beforeMissing = visits.entries.size(), currentId = visits.current()->id;
         const auto previousGain = player.gainDecision.current()->appliedDb;
         availableLufs = -22; // Rollback must preserve the previous listening gain.
-        require(player.request(root / "missing.wav"), "Missing request not accepted by mpv."); wait(player, audio);
+        require(player.request(root / "missing.wav"), "Missing request not accepted by native playback."); wait(player, audio);
         require(visits.entries.size() == beforeMissing && visits.current()->id == currentId && !player.notice.empty(), "Failed load changed history or lost error.");
         require(player.gainDecision.current() && std::abs(actualGain() - previousGain) < .001,
             "Failed-load rollback silently renormalized the previous listening session.");
@@ -155,16 +149,15 @@ static void playbackStateTests(const fs::path& root, Library& fixture, std::ostr
         log << "Seek submission: 10001 targets coalesced in " << std::chrono::duration<double,std::milli>(Audio::Clock::now()-seekStart).count() << " ms\n";
         for (int i = 0; i < 200 && (audio.pendingSeek||audio.queuedSeek||std::abs(audio.position - .8) > .25); ++i) { player.tick(); SDL_Delay(5); }
         require(audio.paused && audio.position > .5, "Cannot checkpoint paused position.");
-        double decoded = 0;
-        require(audio.get_property(audio.handle,"time-pos",MPV_FORMAT_DOUBLE,&decoded) >= 0 && std::abs(decoded-.8) < .25,
+        const double decoded=static_cast<double>(audio.native->state().cursor)/audio.native->state().rate;
+        require(std::abs(decoded-.8) < .25,
             "Seek preview hid an incorrect decoder position.");
         player.checkpoint(); visits.repeat = RepeatMode::One; ++visits.revision; player.finish();
         HistoryFile restoredFile(root / "session.txt"); auto restoredHistory = restoredFile.load(10000);
-        Audio restoredAudio; restoredAudio.open(true); Playback restored(restoredAudio, fixture, restoredHistory, restoredFile,fixturePlayback(restoredAudio));
+        Audio restoredAudio; Playback restored(restoredAudio, fixture, restoredHistory, restoredFile,fixturePlayback(restoredAudio));
         restored.restore(); wait(restored, restoredAudio);
         require(restoredAudio.paused && restoredHistory.entries.size() == visits.entries.size() && restoredAudio.position > .5 && restoredHistory.repeat == RepeatMode::One, "Session did not restore paused without adding visits.");
-        restoredAudio.waitIdle();int paused = 0; restoredAudio.get_property(restoredAudio.handle, "pause", MPV_FORMAT_FLAG, &paused);
-        require(paused != 0, "Restored mpv was not paused.");
+        require(restoredAudio.native->state().paused, "Restored native output was not paused.");
         log << "PASS playback: branch/Back/Forward, rapid requests, locked gain vs late results/seek/pause, "
                "next-play gain, independent volume, failed-load gain rollback, paused restore/repeat\n";
 
@@ -197,7 +190,7 @@ static void playbackStateTests(const fs::path& root, Library& fixture, std::ostr
         require(restoredHistory.entries.size() == 1 && restoredHistory.current(), "Pruned pending target caused invalid navigation.");
         Library one; one.tracks.push_back(fixture.tracks.front());
         History oneHistory; oneHistory.repeat = RepeatMode::All;
-        HistoryFile oneFile(root / "one.txt"); Audio oneAudio; oneAudio.open(true); Playback onePlayer(oneAudio, one, oneHistory, oneFile,fixturePlayback(oneAudio));
+        HistoryFile oneFile(root / "one.txt"); Audio oneAudio; Playback onePlayer(oneAudio, one, oneHistory, oneFile,fixturePlayback(oneAudio));
         require(onePlayer.navigate(1), "Single-track start failed."); wait(onePlayer, oneAudio);
         oneAudio.seek(oneAudio.duration - .12); const auto beforeOne = oneAudio.serial;
         awaitEofAction(onePlayer, oneAudio, beforeOne);
@@ -210,7 +203,7 @@ static void playbackStateTests(const fs::path& root, Library& fixture, std::ostr
 
 // Integration checks run only in explicit --state-test fixture directories.
 int stateTests(const fs::path& configPath, const fs::path& logPath) {
-    std::ofstream log(logPath);
+    std::ofstream log(logPath);log<<std::unitbuf;
     const auto require = [](bool value, const char* message) { if (!value) throw std::runtime_error(message); };
     const auto rejects = [&](const auto& operation, const char* message) {
         bool rejected = false; try { operation(); } catch (const std::exception&) { rejected = true; }
@@ -309,36 +302,12 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
                 "Meter depends on frame rate.");
             log << "PASS Unicode shaping, emoji clusters, scaled text, idle/caret deadlines and elapsed-time audio controls\n";
         }
-        {
-            static std::vector<double> submitted;
-            submitted.clear();
-            Audio simulated; simulated.loaded = simulated.active = true; simulated.duration = 100;
-            simulated.command_async = [](mpv_handle*,uint64_t,const char** args) { submitted.push_back(std::stod(args[1])); return 0; };
-            simulated.seek(10);
-            for (int i = 0; i < 10000; ++i) simulated.seek(static_cast<double>(i%99));
-            require(submitted.size() == 1 && simulated.queuedSeek == 0 && simulated.displayPosition() == 0,
-                "Rapid seeks were not coalesced or the marker waited for decoding.");
-            simulated.pendingSeek = 0; simulated.submitSeek();
-            require(submitted.size() == 2 && submitted.back() == 0 && !simulated.queuedSeek, "Latest seek target was lost.");
-            simulated.duration = 0; simulated.seek(12);
-            require(simulated.displayPosition() == 12 && simulated.queuedSeek == 12, "Restore seek was lost before duration became available.");
-            simulated.duration = 100;
-            simulated.seekPreview.reset(); simulated.position = 20; simulated.positionTime = Audio::Clock::now();
-            require(std::abs(simulated.displayPosition(simulated.positionTime+std::chrono::milliseconds(50))-20.05) < .00001,
-                "Playback marker did not interpolate between decoder updates.");
-            simulated.paused = true;
-            require(simulated.displayPosition(simulated.positionTime+std::chrono::seconds(2)) == 20, "Paused marker continued advancing.");
-            simulated.active = false; simulated.pauseRequested = true; simulated.setPaused(false);
-            require(!simulated.pauseRequested,"Committing a tiny clip after EOF lost the explicit play intent.");
-            log << "PASS asynchronous seek coalescing, immediate preview, smooth clock and paused marker\n";
-        }
         require(statusText("", "Checking duplicates: 4 / 10") == "Checking duplicates: 4 / 10", "Empty status adds a leading separator.");
         require(statusText("10 tracks | 2 identical copies hidden", "Checking duplicates: 4 / 10") ==
             "10 tracks \xc2\xb7 2 identical copies hidden \xc2\xb7 Checking duplicates: 4 / 10", "Status sections are not joined with middle dots.");
         const auto root = logPath.parent_path() / ("state-test-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
         fs::create_directories(root);
         debugLogTests(root,log);
-        audio_async_tests::run(log);
         sampleClientCancellationTests(log);
         scanAsyncTests(log);
         sampleLibraryTests(root,log);
@@ -350,28 +319,25 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
             const unsigned char bytes[] = {0x66,0x4c,0x61,0x43,0x80,0,0,0x22,0x10,0,0x10,0,0,0,0x12,0,0,0x12,0x0b,0xb8,0x03,0x70,0,0,0x0c,0,0xf9,0xde,0xbe,0x3f,0x07,0xbe,0x68,0x53,0x3b,0xf0,0x29,0x5e,0x3d,0x2b,0xa6,0x8a,0xff,0xf8,0x7a,0x1c,0,0x0b,0xff,0x9c,0,0,0,0,0,0,0,0,0x3f,0xff};
             const auto clip = root / "short.flac";
             { std::ofstream output(clip,std::ios::binary); output.write(reinterpret_cast<const char*>(bytes),sizeof(bytes)); }
-            Library clips; Track track; track.path = clip; track.id = key(clip); clips.tracks.push_back(track);
-            const auto nextClip = root / "next-short.flac"; fs::copy_file(clip,nextClip);
-            track.path = nextClip; track.id = key(nextClip); clips.tracks.push_back(track);
-            History visits; visits.add(clip); HistoryFile storage(root / "short-history.txt");
-            Audio source; source.open(true); Playback session(source,clips,visits,storage,fixturePlayback(source)); session.restore();
-            int64_t outputRate = 0;
-            for (int i = 0; i < 400; ++i) {
-                session.tick();
-                if (source.loaded && source.get_property(source.handle,"audio-out-params/samplerate",MPV_FORMAT_INT64,&outputRate) >= 0 && outputRate > 0) break;
-                // The null output can consume an entire 64ms clip during priming,
-                // even paused. Its clean EOF is valid; actual samples are checked below.
-                if (source.sequentialRetry && !source.active && source.error.empty()) break;
-                SDL_Delay(5);
-            }
-            require(source.paused && !session.pending && (source.loaded || (source.sequentialRetry && !source.active)) &&
-                source.error.empty() && session.notice.empty() && visits.playedCount == 1,"Short FLAC startup restore produced a playback error.");
+            require(analysis::measure(clip).frames==3072,"Independent single-frame FLAC oracle lost frames.");
+            // A separate 64ms native PCM fixture exercises restore/EOF through
+            // the actual application controller, without an embedded FLAC decoder.
+            const auto nativeClip=root/"short.wav";
+            {std::ofstream out(nativeClip,std::ios::binary);const auto put=[&](auto value){out.write(reinterpret_cast<const char*>(&value),sizeof(value));};
+             out.write("RIFF",4);put(uint32_t(36+3072*4));out.write("WAVEfmt ",8);put(uint32_t(16));put(uint16_t(1));put(uint16_t(2));
+             put(uint32_t(48000));put(uint32_t(192000));put(uint16_t(4));put(uint16_t(16));out.write("data",4);put(uint32_t(3072*4));
+             const std::vector<char> silence(3072*4);out.write(silence.data(),silence.size());}
+            Library clips;Track track;track.path=nativeClip;track.id=key(nativeClip);clips.tracks.push_back(track);
+            const auto nextClip=root/"next-short.wav";fs::copy_file(nativeClip,nextClip);track.path=nextClip;track.id=key(nextClip);clips.tracks.push_back(track);
+            History visits;visits.add(nativeClip);HistoryFile storage(root/"short-history.txt");
+            Audio source;Playback session(source,clips,visits,storage,fixturePlayback(source));session.restore();
+            for(int i=0;i<400&&(session.pending||!source.loaded);++i){session.tick();SDL_Delay(5);}
+            require(source.paused&&source.loaded&&!session.pending&&source.error.empty()&&session.notice.empty()&&visits.playedCount==1,
+                "Short native startup restore produced a playback error.");
             session.toggle();
             for (int i = 0; i < 400 && source.active; ++i) { session.tick(); SDL_Delay(5); }
             require(!source.active && source.error.empty() && session.notice.empty(),"Short restored FLAC did not play to clean EOF.");
-            const auto measured = analysis::measure(clip);
-            require(measured.frames == 3072,"Short FLAC analysis lost decoded frames.");
-            log << "PASS 64ms single-frame FLAC: paused startup restore, playback EOF and full-frame analysis\n";
+            log << "PASS 64ms native PCM restore and EOF; independent single-frame FLAC oracle preserves all 3072 frames\n";
         }
         const auto a = fs::absolute(root / L"space Beyonc\u00e9" / L"a.wav"), b = fs::absolute(root / "b.wav"), c = fs::absolute(root / "c.wav");
         History history;
@@ -447,7 +413,7 @@ int stateTests(const fs::path& configPath, const fs::path& logPath) {
         fs::copy_file(fixture.tracks[0].path, copy, fs::copy_options::overwrite_existing);
         fs::copy_file(fixture.tracks[1].path, other, fs::copy_options::overwrite_existing);
         {
-            Audio source;source.open(true);Library empty;History visits;HistoryFile storage(root/"history-selection.txt");Playback session(source,empty,visits,storage,fixturePlayback(source));
+            Audio source;Library empty;History visits;HistoryFile storage(root/"history-selection.txt");Playback session(source,empty,visits,storage,fixturePlayback(source));
             const auto loaded=[&]{for(int i=0;i<1000;++i){session.tick();if(!session.pending&&source.loaded)return;SDL_Delay(5);}throw std::runtime_error("History replay load timed out.");};
             require(session.request(first),"History fixture failed.");loaded();const auto id=visits.current()->id;
             require(session.request(other),"Second history fixture failed.");loaded();

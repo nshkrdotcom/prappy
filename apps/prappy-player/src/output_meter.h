@@ -1,7 +1,7 @@
 #pragma once
 #include <memory>
 
-// Windows session peaks are measured at output, after mpv's decode-ahead buffer.
+// Windows session peaks are measured at output, after device buffering.
 // COM and endpoint discovery stay on a dedicated thread; reads never block UI.
 class OutputMeter {
     struct Impl;

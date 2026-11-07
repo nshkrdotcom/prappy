@@ -40,7 +40,7 @@ try {
     # silence intervals. Accidentally metering the whole endpoint must fail.
     if (![PrappyMeterFixture]::PlaySound($foreign,[IntPtr]::Zero,0x20009)) { throw 'Cannot start other-process test tone.' }
     $capture=[PrappyAudioLoopback]::new(660)
-    $process=Start-Process -FilePath "$app/build/$BuildVariant/PrappyPlayer.exe" -WindowStyle Hidden -PassThru `
+    $process=Start-Process -FilePath "$app/build/$BuildVariant/tests/PrappyStateTests.exe" -WindowStyle Hidden -PassThru `
         -ArgumentList '--meter-test',('"{0}"' -f $signal),('"{0}"' -f $log)
     if (!$process.WaitForExit(30000)) { Stop-Process -Id $process.Id -Force; throw 'Output meter test timed out.' }
     Get-Content -LiteralPath $log

@@ -4,7 +4,7 @@
 #include "history.h"
 #include "gain_policy.h"
 #include <functional>
-// Playback intents are committed by matching successful mpv playlist entry IDs.
+// Playback intents are committed only for the matching loaded source generation.
 struct Playback {
     using Loader=std::function<bool(const fs::path&,bool,double)>;
     enum class Kind { NewVisit, HistoryVisit, Traverse, Restore, Restart, Rollback };
@@ -22,7 +22,7 @@ struct Playback {
     uint64_t generation = 0;
     fs::path folder;
     gain::Lock gainDecision;
-    // Invoked on matching FILE_LOADED, before unpausing or restoring position.
+    // Invoked on the matching loaded generation, before unpausing or restoring position.
     std::function<gain::Decision(const fs::path&, uint64_t)> decideGain;
     Playback(Audio& source, Library& catalog, History& visits, HistoryFile& storage,Loader loader)
         : audio(source), library(catalog), history(visits), file(storage),load(std::move(loader)) {}

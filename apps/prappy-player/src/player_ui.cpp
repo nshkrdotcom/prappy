@@ -8,7 +8,6 @@
 #include "playback.h"
 #include "scan.h"
 #include "status.h"
-#include "tests.h"
 #include "feature_ui.h"
 #include "preferences.h"
 #include "ui_wake.h"
@@ -232,8 +231,6 @@ int runPlayer(HINSTANCE instance) {
     if (!argv) throw std::runtime_error("Cannot read player command line.");
     const std::unique_ptr<void, decltype(&LocalFree)> arguments(argv, LocalFree);
     std::vector<std::wstring> args; for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
-    if (args.size() == 3 && args[0] == L"--state-test") return stateTests(args[1], args[2]);
-    if (args.size() == 3 && args[0] == L"--meter-test") return outputMeterTests(args[1], args[2]);
     if (args.size() == 3 && args[0] == L"--sampling-test") return sampling::integrationTest(args[1],args[2]);
     SDL_Window* window = nullptr; SDL_Renderer* renderer = nullptr;
     Presentation presentation;

@@ -1,6 +1,6 @@
 #include "analysis.h"
 #include "analysis_dsp.h"
-#include "audio.h"
+#include "../tests/mpv_oracle.h"
 #include <bit>
 #include <cstring>
 #include <cmath>
@@ -21,7 +21,7 @@ struct DecoderMetadata {
     std::vector<std::pair<std::string, std::string>> tags;
     std::string codec;
 };
-void pollDecoder(Audio& decoder, bool& eof, const Metadata& metadata, DecoderMetadata& observed) {
+void pollDecoder(MpvOracle& decoder, bool& eof, const Metadata& metadata, DecoderMetadata& observed) {
     for (;;) {
         const auto event = decoder.wait_event(decoder.handle, 0);
         if (event->event_id == MPV_EVENT_NONE) return;
@@ -30,7 +30,7 @@ void pollDecoder(Audio& decoder, bool& eof, const Metadata& metadata, DecoderMet
         if (event->event_id == MPV_EVENT_PROPERTY_CHANGE && metadata) {
             const auto* property = static_cast<const mpv_event_property*>(event->data);
             if (event->reply_userdata == 4 && property->format == MPV_FORMAT_NODE)
-                observed.tags = Audio::tagsFromNode(*static_cast<const mpv_node*>(property->data));
+                observed.tags = MpvOracle::tagsFromNode(*static_cast<const mpv_node*>(property->data));
             if (event->reply_userdata == 5 && property->format == MPV_FORMAT_STRING)
                 observed.codec = *static_cast<const char* const*>(property->data);
             if (!observed.codec.empty()) metadata(observed.tags, observed.codec);
@@ -50,7 +50,7 @@ Result measure(const fs::path& path, std::stop_token stop, const Progress& progr
     static std::atomic<uint64_t> sequence{0};
     const auto pipeName = L"\\\\.\\pipe\\PrappyAnalysis-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(++sequence);
     // Decoder dies after the pipe is closed, including exception/cancellation paths.
-    Audio decoder;
+    MpvOracle decoder;
     Handle event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
     Handle pipe(CreateNamedPipeW(pipeName.c_str(), PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
         PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1, 65536, 65536, 0, nullptr));
@@ -77,7 +77,7 @@ Result measure(const fs::path& path, std::stop_token stop, const Progress& progr
     decoder.volume = 100;
     decoder.open(false, {{"ao", "pcm"}, {"ao-pcm-file", output.c_str()}, {"ao-pcm-waveheader", "no"},
         {"audio-format", "float"}, {"audio-samplerate", "48000"}, {"audio-channels", "stereo"},
-        {"gapless-audio", "no"}, {"replaygain", "no"}, {"keep-open", "no"}}, false);
+        {"gapless-audio", "no"}, {"replaygain", "no"}, {"keep-open", "no"}});
     if (metadata) {
         decoder.check(decoder.observe_property(decoder.handle, 4, "metadata", MPV_FORMAT_NODE));
         decoder.check(decoder.observe_property(decoder.handle, 5, "current-tracks/audio/codec", MPV_FORMAT_STRING));

@@ -99,13 +99,13 @@ int main(int argc,char** argv) {
         const auto progressDeadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
         while(audio.displayPosition()<=1.25&&audio.error.empty()&&std::chrono::steady_clock::now()<progressDeadline){audio.poll();Sleep(1);}
         audio.setPaused(true);audio.poll();const auto pausedPosition=audio.displayPosition();Sleep(40);audio.poll();
-        if(audio.displayPosition()!=pausedPosition||audio.volume!=23||audio.gain!=-6||audio.handle||audio.dll||audio.worker)
+        if(audio.displayPosition()!=pausedPosition||audio.volume!=23||audio.gain!=-6||GetModuleHandleW(L"libmpv-2.dll"))
             throw std::runtime_error("Native player pause/gain state or single-engine invariant failed.");
         auto missing=source;missing.source.capture="cap_"+std::string(32,'f');
         audio.playNative(directory/"missing.source",missing,*library.backend,true,0);
         const auto errorDeadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
         while(audio.error.empty()&&std::chrono::steady_clock::now()<errorDeadline){audio.poll();Sleep(1);}
-        if(audio.error.empty()||audio.loaded||audio.handle||audio.dll)throw std::runtime_error("Failed native source fell back or marked itself ready.");
+        if(audio.error.empty()||audio.loaded||GetModuleHandleW(L"libmpv-2.dll"))throw std::runtime_error("Failed native source fell back or marked itself ready.");
         if(!load(track->path,true,1.25))throw std::runtime_error(audio.error);
         const auto recoveryDeadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
         while(!audio.loaded&&audio.error.empty()&&std::chrono::steady_clock::now()<recoveryDeadline){audio.poll();Sleep(1);}

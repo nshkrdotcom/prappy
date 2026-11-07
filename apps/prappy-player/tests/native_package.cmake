@@ -1,0 +1,6 @@
+if(NOT EXISTS "${PLAYER_DIRECTORY}/PrappyPlayer.exe")
+  message(FATAL_ERROR "Build the native player before checking its package")
+endif()
+if(EXISTS "${PLAYER_DIRECTORY}/libmpv-2.dll")
+  message(FATAL_ERROR "The player directory still ships the independent MPV test oracle")
+endif()

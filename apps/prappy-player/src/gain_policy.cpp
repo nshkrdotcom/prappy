@@ -121,9 +121,9 @@ Decision choose(uint64_t serial, std::string source, const Settings& settings, c
     if (!settings.enabled) return result;
     double requested = std::isfinite(settings.fallbackDb) ? settings.fallbackDb : 0;
     result.origin = Origin::Fallback;
-    // Peak measurements are from the same 48 kHz stereo PCM domain as mpv
-    // playback, including mandatory codec output gain. A valid newer measured
-    // peak is preferred over a potentially pre-decoder tag peak.
+    // The caller supplies measurements for the validated listening domain,
+    // including mandatory codec output gain. A valid measured peak takes
+    // precedence over a potentially pre-decoder tag peak.
     if (measurement.samplePeak && std::isfinite(*measurement.samplePeak) && *measurement.samplePeak > 0 && *measurement.samplePeak <= 64)
         result.samplePeak = measurement.samplePeak;
     if (tags.selected) {
@@ -132,7 +132,7 @@ Decision choose(uint64_t serial, std::string source, const Settings& settings, c
             result.origin = tag.origin; result.reference = tag.reference;
             result.referenceLufs = tag.referenceLufs;
             requested = tag.adjustmentDb + result.targetLufs - tag.referenceLufs;
-            // A source-domain tag peak does not establish the peak after mpv
+            // A source-domain tag peak does not establish the listening peak after
             // downmix/resampling/mandatory codec gain. Retain it as metadata,
             // but authorize boost only with a matching decoded measurement.
         }

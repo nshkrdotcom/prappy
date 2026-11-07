@@ -67,7 +67,7 @@ endif()
 add_executable(prappy_prepared_backend_tests tests/prepared_backend_tests.cpp
   tests/analysis_tests.rc src/remote_catalog.cpp src/remote_waveform.cpp src/sample_client.cpp src/output_meter.cpp)
 target_include_directories(prappy_prepared_backend_tests PRIVATE src)
-target_include_directories(prappy_prepared_backend_tests SYSTEM PRIVATE third_party/json third_party/mpv/include)
+target_include_directories(prappy_prepared_backend_tests SYSTEM PRIVATE third_party/json)
 target_compile_definitions(prappy_prepared_backend_tests PRIVATE PRAPPY_INDEXED_FIXTURES UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(prappy_prepared_backend_tests PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
 target_link_libraries(prappy_prepared_backend_tests PRIVATE shell32 ole32 bcrypt winhttp SDL3::SDL3-static)
@@ -105,14 +105,13 @@ add_test(NAME native_playback COMMAND prappy_native_playback_tests)
 add_library(implot STATIC third_party/implot/implot.cpp third_party/implot/implot_items.cpp)
 target_include_directories(implot SYSTEM PUBLIC third_party/implot)
 target_link_libraries(implot PUBLIC imgui)
-add_executable(prappy_player WIN32 src/main.cpp src/output_meter.cpp src/player_ui.cpp src/analysis.cpp src/analysis_dsp.cpp src/gain_policy.cpp src/text.cpp src/tests.cpp src/sample_client.cpp src/sample_workspace.cpp src/remote_catalog.cpp src/remote_waveform.cpp assets/player.rc)
+add_executable(prappy_player WIN32 src/main.cpp src/output_meter.cpp src/player_ui.cpp src/analysis_dsp.cpp src/gain_policy.cpp src/text.cpp src/sample_client.cpp src/sample_workspace.cpp src/remote_catalog.cpp src/remote_waveform.cpp assets/player.rc)
 # The Debug regression TU instantiates the JSON-backed persistence/IO fixtures.
 # MSVC's standard COFF section count is insufficient without optimization.
 set_property(SOURCE src/tests.cpp APPEND PROPERTY COMPILE_OPTIONS /bigobj)
 target_include_directories(prappy_player SYSTEM PRIVATE third_party/json)
 set_property(SOURCE assets/player.rc APPEND PROPERTY OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/player.ico")
 set_target_properties(prappy_player PROPERTIES OUTPUT_NAME "PrappyPlayer")
-target_include_directories(prappy_player SYSTEM PRIVATE third_party/mpv/include)
 target_compile_definitions(prappy_player PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(prappy_player PRIVATE /W4 /WX /permissive- /utf-8 /EHsc /external:W0)
 if(PRAPPY_ANALYZE)
@@ -120,18 +119,13 @@ if(PRAPPY_ANALYZE)
 endif()
 target_link_libraries(prappy_player PRIVATE implot imgui shell32 ole32 comctl32 bcrypt dwmapi dwrite winhttp)
 target_link_options(prappy_player PRIVATE /INCREMENTAL:NO /MANIFEST:EMBED /MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/assets/player.manifest)
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mpv/libmpv-2.dll")
-  message(FATAL_ERROR "Missing libmpv runtime. Run scripts/deps.ps1.")
-endif()
 add_custom_command(TARGET prappy_player POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts" "$<TARGET_FILE_DIR:prappy_player>/fonts"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/player.ico" "$<TARGET_FILE_DIR:prappy_player>/PrappyPlayer.ico"
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mpv/libmpv-2.dll" "$<TARGET_FILE_DIR:prappy_player>"
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mpv/licenses" "$<TARGET_FILE_DIR:prappy_player>/licenses/mpv"
+  COMMAND ${CMAKE_COMMAND} -E rm -f "$<TARGET_FILE_DIR:prappy_player>/libmpv-2.dll"
+  COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:prappy_player>/licenses/mpv"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/SDL/LICENSE.txt" "$<TARGET_FILE_DIR:prappy_player>/licenses/SDL.txt"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -142,3 +136,32 @@ add_custom_command(TARGET prappy_player POST_BUILD
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/implot/LICENSE" "$<TARGET_FILE_DIR:prappy_player>/licenses/implot.txt"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/json/LICENSE.MIT" "$<TARGET_FILE_DIR:prappy_player>/licenses/json.txt")
+
+# Explicit regression executables and the independent compressed decoder oracle
+# are kept outside the player runtime directory.
+add_executable(prappy_state_tests tests/state_main.cpp src/tests.cpp src/analysis.cpp
+  src/analysis_dsp.cpp src/gain_policy.cpp src/text.cpp src/sample_client.cpp
+  src/sample_workspace.cpp src/remote_catalog.cpp src/remote_waveform.cpp src/output_meter.cpp)
+set_target_properties(prappy_state_tests PROPERTIES OUTPUT_NAME PrappyStateTests)
+target_include_directories(prappy_state_tests PRIVATE src)
+target_include_directories(prappy_state_tests SYSTEM PRIVATE third_party/json third_party/mpv/include)
+target_compile_definitions(prappy_state_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(prappy_state_tests PRIVATE /W4 /WX /permissive- /utf-8 /EHsc /external:W0)
+target_link_libraries(prappy_state_tests PRIVATE implot imgui shell32 ole32 comctl32 bcrypt dwmapi dwrite winhttp)
+target_link_options(prappy_state_tests PRIVATE /INCREMENTAL:NO)
+if(PRAPPY_ANALYZE)
+  target_compile_options(prappy_state_tests PRIVATE /analyze /analyze:external-)
+endif()
+foreach(oracle IN ITEMS prappy_state_tests prappy_analysis_windows_tests)
+  set_target_properties(${oracle} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
+  add_custom_command(TARGET ${oracle} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mpv/libmpv-2.dll" "$<TARGET_FILE_DIR:${oracle}>"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mpv/licenses" "$<TARGET_FILE_DIR:${oracle}>/licenses/mpv")
+endforeach()
+add_test(NAME native_package COMMAND ${CMAKE_COMMAND}
+  "-DPLAYER_DIRECTORY=$<TARGET_FILE_DIR:prappy_player>" -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/native_package.cmake")
+add_custom_command(TARGET prappy_state_tests POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts" "$<TARGET_FILE_DIR:prappy_state_tests>/fonts")

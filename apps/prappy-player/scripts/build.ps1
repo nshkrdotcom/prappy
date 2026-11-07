@@ -26,6 +26,7 @@ if ($Asan) {
     $runtime = Join-Path (Split-Path $compiler) 'clang_rt.asan_dynamic-x86_64.dll'
     if (!(Test-Path -LiteralPath $runtime)) { throw "ASan runtime missing: $runtime. Install the Visual Studio C++ AddressSanitizer component." }
     Copy-Item -LiteralPath $runtime -Destination $build -Force
+    Copy-Item -LiteralPath $runtime -Destination (Join-Path $build 'tests') -Force
 }
 if (Test-Path -LiteralPath "$env:USERPROFILE/.config/prappy/development-signing.json") {
     & "$PSScriptRoot/sign-development.ps1" -BuildDirectory $build

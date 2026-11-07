@@ -5,8 +5,41 @@
 #include "grouped_list.h"
 #include "compact_row.h"
 #include <SDL3/SDL.h>
-inline Playback::Loader fixturePlayback(Audio& audio) {
-    return [&audio](const fs::path& path,bool paused,double position){return audio.play(path,paused,position);};
+// Test-only WAV transport: exercise the production native session and SDL output,
+// without bringing a second decoder into the application playback path.
+inline Playback::Loader fixturePlayback(Audio& audio,bool silent=true) {
+    using namespace sampling;using namespace prepared;
+    if(!audio.nativeMode)audio.openNative(silent,PcmBudget(256));
+    return [&audio](const fs::path& path,bool paused,double position){
+        const std::string library="lib_"+std::string(32,'a'),sha(64,'c');
+        std::string capture="cap_"+std::string(32,'0');std::to_chars(capture.data()+4,capture.data()+36,std::hash<std::wstring>{}(key(path)),16);
+        Client::Transport transport=[path,capture,sha](const Connection&,const Request& request,std::stop_token){
+            Reply reply;reply.status=200;
+            if(request.tag!="source-descriptor"&&request.tag!="source-pcm"){reply.body={{"active",true}};return reply;}
+            SDL_AudioSpec spec{};Uint8* raw=nullptr;Uint32 length=0;
+            if(!SDL_LoadWAV(path.string().c_str(),&spec,&raw,&length)){reply.error=SDL_GetError();return reply;}
+            const std::unique_ptr<Uint8,decltype(&SDL_free)> input(raw,SDL_free);
+            SDL_AudioSpec target=spec;target.format=SDL_AUDIO_S32;Uint8* converted=nullptr;int bytes=0;
+            if(!SDL_ConvertAudioSamples(&spec,raw,static_cast<int>(length),&target,&converted,&bytes)){reply.error=SDL_GetError();return reply;}
+            const std::unique_ptr<Uint8,decltype(&SDL_free)> pcm(converted,SDL_free);
+            const NativeTimeline clock{spec.freq,spec.channels,bytes/(spec.channels*4),SampleType::Int32};
+            if(request.tag=="source-descriptor")reply.body={{"source_key",std::string(64,'d')},{"timeline_id","tl_"+std::string(32,'e')},
+                {"sample_rate",clock.rate},{"channels",clock.channels},{"frame_count",clock.frames},{"sample_format","int32"},{"access_mode","indexed"},
+                {"capture",{{"id",capture},{"blob_sha256",sha}}}};
+            else{
+                const Frame first=request.body.at("origin_frame"),count=request.body.at("frame_count");
+                const size_t stride=static_cast<size_t>(clock.channels)*4;
+                if(first<0||count<0||first>clock.frames||count>clock.frames-first)throw std::runtime_error("Fixture PCM read outside source.");
+                reply.preparedPcm=std::make_shared<Block>(clock,first,count,std::span<const std::byte>(reinterpret_cast<const std::byte*>(converted)+first*stride,count*stride));
+                reply.body={{"decoder_epoch","native-state-fixture"}};
+            }
+            return reply;
+        };
+        Connection backend;backend.url="http://127.0.0.1:18816";backend.token=std::string(48,'t');
+        audio.nativeConnection=backend;audio.native=std::make_shared<NativePlayback>(backend,*audio.nativeMemory,[]{},std::move(transport));
+        CatalogSource source;source.source={library,capture};source.asset=sha;source.state="Playable";source.codec="pcm_s16le";
+        return audio.playNative(path,source,backend,paused,position);
+    };
 }
 
 inline void featureTests(const fs::path& root, const Library& fixture, std::ostream& log) {
@@ -14,11 +47,11 @@ inline void featureTests(const fs::path& root, const Library& fixture, std::ostr
     {
         Library staged=fixture;
         for(auto& track:staged.tracks){track.prepared=prepared::CatalogSource{};track.prepared->state="Offline";}
-        Audio source;source.open(true);History visits;HistoryFile storage(root/"waiting-prepared-playback.txt");
+        Audio source;source.openNative(true,sampling::PcmBudget(256));History visits;HistoryFile storage(root/"waiting-prepared-playback.txt");
         bool ready=false;int loads=0;
         Playback session(source,staged,visits,storage,[&](const fs::path& path,bool paused,double position){
             ++loads;if(!ready)throw prepared::NotReady("Recording unavailable: Offline");
-            return source.play(path,paused,position);
+            return fixturePlayback(source)(path,paused,position);
         });
         require(session.request(staged.tracks[0].path)&&session.request(staged.tracks[1].path),"Offline playback intent was discarded.");
         for(int i=0;i<5;++i)session.tick();
@@ -220,7 +253,7 @@ inline void featureTests(const fs::path& root, const Library& fixture, std::ostr
     }
     log << "PASS features model: WSL paths, queue/forward trail, retained-history views, ranked search, duration/type/offline filters, gain/headroom, preferences\n" << std::flush;
 
-    Audio audio; audio.open(true); History history; HistoryFile file(root / "feature-playback.txt"); Playback player(audio, library, history, file,fixturePlayback(audio));
+    Audio audio; History history; HistoryFile file(root / "feature-playback.txt"); Playback player(audio, library, history, file,fixturePlayback(audio));
     const auto wait = [&] {
         for (int i = 0; i < 1000; ++i) { player.tick(); if (audio.loaded && !player.pending) return; SDL_Delay(5); }
         throw std::runtime_error("Feature playback timeout: " + player.notice + " " + audio.error);
@@ -229,8 +262,8 @@ inline void featureTests(const fs::path& root, const Library& fixture, std::ostr
     require(player.navigate(1) && player.navigate(1), "Idle queued playback failed."); wait();
     require(history.playedCount == 1 && key(audio.current) == key(a), "Rapid Next skipped an uncommitted queued track.");
     require(!audio.outputMeter && audio.meterPeak == 0, "Silent decoder started a hardware-output meter.");
-    const auto volume = audio.volume; audio.setGain(-6); audio.waitIdle();
-    double applied = 0; audio.get_property(audio.handle, "volume-gain", MPV_FORMAT_DOUBLE, &applied);
+    const auto volume = audio.volume; audio.setGain(-6);
+    const double applied = audio.gain;
     require(std::abs(applied + 6) < .001 && audio.volume == volume, "Measured gain changed user volume or was not applied.");
     require(player.navigate(1), "Second queued track failed."); wait(); require(history.playedCount == 2 && key(audio.current) == key(b), "Queue consumption committed the wrong visit.");
     const auto missing = root / "queued-missing.wav"; player.enqueue(missing, true); const auto oldId = history.current()->id;

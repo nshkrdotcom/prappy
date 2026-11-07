@@ -1,5 +1,5 @@
 #include "analysis.h"
-#include "audio.h"
+#include "mpv_oracle.h"
 #include "gain_policy.h"
 
 
@@ -15,7 +15,7 @@ int wmain(int argc, wchar_t** argv) {
         require(argc == 2, "Usage: prappy_analysis_windows_tests <generated-fixture-directory>");
         const fs::path root(argv[1]);
         std::cout << "fixtureRoot=" << utf8(root) << '\n';
-        Audio audio;
+        MpvOracle audio;
         audio.open(true);
         std::cout << "mpvVersion=" << audio.textProperty("mpv-version") << '\n';
         require(audio.free_node_contents != nullptr, "Pinned mpv_free_node_contents missing");
@@ -73,7 +73,7 @@ int wmain(int argc, wchar_t** argv) {
                                            {result.loudness, samplePeak});
             if (tags.selected) require(std::abs(warm.appliedDb - (opus ? 3 : 6)) < .001, "Wrong warm tag gain");
             audio.setGain(warm.appliedDb);
-            audio.waitIdle(); // Inspect the acknowledged actor command, still before unpause.
+            // Inspect the independent decoder property before unpause.
             double actual = 0;
             require(audio.get_property(audio.handle, "volume-gain", MPV_FORMAT_DOUBLE, &actual) >= 0 &&
                     std::abs(actual - warm.appliedDb) < .001, "Pinned mpv did not apply volume-gain while paused");

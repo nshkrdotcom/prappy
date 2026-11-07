@@ -21,7 +21,7 @@ foreach($name in @('first','second')){
 }
 [IO.File]::WriteAllText("$fixture/player.ini","debug_log=true",[Text.UTF8Encoding]::new($false))
 $output = Join-Path $stateOutput "state-$BuildVariant.log"
-$process = Start-Process -FilePath "$app/build/$BuildVariant/PrappyPlayer.exe" -WindowStyle Hidden -PassThru `
+$process = Start-Process -FilePath "$app/build/$BuildVariant/tests/PrappyStateTests.exe" -WindowStyle Hidden -PassThru `
     -RedirectStandardError "$stateOutput/state-stderr-$BuildVariant.log" `
     -ArgumentList '--state-test',('"{0}"' -f "$fixture/player.ini"),('"{0}"' -f $output)
 if (!$process.WaitForExit(120000)) { Stop-Process -Id $process.Id -Force; throw 'State regression timed out.' }

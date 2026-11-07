@@ -1,7 +1,7 @@
 # Prappy Player
 
 Native Windows x64 player and sampling editor using SDL3, Dear ImGui, ImPlot
-and audio-only libmpv. Library preparation runs independently in WSL.
+and native SDL audio. Indexed source access and analysis run independently in WSL.
 
 The compact player starts at 500 physical pixels wide. It retains geometry,
 volume, browsing preferences, listening history and editor drafts. DirectWrite
@@ -10,57 +10,32 @@ HTTP requests and persistence run independently of the window thread.
 
 ## Audio architecture
 
-Audioharvest owns the explicit library scope, original recordings and permanent
-prepared audio. Prappy fetches its catalog and bounded audio/waveform ranges.
-Masters preserve native rate and every channel in lossless WavPack. Integer32
-remains integer32; double precision uses Wave64. An explicit 48-kHz stereo
-float32 listening render supplies playback, audition, loudness and listening
-peaks. It shares the master when their formats match. Originals stay separate.
+Audioharvest preserves acquired originals in their compressed formats. The reader
+seeks and decodes bounded native-frame regions on demand. Prappy shares one
+RAM-bounded PCM session between playback and editing; resampling happens at the
+device boundary. Saved raw regions are frozen losslessly with effects retained
+as metadata. Compact, regenerable peaks supply broad waveform views.
 
-Opening a Ready source uses its capture, asset and immutable native timeline
-identities. Source hashing, original decoding, registration and whole-song
-waveform construction belong to background preparation. Stored peak pyramids
-supply overviews; short typed native reads supply fine editor detail.
-
-Queued, Preparing, Offline, Failed, Stale and CapacityBlocked are explicit
-states. A waiting player selection retains the latest source and pause intent,
-then loads automatically when catalog refresh reports Ready. Editor HTTP 202
-responses retain the action and retry every 500 ms. Superseded source, span
-and transport requests cannot replace the current view.
+Source hashing and analysis do not gate editor opening. Optional analysis can be
+pending or unavailable while indexed playback remains usable. Superseded source,
+span and transport requests cannot replace the current view.
 
 ## Backend setup
 
-In the scraper checkout, configure `~/.config/audioharvest/workstation.json`:
-
-```json
-{"libraries":["/absolute/library/root"],"source_roots":["/absolute/original/acquisitions"]}
-```
-
-HTTP and independent preparation use this same scope. Configure an adequately
-sized permanent working volume in `~/.config/audioharvest/storage.json`:
-
-```json
-{"working_root":"/absolute/working/volume","reserve_gib":20}
-```
-
-Size it for the complete corpus and required listening renders, with reserve
-space. Jobs reserve estimated space before encoding and preserve a configurable
-20-GiB floor by default. Capacity/offline jobs retry automatically when space or
-an original location returns, with at least 60 seconds between recovery checks.
+This branch is undergoing validation against an **isolated evaluation root**;
+production migration is still pending. The root contains copied canonical state
+and read-only original references. Do not redirect it at production journals.
+Run the scraper indexed service against that initialized root:
 
 ```bash
-./scripts/install-preparation-service.sh
-./prappy.sh
+.venv-studio/bin/python -m audioharvest.indexed_server --evaluation-root "$EVALUATION_ROOT" --native-state
 ```
 
-The user service restarts after failure and starts with the user session.
-Closing Prappy or HTTP leaves preparation running. Inspect it with
-`systemctl --user status audioharvest-preparation.service` and
-`journalctl --user -u audioharvest-preparation.service`.
-
-Local Prappy uses localhost port 8765 and the private WSL token file. It starts
-the backend when needed. Custom connections use `sampling-connection.json`;
-see [sampling workflow](docs/sampling.md).
+Use the root's configured endpoint and private token in Prappy's
+`sampling-connection.json`, and launch `PrappyPlayer.exe --evaluation STATE_ROOT`.
+The evaluation marker must match the isolated state root and connection. Ordinary
+production startup remains a separate cutover task. See
+[sampling workflow](docs/sampling.md) for editor controls.
 
 ## Build and configuration
 
@@ -73,8 +48,10 @@ pwsh scripts/build.ps1 -Run
 pwsh scripts/build.ps1 -Config Debug
 ```
 
-Executable: `build/Release/PrappyPlayer.exe`. Keep `libmpv-2.dll`, `fonts/`,
-`licenses/` and the icon with it. The MSVC runtime and SDL are statically linked.
+Executable: `build/Release/PrappyPlayer.exe`. Keep `fonts/`, `licenses/` and the
+icon with it. The MSVC runtime and SDL are statically linked. Explicit regression
+executables and their independent MPV oracle live under `build/Release/tests/`;
+they are excluded from the player runtime.
 State beside the executable includes `player.ini`, `player-ui.txt`,
 `player-history.txt`, `sampling-connection.json` and `sample-workspaces.json`.
 Preserve those files and their backups when relocating the application.

@@ -21,7 +21,7 @@ $sdk=Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/signtool.
     Sort-Object { [version]$_.Directory.Parent.Name } -Descending | Select-Object -First 1
 if (!$sdk) { throw 'Windows SDK x64 SignTool is missing.' }
 $root=(Resolve-Path -LiteralPath $BuildDirectory).Path
-$files=@(Get-ChildItem -LiteralPath $root -File | Where-Object { $_.Extension -in '.exe','.dll' })
+$files=@(Get-ChildItem -LiteralPath $root,(Join-Path $root 'tests') -File | Where-Object { $_.Extension -in '.exe','.dll' })
 if (!$files.Count) { throw "No executable artifacts in $root" }
 foreach ($file in $files) {
     $signature=Get-AuthenticodeSignature -LiteralPath $file.FullName
@@ -38,7 +38,7 @@ foreach ($file in $files) {
 $artifacts=@($files | ForEach-Object {
     $signature=Get-AuthenticodeSignature -LiteralPath $_.FullName
     if ($signature.Status -ne 'Valid') { throw "Invalid final signature: $($_.FullName)" }
-    [ordered]@{file=$_.Name;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash;
+    [ordered]@{file=[IO.Path]::GetRelativePath($root,$_.FullName);sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash;
         signer=$signature.SignerCertificate.Subject;thumbprint=$signature.SignerCertificate.Thumbprint}
 })
 [ordered]@{signed_at=(Get-Date).ToUniversalTime().ToString('o');artifacts=$artifacts} |
