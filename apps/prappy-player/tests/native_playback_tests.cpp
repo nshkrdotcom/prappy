@@ -9,11 +9,51 @@ template<class Predicate> static void until(sampling::NativePlayback& player,Pre
     do{player.tick();if(done())return;if(!player.state().error.empty())throw std::runtime_error(player.state().error);SDL_Delay(1);}while(std::chrono::steady_clock::now()<deadline);
     throw std::runtime_error("Native transport timed out at frame "+std::to_string(player.state().cursor));
 }
+static void speakerOutputTest(){
+    using namespace sampling;using namespace prepared;
+    struct Probe {
+        std::array<std::atomic<float>,8> peak{};
+        static void SDLCALL receive(void* context,const SDL_AudioSpec* spec,float* pcm,int bytes){
+            auto& self=*static_cast<Probe*>(context);
+            for(int i=0;i<bytes/4;++i){const auto channel=static_cast<size_t>(i%spec->channels);const float value=std::abs(pcm[i]);
+                if(channel<self.peak.size()&&value>self.peak[channel].load())self.peak[channel]=value;}
+        }
+    };
+    const std::vector<std::string> order{"FL","FR","FC","SL","SR"};
+    for(size_t channel=0;channel<order.size();++channel){
+        PcmBudget budget(64);const NativeTimeline source{192000,5,192000,SampleType::Float64};
+        std::vector<double> samples(static_cast<size_t>(source.frames)*5);
+        for(size_t at=channel;at<samples.size();at+=5)samples[at]=.125+1e-11;
+        auto pcm=std::make_shared<const Block>(source,0,source.frames,std::as_bytes(std::span(samples)));
+        auto buffer=std::make_shared<const NativeSession::Buffer>(NativeSession::Buffer{pcm,budget.reserve(pcm->bytes().size())});
+        Audition output(budget);output.start(buffer,{0,source.frames},0,true,true,order);
+        SDL_AudioSpec device{};int frames=0;require(SDL_GetAudioDeviceFormat(output.device(),&device,&frames),"No dummy device format");
+        require(device.channels<=8,"Unexpected output channel count");
+        const SDL_AudioSpec input{SDL_AUDIO_F32,8,192000},destination{SDL_AUDIO_F32,device.channels,device.freq};
+        auto* reference=SDL_CreateAudioStream(&input,&destination);require(reference!=nullptr,"Cannot create speaker reference");
+        std::vector<float> bed(4096*8);const DeviceLayout mapping(5,order);
+        for(size_t at=mapping.inputs[channel];at<bed.size();at+=8)bed[at]=.125f;
+        require(SDL_PutAudioStreamData(reference,bed.data(),static_cast<int>(bed.size()*4))&&SDL_FlushAudioStream(reference),"Speaker reference failed");
+        std::vector<float> expected(static_cast<size_t>(SDL_GetAudioStreamAvailable(reference))/4);
+        require(SDL_GetAudioStreamData(reference,expected.data(),static_cast<int>(expected.size()*4))>0,"Speaker reference is empty");
+        SDL_DestroyAudioStream(reference);std::array<float,8> maxima{};
+        for(size_t i=0;i<expected.size();++i)maxima[i%device.channels]=std::max(maxima[i%device.channels],std::abs(expected[i]));
+        Probe probe;require(SDL_SetAudioPostmixCallback(output.device(),Probe::receive,&probe),"Cannot capture speaker output");
+        output.pause(false);const auto deadline=SDL_GetTicks()+3000;
+        const auto matches=[&]{for(int ch=0;ch<device.channels;++ch)if(std::abs(probe.peak[ch].load()-maxima[ch])>=.0001f)return false;return true;};
+        while(!matches()&&SDL_GetTicks()<deadline)SDL_Delay(1);
+        output.pause(true);SDL_SetAudioPostmixCallback(output.device(),nullptr,nullptr);
+        for(int ch=0;ch<device.channels;++ch)if(std::abs(probe.peak[ch].load()-maxima[ch])>=.0001f)
+            throw std::runtime_error("Native speaker "+order[channel]+" output "+std::to_string(ch)+" peak "+std::to_string(probe.peak[ch].load())+" differs from "+std::to_string(maxima[ch]));
+        require(budget.used()<=budget.limit(),"Speaker audition exceeded its shared budget");
+    }
+}
 int main(){
  try{
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER,"dummy");
     using namespace sampling;using namespace prepared;
     const std::string capture="cap_"+std::string(32,'a'),sha(64,'b'),key(64,'c'),timeline="tl_"+std::string(32,'d');
+    speakerOutputTest();
     for(const auto rate:{44100,48000})for(const auto kind:{SampleType::Float32,SampleType::Int32,SampleType::Float64}){
         const std::string format=kind==SampleType::Float64?"float64":kind==SampleType::Int32?"int32":"float32";
         const Frame total=rate==48000&&kind==SampleType::Float64?5000000000LL:rate*8;
@@ -115,8 +155,9 @@ int main(){
         SDL_SetHint(SDL_HINT_AUDIO_DUMMY_TIMESCALE,"0.1");
         const int channels=mode==3?1:mode==4?5:2;
         const Frame total=rate*7+113;
-        const Json description={{"source_key",key},{"timeline_id",timeline},{"frame_count",total},{"sample_rate",rate},{"channels",channels},{"sample_format","float32"},{"access_mode","indexed"},
+        Json description={{"source_key",key},{"timeline_id",timeline},{"frame_count",total},{"sample_rate",rate},{"channels",channels},{"sample_format","float32"},{"access_mode","indexed"},
             {"capture",{{"id",capture},{"blob_sha256",sha}}}};
+        if(channels==5)description["channel_order"]={"FL","FR","FC","SL","SR"};
         const auto signal=[](Frame frame,int channel){return static_cast<float>(((static_cast<uint64_t>(frame)*1664525+1013904223+channel*71237)%65536)/131072.-.25);};
         Client::Transport transport=[=](const Connection&,const Request& request,std::stop_token){
             Reply reply;reply.status=200;
@@ -134,7 +175,7 @@ int main(){
             ~Device(){if(id){SDL_CloseAudioDevice(id);SDL_QuitSubSystem(SDL_INIT_AUDIO);}}
         } forcedOutput(mode==2);
         struct Capture{
-            std::vector<float> samples=std::vector<float>(48000*45);std::atomic<size_t> count{0};std::atomic<int> rate{0},channels{0};
+            std::vector<float> samples=std::vector<float>(48000*80);std::atomic<size_t> count{0};std::atomic<int> rate{0},channels{0};
             static void SDLCALL receive(void* context,const SDL_AudioSpec* spec,float* pcm,int bytes){
                 auto& self=*static_cast<Capture*>(context);const auto first=self.count.load();const auto size=std::min(static_cast<size_t>(bytes)/4,self.samples.size()-first);
                 std::memcpy(self.samples.data()+first,pcm,size*4);self.rate=spec->freq;self.channels=spec->channels;self.count.store(first+size);
@@ -153,10 +194,14 @@ int main(){
         require(captureOutput.rate==(mode==2?48000:rate)&&captureOutput.channels>=1,"Digital test did not use the expected output domain");
         const auto count=captureOutput.count.load();size_t first=0;while(first<count&&captureOutput.samples[first]==0)++first;
         const Frame expectedFrames=looping?rate:total-origin;
-        std::vector<float> reference(static_cast<size_t>(expectedFrames)*channels);
-        for(Frame i=0;i<expectedFrames;++i)for(int c=0;c<channels;++c)reference[static_cast<size_t>(i)*channels+c]=signal(origin+(looping?i%loopFrames:i),c)*.5f;
-        if(captureOutput.rate!=rate||captureOutput.channels!=channels){
-            const SDL_AudioSpec input{SDL_AUDIO_F32,channels,static_cast<int>(rate)},output{SDL_AUDIO_F32,captureOutput.channels,captureOutput.rate};
+        const int referenceChannels=channels==5?8:channels;
+        std::vector<float> reference(static_cast<size_t>(expectedFrames)*referenceChannels);
+        for(Frame i=0;i<expectedFrames;++i)for(int c=0;c<channels;++c){
+            const int speaker=channels==5&&c>=3?c+3:c;
+            reference[static_cast<size_t>(i)*referenceChannels+speaker]=signal(origin+(looping?i%loopFrames:i),c)*.5f;
+        }
+        if(captureOutput.rate!=rate||captureOutput.channels!=referenceChannels){
+            const SDL_AudioSpec input{SDL_AUDIO_F32,referenceChannels,static_cast<int>(rate)},output{SDL_AUDIO_F32,captureOutput.channels,captureOutput.rate};
             auto* stream=SDL_CreateAudioStream(&input,&output);require(stream!=nullptr,"Cannot create continuous resampling reference");
             require(SDL_PutAudioStreamData(stream,reference.data(),static_cast<int>(reference.size()*4))&&SDL_FlushAudioStream(stream),"Cannot feed continuous resampling reference");
             reference.resize(static_cast<size_t>(SDL_GetAudioStreamAvailable(stream))/4);
@@ -197,7 +242,7 @@ int main(){
     {
         SDL_SetHint(SDL_HINT_AUDIO_DUMMY_TIMESCALE,"0.1");SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES,"2048");
         const Frame rate=192000,total=rate*15;const int channels=5;
-        const Json description={{"source_key",key},{"timeline_id",timeline},{"frame_count",total},{"sample_rate",rate},{"channels",channels},{"sample_format","float64"},{"access_mode","indexed"},
+        const Json description={{"source_key",key},{"timeline_id",timeline},{"frame_count",total},{"sample_rate",rate},{"channels",channels},{"channel_order",{"FL","FR","FC","SL","SR"}},{"sample_format","float64"},{"access_mode","indexed"},
             {"capture",{{"id",capture},{"blob_sha256",sha}}}};
         Client::Transport transport=[=](const Connection&,const Request& request,std::stop_token){
             Reply reply;reply.status=200;

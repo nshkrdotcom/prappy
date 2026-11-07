@@ -1,4 +1,6 @@
 #pragma once
+#include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -51,6 +53,32 @@ inline Frame scaleCeil(Frame frame,int64_t fromRate,int64_t toRate) {
     if(fractional&&floor==std::numeric_limits<Frame>::max())throw std::runtime_error("Source frame conversion overflow.");
     return floor+(fractional?1:0);
 }
+// SDL's five-channel format is 4.1. Explicit positions are padded to its
+// eight-channel speaker bed so a source center never becomes an LFE channel.
+struct DeviceLayout {
+    int channels=0;
+    std::vector<size_t> inputs;
+    DeviceLayout(int64_t count,std::vector<std::string> speakers) {
+        if(count<1||count>32)throw std::runtime_error("Invalid native channel count.");
+        if(speakers.empty()&&count==1)speakers={"FC"};
+        if(speakers.empty()&&count==2)speakers={"FL","FR"};
+        if(speakers.size()!=static_cast<size_t>(count))
+            throw std::runtime_error("Audition requires explicit multichannel speaker positions.");
+        if((count==1&&speakers==std::vector<std::string>{"FC"})||
+           (count==2&&speakers==std::vector<std::string>{"FL","FR"})) {
+            channels=static_cast<int>(count);for(size_t i=0;i<speakers.size();++i)inputs.push_back(i);return;
+        }
+        static constexpr std::array<std::string_view,8> bed{"FL","FR","FC","LFE","BL","BR","SL","SR"};
+        channels=8;
+        for(const auto& speaker:speakers) {
+            const auto found=std::find(bed.begin(),bed.end(),speaker);
+            if(found==bed.end())throw std::runtime_error("Device audition does not support speaker position: "+speaker);
+            const auto index=static_cast<size_t>(found-bed.begin());
+            if(std::find(inputs.begin(),inputs.end(),index)!=inputs.end())throw std::runtime_error("Duplicate native speaker position.");
+            inputs.push_back(index);
+        }
+    }
+};
 struct NativeTimeline {
     int64_t rate=0,channels=0;
     Frame frames=0;

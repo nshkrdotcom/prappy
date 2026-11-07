@@ -26,6 +26,14 @@ int main() {
     require(scaleFloor(5000000000LL,96000,48000)==2500000000LL);
     rejects([]{scaleFloor(-1,44100,48000);});
     rejects([]{scaleFloor(1,0,48000);});
+    DeviceLayout five(5,{"FL","FR","FC","SL","SR"});
+    require(five.channels==8&&five.inputs==std::vector<size_t>({0,1,2,6,7}));
+    DeviceLayout surround(6,{"FL","FR","FC","LFE","BL","BR"});
+    require(surround.inputs==std::vector<size_t>({0,1,2,3,4,5}));
+    require(DeviceLayout(1,{}).channels==1&&DeviceLayout(2,{}).channels==2);
+    rejects([]{DeviceLayout unknown(5,{});});
+    rejects([]{DeviceLayout duplicate(4,{"FL","FR","FL","FR"});});
+    rejects([]{DeviceLayout unknown(3,{"FL","FR","NONE"});});
     NativeTimeline timeline{96000,6,5000000000LL,SampleType::Float64};timeline.validate();
     require(timeline.seconds(96000)==1);
     require(timeline.fromSeconds(1.5)==144000);

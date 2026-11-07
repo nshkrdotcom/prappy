@@ -45,7 +45,7 @@ private:
         if(!started){
             if(status.cursor<block->pcm->start()||status.cursor>=block->pcm->start()+block->pcm->frames())
                 throw std::runtime_error("Native cursor "+std::to_string(status.cursor)+" outside received span "+std::to_string(block->pcm->start())+".."+std::to_string(block->pcm->start()+block->pcm->frames()));
-            output.start(std::move(block),range,status.cursor,repeat,status.paused);output.gain(level);started=true;}
+            output.start(std::move(block),range,status.cursor,repeat,status.paused,manifest.value("channel_order",std::vector<std::string>{}));output.gain(level);started=true;}
         else output.enqueue(std::move(block));
         status.loaded=true;status.buffering=false;
     }

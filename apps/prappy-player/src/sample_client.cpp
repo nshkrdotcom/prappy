@@ -97,7 +97,7 @@ template<class Reader> static std::string sha256(Reader read,std::stop_token sto
 }
 static std::string fileHash(const fs::path& path,std::stop_token stop){
     const auto began=debuglog::Clock::now();debuglog::write("artifact.verify.begin","file="+utf8(path.filename()));
-    SourceFile file(path,stop);std::array<std::byte,65536> buffer{};
+    SourceFile file(path,stop);std::vector<std::byte> buffer(65536);
     auto result=sha256([&](auto consume){while(const auto count=file.read(buffer.data(),static_cast<DWORD>(buffer.size()),stop))consume(std::span<const std::byte>(buffer.data(),count));},stop);
     debuglog::write("artifact.verify.end","ms="+std::to_string(debuglog::elapsed(began)));return result;
 }

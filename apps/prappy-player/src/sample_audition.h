@@ -1,7 +1,7 @@
 #pragma once
 #include "sample_transport.h"
 #include "native_session.h"
-#include <array>
+#include <vector>
 #include <SDL3/SDL.h>
 #include <memory>
 #include <stdexcept>
@@ -11,11 +11,12 @@ class Audition {
     using Buffer=NativeSession::Buffer;
     PcmBudget memory;
     PcmBudget::Permit overhead;
-    std::array<float,8192> scratch{};
+    std::vector<float> scratch=std::vector<float>(8192);
     Frame nativeRate=Rate,nativeChannels=2;
+    prepared::DeviceLayout layout{2,{}};
     SDL_AudioStream* stream=nullptr;
     std::shared_ptr<const Buffer> current,next,retired;
-    Frame stride()const{return nativeChannels*4;}
+    Frame stride()const{return layout.channels*4;}
     static Frame end(const Buffer& block){return block.pcm->start()+block.pcm->frames();}
     static bool contains(const Buffer& block,Frame frame){return frame>=block.pcm->start()&&frame<end(block);}
     Span range;
@@ -45,11 +46,15 @@ class Audition {
                 }else{self.starved=true;break;}
             }
             self.starved=false;
-            const auto frames=std::min({static_cast<Frame>(remaining/bytes),static_cast<Frame>(sizeof(self.scratch)/bytes),end(*self.current)-self.feeding,self.range.end-self.feeding});
+            const auto frames=std::min({static_cast<Frame>(remaining/bytes),static_cast<Frame>((self.scratch.size()*sizeof(float))/bytes),end(*self.current)-self.feeding,self.range.end-self.feeding});
             if(frames<=0)break;
             const auto index=self.feeding-self.current->pcm->start();
-            for(Frame frame=0;frame<frames;++frame)for(Frame channel=0;channel<self.nativeChannels;++channel)
-                self.scratch[static_cast<size_t>(frame*self.nativeChannels+channel)]=static_cast<float>(self.current->pcm->sample(index+frame,channel));
+            for(Frame frame=0;frame<frames;++frame){
+                auto* output=self.scratch.data()+static_cast<size_t>(frame)*self.layout.channels;
+                std::fill_n(output,self.layout.channels,0.f);
+                for(Frame channel=0;channel<self.nativeChannels;++channel)
+                    output[self.layout.inputs[static_cast<size_t>(channel)]]=static_cast<float>(self.current->pcm->sample(index+frame,channel));
+            }
             if(!SDL_PutAudioStreamData(target,self.scratch.data(),static_cast<int>(frames*bytes)))break;
             self.feeding+=frames;self.submitted+=frames;remaining-=static_cast<int>(frames*bytes);self.lastFeed=SDL_GetTicksNS();
         }
@@ -60,12 +65,14 @@ public:
     Audition():Audition(PcmBudget{}){}
     explicit Audition(PcmBudget budget):memory(std::move(budget)),overhead(memory.reserve(8*1024*1024)){}
     Audition(const Audition&)=delete;Audition& operator=(const Audition&)=delete;
-    void start(std::shared_ptr<const Buffer> block,Span span,Frame cursor,bool loop,bool startPaused=false){
+    void start(std::shared_ptr<const Buffer> block,Span span,Frame cursor,bool loop,bool startPaused=false,std::vector<std::string> speakers={}){
         if(!block||span.end<=span.start||cursor<span.start||cursor>=span.end||!contains(*block,cursor))
             throw std::runtime_error("Invalid native audition timeline or PCM buffer.");
+        const prepared::DeviceLayout nextLayout(block->pcm->source().channels,std::move(speakers));
         if(stream)SDL_PauseAudioStreamDevice(stream);
+        layout=nextLayout;
         nativeRate=block->pcm->source().rate;nativeChannels=block->pcm->source().channels;
-        const SDL_AudioSpec spec{SDL_AUDIO_F32,static_cast<int>(nativeChannels),static_cast<int>(nativeRate)};
+        const SDL_AudioSpec spec{SDL_AUDIO_F32,layout.channels,static_cast<int>(nativeRate)};
         if(!stream){
             if(!audioInitialized){if(!SDL_InitSubSystem(SDL_INIT_AUDIO))throw std::runtime_error(SDL_GetError());audioInitialized=true;}
             stream=SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,&spec,provide,this);
@@ -78,7 +85,7 @@ public:
             SDL_UnlockAudioStream(stream);throw std::runtime_error(SDL_GetError());
         }
         current=std::move(block);next.reset();retired.reset();range=span;initial=feeding=cursor;submitted=0;repeat=loop;paused=startPaused;done=starved=false;lastFeed=SDL_GetTicksNS();
-        fill(stream,static_cast<int>(sizeof(scratch)));
+        fill(stream,static_cast<int>((scratch.size()*sizeof(float))));
         SDL_UnlockAudioStream(stream);if(!paused)SDL_ResumeAudioStreamDevice(stream);
     }
     SDL_AudioDeviceID device()const{return stream?SDL_GetAudioStreamDevice(stream):0;}
@@ -120,7 +127,7 @@ public:
             else if(next&&contains(*next,cursor))current.swap(next);
         }
         SDL_ClearAudioStream(stream);repeat=value;initial=feeding=std::min(cursor,range.end-1);submitted=0;done=starved=false;next.reset();lastFeed=SDL_GetTicksNS();
-        fill(stream,static_cast<int>(sizeof(scratch)));
+        fill(stream,static_cast<int>((scratch.size()*sizeof(float))));
         SDL_UnlockAudioStream(stream);if(!paused)SDL_ResumeAudioStreamDevice(stream);
     }
     void stop(){if(stream){SDL_PauseAudioStreamDevice(stream);SDL_LockAudioStream(stream);SDL_ClearAudioStream(stream);current.reset();next.reset();retired.reset();paused=false;SDL_UnlockAudioStream(stream);}}
