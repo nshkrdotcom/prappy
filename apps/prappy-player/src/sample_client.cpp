@@ -109,8 +109,8 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
         const auto started=debuglog::Clock::now();
         try{
             if(!request.upload)throw std::runtime_error("Save has no retained PCM snapshot.");
-            const auto digest=sha256([&](auto consume){request.upload->each(consume);},stop);
-            reply.status=200;reply.body={{"sha256",digest},{"bytes",request.upload->bytes()}};
+            const auto digest=sha256([&](auto consume){request.upload->each(consume,stop);},stop);
+            reply.status=200;reply.body={{"sha256",digest},{"bytes",request.upload->bytes()},{"decoder_epoch",request.upload->decoderEpoch},{"decoder_epochs",request.upload->decoderEpochs}};
         }catch(const std::exception& e){reply.error=e.what();}
         debuglog::write("save.hash","ms="+std::to_string(debuglog::elapsed(started))+" ok="+(reply.error.empty()?"1":"0"));return reply;
     }
@@ -154,10 +154,9 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
         const auto body=request.method=="GET" || request.body.is_null() ? std::string{} : request.body.dump();
         bool sent=false;
         if(request.upload){
-            if(body.empty()||body.size()>65536||request.upload->bytes()>1024ULL*1024*1024)throw std::runtime_error("Native save exceeds its metadata or retained audio bounds.");
-            const auto length=static_cast<uint32_t>(body.size());
-            const auto total=static_cast<DWORD>(4+body.size()+request.upload->bytes());
-            sent=WinHttpSendRequest(operation.value,headers.c_str(),static_cast<DWORD>(headers.size()),WINHTTP_NO_REQUEST_DATA,0,total,0)!=FALSE;
+            const UploadFrame frame(body.size(),request.upload->bytes());const auto length=frame.metadata;
+            headers+=L"Content-Length: "+std::to_wstring(frame.total)+L"\r\n";
+            sent=WinHttpSendRequest(operation.value,headers.c_str(),static_cast<DWORD>(headers.size()),WINHTTP_NO_REQUEST_DATA,0,frame.sendLength,0)!=FALSE;
             const auto write=[&](std::span<const std::byte> bytes){
                 size_t at=0;
                 while(at<bytes.size()){
@@ -167,7 +166,7 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
                     at+=written;
                 }
             };
-            if(sent){write(std::as_bytes(std::span(&length,1)));write(std::as_bytes(std::span(body.data(),body.size())));request.upload->each(write);}
+            if(sent){write(std::as_bytes(std::span(&length,1)));write(std::as_bytes(std::span(body.data(),body.size())));request.upload->each(write,stop);}
         }else sent=WinHttpSendRequest(operation.value,headers.c_str(),static_cast<DWORD>(headers.size()),
             body.empty()?WINHTTP_NO_REQUEST_DATA:const_cast<char*>(body.data()),static_cast<DWORD>(body.size()),static_cast<DWORD>(body.size()),0)!=FALSE;
         if(!sent||!WinHttpReceiveResponse(operation.value,nullptr)){

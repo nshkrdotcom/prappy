@@ -26,6 +26,13 @@ inline void sampleLibraryTests(const std::filesystem::path& directory,std::ostre
     const auto savedRegion=[&](int revision,Span span){return LibraryJson{{"id","reg_"+std::string(32,'f')},{"revision",revision},{"capture_id",a.capture},{"timeline_id",a.timeline},{"span",{{"start_frame",span.start},{"end_frame",span.end}}}};};
     auto wrongTimeline=command("wrong-timeline",first.span);wrongTimeline["payload"]["timeline_id"]=b.timeline;
     rejects([&]{library.beginSave(a,one,wrongTimeline);});
+    {
+        auto fingerprinted=library;auto pending=command("hash-request",first.span);pending["pcm_sha256"]="";pending["decoder_epoch"]="pending";
+        fingerprinted.beginSave(a,one,pending);const std::string hash(64,'a');
+        const auto sealed=fingerprinted.fingerprintSave(a,one,"hash-request",hash,{{"decoder_epoch","old-decoder"},{"decoder_epochs",{"old-decoder"}}});
+        require(fingerprinted.fingerprintSave(a,one,"hash-request",hash,{{"decoder_epoch","new-decoder"},{"decoder_epochs",{"new-decoder"}}})==sealed,"Identical retry audio changed or rejected the immutable request.");
+        rejects([&]{fingerprinted.fingerprintSave(a,one,"hash-request",std::string(64,'b'));});
+    }
     const auto frozen=library.beginSave(a,one,command("request-1",first.span));
     library.edit(a,one,{{1001,2001},{{"name","Edited while saving"}}});
     require(library.beginSave(a,one,command("request-new",{1001,2001}))==frozen,"Retry replaced an in-flight payload.");

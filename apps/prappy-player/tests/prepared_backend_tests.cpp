@@ -5,6 +5,7 @@
 #include <iostream>
 #include <random>
 #include <algorithm>
+#include "native_large_save.h"
 
 int main(int argc,char** argv) {
     try {
@@ -67,6 +68,7 @@ int main(int argc,char** argv) {
         sampling::Request inspect;inspect.tag="source-descriptor";inspect.path=source.source.endpoint();
         const auto manifest=sampling::perform(*library.backend,inspect);
         if(!manifest.error.empty())throw std::runtime_error(manifest.error);
+        if(argc==3&&std::string(argv[2])=="--large-save"){largeSaveTest(*library.backend,manifest.body,source.source.endpoint(),directory);return 0;}
         const auto native=prepared::pcmContext(manifest.body,100,1000);
         const auto key=manifest.body.at("source_key").get<std::string>(),timeline=manifest.body.at("timeline_id").get<std::string>();
         auto read=[&](prepared::Frame origin,prepared::Frame count){

@@ -16,6 +16,13 @@ namespace sampling {
 using Json = nlohmann::json;
 struct Connection { std::string url = "http://127.0.0.1:8765", token; fs::path credentialFile; bool startWorkstation=false; };
 Connection authorize(Connection,std::stop_token = {});
+struct UploadFrame {
+    uint32_t metadata,sendLength;uint64_t total;
+    UploadFrame(size_t header,uint64_t audio){
+        if(!header||header>65536||audio>UINT64_MAX-4-header)throw std::runtime_error("Native save metadata or byte count is invalid.");
+        metadata=static_cast<uint32_t>(header);total=4+header+audio;sendLength=total<=UINT32_MAX?static_cast<uint32_t>(total):0;
+    }
+};
 struct Request {
     std::string tag, method = "GET", path;
     Json body;

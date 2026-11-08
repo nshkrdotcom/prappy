@@ -49,9 +49,18 @@ active draft, cursor, viewport and editing preferences across restart.
 Native exports preserve source rate, channel count and supported precision:
 WavPack for float32/integer32, Wave64 for float64. Default exports stream bounded
 blocks and verify sample bits before publication. Project rendering uses
-preserved frozen clips, explicit output adapters and native source maps. Current
-new saves require the selection to fit retained PCM; larger-than-RAM save streaming
-is still being implemented.
+preserved frozen clips, explicit output adapters and native source maps.
+
+Selections larger than RAM save through bounded streaming. Previously adopted
+samples remain authoritative; missing ranges decode only when saving needs them.
+Active editing audio uses temporary lossless backing when needed, with an 8 GiB
+process-wide storage limit and 1 GiB free-space reserve. Its 8 MiB scratch allowance
+counts against the editor PCM budget. Ordinary playback does not create backing,
+and opening does not materialize the whole selection. Backing files disappear
+when their last active/save reference closes; they are not durable draft audio.
+Draft positions and pending save identities persist. Interrupted saves recover a
+verified frozen result or require the same sample hash; they cannot silently
+replace already-fingerprinted audio with a different decode.
 
 ## Backend and analysis
 

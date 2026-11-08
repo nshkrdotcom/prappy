@@ -1,5 +1,6 @@
 #pragma once
 #include "sample_client.h"
+#include "native_spill.h"
 #include "sample_audition.h"
 #include "prepared_requests.h"
 #include <cmath>
@@ -12,6 +13,7 @@ public:
 private:
     PcmBudget budget;
     Audition output;
+    Connection saveConnection;Client::Transport saveTransport;
     Client client;
     std::shared_ptr<NativeSession> retained;
     Json manifest;
@@ -36,7 +38,8 @@ private:
     }
     void newOwner(){
         client.cancelReads(ReadScope::PCM);release();output.stop();pending=started=false;decodedEnd=-1;++generation;owner=uuid();
-        retained=std::make_shared<NativeSession>(timeline(),manifest.at("source_key"),manifest.at("timeline_id"),generation,budget);
+        if(retained&&retained->preserving())retained->restart(generation);
+        else retained=std::make_shared<NativeSession>(timeline(),manifest.at("source_key"),manifest.at("timeline_id"),generation,budget);
         if(manifest.at("access_mode")=="indexed")leasePath=endpoint+"/session?source_key="+manifest.at("source_key").get<std::string>()+
             "&timeline="+manifest.at("timeline_id").get<std::string>()+"&owner="+owner;
         renewDue=std::chrono::steady_clock::now()+std::chrono::seconds(15);
@@ -74,7 +77,7 @@ private:
             retained->retain(std::max<Frame>(0,status.cursor-history),status.cursor+std::min(t.frames-status.cursor,t.rate*30));
         }
         const auto available=std::min<size_t>(32*1024*1024,(budget.limit()-budget.used())/2);
-        const Frame count=std::min({bound.end-frame,t.rate*(forPlayback?3:30),static_cast<Frame>(available/stride)});
+        const Frame count=std::min({retained->nextMissingEnd(frame,bound.end)-frame,t.rate*(forPlayback?3:30),static_cast<Frame>(available/stride)});
         if(count<=0){if(forPlayback)status.buffering=true;return;}
         auto context=prepared::pcmContext(manifest,frame,count);context["pcm_epoch"]=generation;context["native_feed"]=forPlayback;
         Request message{"source-pcm","GET",endpoint+"/pcm?source_key="+manifest.at("source_key").get<std::string>()+
@@ -109,7 +112,7 @@ private:
     }
 public:
     NativePlayback(Connection connection,PcmBudget memory,std::function<void()> notify,Client::Transport transport={})
-        :budget(std::move(memory)),output(budget),client(std::move(connection),std::move(notify),std::move(transport)){}
+        :budget(std::move(memory)),output(budget),saveConnection(std::move(connection)),saveTransport(std::move(transport)),client(saveConnection,std::move(notify),saveTransport){}
     ~NativePlayback(){release();}
     NativePlayback(const NativePlayback&)=delete;NativePlayback& operator=(const NativePlayback&)=delete;
     SDL_AudioDeviceID device()const{return output.device();}
@@ -117,6 +120,22 @@ public:
     const Json& descriptor()const{return manifest;}
     const std::string& reference()const{return endpoint;}
     std::shared_ptr<NativeSession> session()const{return retained;}
+    std::shared_ptr<const NativeSession::Clip> saveClip(Frame first,Frame last)const{
+        if(!retained||manifest.is_null())throw std::runtime_error("Reopen the selected source before saving audio.");
+        auto connection=saveConnection;const auto transport=saveTransport;const auto descriptor=manifest;
+        const auto base=endpoint;const auto saveOwner=uuid();const auto memory=budget;
+        return retained->clip(first,last,[connection,transport,descriptor,base,saveOwner,memory](Frame start,Frame count,std::stop_token stop)mutable{
+            if(!transport&&connection.token.empty())connection=authorize(connection,stop);
+            auto context=prepared::pcmContext(descriptor,start,count);
+            Request message{"source-pcm","GET",base+"/pcm?source_key="+descriptor.at("source_key").get<std::string>()+
+                "&timeline="+descriptor.at("timeline_id").get<std::string>()+"&session="+saveOwner+"&start="+std::to_string(start)+"&count="+std::to_string(count),context,0,{}};
+            const auto bytes=static_cast<size_t>(count)*descriptor.at("channels").get<size_t>()*prepared::sampleBytes(prepared::sampleType(descriptor.at("sample_format").get<std::string>()));
+            message.incomingMemory=memory.reserve(bytes);message.pcmMemory=memory.reserve(bytes);
+            auto reply=transport?transport(connection,message,stop):perform(connection,message,stop);
+            if(!reply.error.empty()||reply.status!=200||!reply.preparedPcm)throw std::runtime_error(reply.error.empty()?"Selected audio could not be read for saving.":reply.error);
+            return std::make_shared<const NativeSession::Buffer>(NativeSession::Buffer{reply.preparedPcm,message.pcmMemory,reply.body.at("decoder_epoch").get<std::string>()});
+        });
+    }
     bool retainsOrRequests(Frame frame)const{return retained&&(retained->find(frame)||(pending&&frame>=pendingStart&&frame<pendingEnd));}
     void load(std::string path,std::string expectedCapture,std::string expectedOriginal,bool paused,double seconds,Json known=nullptr){
         if(!std::isfinite(seconds)||seconds<0||!prepared::SourceRef::valid(expectedCapture,"cap_")||
@@ -133,11 +152,15 @@ public:
         output.stop();started=false;range=span;status.cursor=frame;status.paused=paused;status.finished=false;status.buffering=true;repeat=loop;status.error.clear();
         if(!retainsOrRequests(frame))newOwner();request(frame);
     }
-    void clearCache(){cacheWindow.reset();}
+    void clearCache(){cacheWindow.reset();if(retained)retained->clearPreservation();}
     void loop(bool value){repeat=value;output.loop(value);}
     void cache(Span window){
         if(manifest.is_null()||window.start<coverage.start||window.end>coverage.end||window.end<=window.start)
             throw std::runtime_error("Cache window exceeds verified native coverage.");
+        if(retained){
+            if(!retained->hasBacking())retained->preserve(window.start,window.end,std::make_shared<CompressedSpill>(budget));
+            else retained->preserve(window.start,window.end);
+        }
         cacheWindow=window;
     }
     void seek(Frame frame){if(manifest.is_null())throw std::runtime_error("Native source clock is not loaded.");start(range,std::clamp(frame,range.start,range.end-1),repeat,status.paused);}

@@ -123,12 +123,14 @@ public:
             if(other.saving&&other.saving->request==save.request)throw std::runtime_error("Request ID already belongs to a draft.");
         checkCommand(source,d,save);d.saving=std::move(save);return d.saving->command;
     }
-    LibraryJson fingerprintSave(const SourceRef& source,const std::string& id,const std::string& request,const std::string& hash){
+    LibraryJson fingerprintSave(const SourceRef& source,const std::string& id,const std::string& request,const std::string& hash,const LibraryJson& provenance=LibraryJson()){
         auto& d=draft(source,id);
         if(!d.saving||d.saving->request!=request||hash.size()!=64||hash.find_first_not_of("0123456789abcdef")!=std::string::npos)
             throw std::runtime_error("Save fingerprint does not describe the pending draft.");
         const auto previous=d.saving->command.value("pcm_sha256",std::string{});
         if(!previous.empty()&&previous!=hash)throw std::runtime_error("Retained audio differs from the pending save; the original request is preserved.");
+        if(previous.empty()&&provenance.contains("decoder_epoch"))
+            for(const char* key:{"decoder_epoch","decoder_epochs"})d.saving->command[key]=provenance.at(key);
         d.saving->command["pcm_sha256"]=hash;return d.saving->command;
     }
     void cancelUnsentSave(const SourceRef& source,const std::string& id,const std::string& request){

@@ -164,7 +164,8 @@ void Workspace::command(std::string operation,Json payload){
     std::shared_ptr<const NativeSession::Clip> clip;
     if(!body.at("pcm_sha256").is_null()){
         if(!nativeSession)throw std::runtime_error("Reopen the pending source before uploading its audio.");
-        clip=nativeSession->clip(body.at("payload").at("span").at("start_frame"),body.at("payload").at("span").at("end_frame"));
+        const Frame first=body.at("payload").at("span").at("start_frame"),last=body.at("payload").at("span").at("end_frame");
+        clip=nativePlayback?nativePlayback->saveClip(first,last):nativeSession->clip(first,last);
         if(clip->sourceKey!=body.at("source_key").get<std::string>()||clip->timeline!=body.at("payload").at("timeline_id").get<std::string>())throw std::runtime_error("The retained audio belongs to a different pending source.");
         if(body.at("decoder_epoch").is_null())body["decoder_epoch"]=clip->decoderEpoch;
     }
@@ -439,7 +440,7 @@ void Workspace::process(){
             auto row=std::find_if(pending.begin(),pending.end(),[&](const auto& entry){return entry.at("command").at("request_id")==reply.request.body.at("request_id");});
             if(row==pending.end())continue;
             const auto source=SourceRef::parse(row->at("source"));
-            (*row)["command"]=sampleLibrary.fingerprintSave(source,row->at("draft_id"),reply.request.body.at("request_id"),reply.body.at("sha256"));
+            (*row)["command"]=sampleLibrary.fingerprintSave(source,row->at("draft_id"),reply.request.body.at("request_id"),reply.body.at("sha256"),reply.body);
             (*row)["stage"]="upload";persist();sendSave(*row,reply.request.upload);notice="Saving sample audio...";
         }else if(tag=="capabilities"){
             if(reply.body.value("protocol",0)!=3||!reply.body.value("indexed_source",false))throw std::runtime_error("Indexed audio requires backend protocol 3.");

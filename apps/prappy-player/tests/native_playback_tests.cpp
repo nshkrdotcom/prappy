@@ -1,4 +1,5 @@
 #include "native_playback.h"
+#include "native_spill.h"
 #include <iostream>
 #include <atomic>
 #include <cstring>
@@ -8,6 +9,98 @@ template<class Predicate> static void until(sampling::NativePlayback& player,Pre
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
     do{player.tick();if(done())return;if(!player.state().error.empty())throw std::runtime_error(player.state().error);SDL_Delay(1);}while(std::chrono::steady_clock::now()<deadline);
     throw std::runtime_error("Native transport timed out at frame "+std::to_string(player.state().cursor));
+}
+static void uploadFrameTests(){
+    using sampling::UploadFrame;
+    const UploadFrame ordinary(64,4096);require(ordinary.total==4164&&ordinary.sendLength==4164,"Small upload framing changed");
+    const UploadFrame overGiB(64,1073741825ULL);require(overGiB.total==1073741893ULL,"Upload retained the arbitrary 1 GiB limit");
+    const UploadFrame belowDWORD(64,4294967227ULL);require(belowDWORD.total==4294967295ULL&&belowDWORD.sendLength==4294967295U,"DWORD boundary shortened upload");
+    const UploadFrame aboveDWORD(64,4294967228ULL);require(aboveDWORD.total==4294967296ULL&&aboveDWORD.sendLength==0,"Large upload wrapped its Content-Length");
+    sampling::NativeSession::Clip clip;clip.source={192000,32,INT64_MAX,prepared::SampleType::Float64};clip.first=0;clip.last=INT64_MAX;
+    bool overflow=false;try{(void)clip.bytes();}catch(const std::exception&){overflow=true;}require(overflow,"Clip PCM byte multiplication overflowed");
+    clip.source={48000,2,6000000000LL,prepared::SampleType::Float32};clip.first=0;clip.last=6000000000LL;
+    require(clip.bytes()==48000000000ULL,"Clip length lost native 64-bit extent");
+    for(const auto [header,audio]:std::array<std::pair<size_t,uint64_t>,3>{{{0,1},{65537,1},{64,UINT64_MAX}}}){
+        bool failed=false;try{const UploadFrame invalid(header,audio);}catch(const std::exception&){failed=true;}
+        require(failed,"Invalid metadata or overflowing upload length was accepted");
+    }
+}
+static void spillTests(){
+    using namespace sampling;
+    PcmBudget budget(64);const auto before=budget.used();
+    std::shared_ptr<const PcmBacking::Stored> saved;
+    std::vector<std::byte> input(1024*1024);uint32_t value=713;
+    for(auto& byte:input){value^=value<<13;value^=value>>17;value^=value<<5;byte=static_cast<std::byte>(value);}
+    {
+        CompressedSpill backing(budget);saved=backing.store(input);
+        require(budget.used()>before,"Spill scratch escaped the PCM budget");
+        std::vector<std::byte> result(input.size());saved->read(result);require(result==input,"Compressed spill changed authoritative native bits");
+        bool failed=false;try{saved->read(std::span(result).first(result.size()-1));}catch(const std::exception&){failed=true;}
+        require(failed,"Spill accepted an incorrectly sized destination");
+    }
+    require(budget.used()>before,"Spill lifetime ended before the immutable snapshot");
+    saved.reset();require(budget.used()==before,"Spill ownership leaked its memory reservation");
+    CompressedSpill tiny(budget,1);bool failed=false;try{tiny.store(input);}catch(const std::exception&){failed=true;}
+    require(failed,"Spill ignored its explicit storage ceiling");
+}
+static void selectionAuthorityTests(){
+    using namespace sampling;using namespace prepared;
+    PcmBudget budget(64);const NativeTimeline source{48000,1,1000000,SampleType::Int32};
+    NativeSession session(source,"key","timeline",7,budget);
+    session.preserve(0,786432,std::make_shared<CompressedSpill>(budget));
+    std::vector<std::byte> expected(3*1024*1024);
+    for(size_t i=0;i<expected.size();++i)expected[i]=static_cast<std::byte>((i*73+i/11)&255);
+    for(Frame start=0;start<524288;start+=262144){
+        auto block=std::make_shared<Block>(source,start,262144,std::span(expected).subspan(static_cast<size_t>(start)*4,1024*1024));
+        session.adopt(block,budget.reserve(block->bytes().size()),"key","timeline",7,"epoch-a");
+    }
+    session.retain(786432,900000);
+    require(session.frames()==0,"Eviction still pinned active selection PCM");
+    auto saved=session.clip(0,524288);std::vector<std::byte> output;
+    saved->each([&](std::span<const std::byte> bytes){output.insert(output.end(),bytes.begin(),bytes.end());});
+    require(output==std::vector<std::byte>(expected.begin(),expected.begin()+2*1024*1024),"Eviction changed already-adopted native bits");
+    require(session.nextMissingEnd(524288,900000)==900000&&session.nextMissingEnd(0,900000)==0,"Preserved coverage boundaries shifted");
+    require(session.find(300000)->pcm->bytes()==std::vector<std::byte>(expected.begin()+1024*1024,expected.begin()+2*1024*1024),"Audition reread lost authoritative samples");
+    session.restart(8);
+    auto next=std::make_shared<Block>(source,524288,262144,std::span(expected).subspan(2*1024*1024));
+    session.adopt(next,budget.reserve(next->bytes().size()),"key","timeline",8,"epoch-b");
+    auto mixed=session.clip(0,786432);require(mixed->decoderEpochs.size()==2,"Save lost decoder-span provenance");output.clear();
+    mixed->each([&](std::span<const std::byte> bytes){output.insert(output.end(),bytes.begin(),bytes.end());});
+    require(output==expected,"A new decoder owner replaced previous authoritative audio");
+    auto nextGap=std::make_shared<Block>(source,786432,1,std::vector<std::byte>(4));
+    session.adopt(nextGap,budget.reserve(4),"key","timeline",8,"epoch-c");
+    bool overwrote=false;try{session.adopt(nextGap,budget.reserve(4),"key","timeline",8,"epoch-d");}catch(const std::exception&){overwrote=true;}
+    require(overwrote,"A changed decoder epoch replaced an authoritative span");
+
+}
+static void missingSelectionTests(){
+    using namespace sampling;using namespace prepared;
+    PcmBudget budget(64);NativeTimeline source{48000,1,768,SampleType::Int32};NativeSession session(source,"key","timeline",1,budget);
+    session.preserve(0,768,std::make_shared<CompressedSpill>(budget));
+    std::vector<std::byte> expected(768*4);for(size_t i=0;i<expected.size();++i)expected[i]=static_cast<std::byte>((i*17)&255);
+    auto first=std::make_shared<Block>(source,0,128,std::span(expected).first(512));session.adopt(first,budget.reserve(512),"key","timeline",1,"heard");
+    int reads=0;auto clip=session.clip(0,768,[&](Frame start,Frame count,std::stop_token){
+        ++reads;require(start==128&&count==640,"Save decoded over already-authoritative frames");
+        auto pcm=std::make_shared<Block>(source,start,count,std::span(expected).subspan(512));
+        return std::make_shared<const NativeSession::Buffer>(NativeSession::Buffer{pcm,budget.reserve(pcm->bytes().size()),"save-reader"});
+    });
+    require(reads==0,"Opening a save snapshot decoded the selection synchronously");
+    std::vector<std::byte> output;clip->each([&](std::span<const std::byte> b){output.insert(output.end(),b.begin(),b.end());});
+    require(output==expected&&reads==1&&clip->decoderEpochs.size()==2,"Bounded gap fill lost selection bits or provenance");
+    output.clear();clip->each([&](std::span<const std::byte> b){output.insert(output.end(),b.begin(),b.end());});
+    require(output==expected&&reads==1,"Upload re-decoded audio after hashing it");
+    std::stop_source stop;stop.request_stop();bool cancelled=false;
+    try{clip->each([](auto){},stop.get_token());}catch(const std::exception&){cancelled=true;}
+    require(cancelled,"Snapshot streaming ignored cancellation");
+}
+static void failedEvictionTests(){
+    using namespace sampling;using namespace prepared;
+    struct Full: PcmBacking {std::shared_ptr<const Stored> store(std::span<const std::byte>)override{throw std::runtime_error("injected full editing disk");}};
+    PcmBudget budget(64);NativeTimeline source{48000,1,1000,SampleType::Int32};NativeSession session(source,"key","timeline",1,budget);
+    session.preserve(0,1000,std::make_shared<Full>());auto pcm=std::make_shared<Block>(source,0,1000,std::vector<std::byte>(4000));
+    session.adopt(pcm,budget.reserve(4000),"key","timeline",1,"heard");
+    bool failed=false;try{session.retain(1000,1000);}catch(const std::exception&){failed=true;}
+    require(failed&&session.covers(0,1000)&&session.find(0)->pcm==pcm&&budget.used()==4000,"Failed spill discarded authoritative audio or leaked PCM");
 }
 static void speakerOutputTest(){
     using namespace sampling;using namespace prepared;
@@ -48,8 +141,10 @@ static void speakerOutputTest(){
         require(budget.used()<=budget.limit(),"Speaker audition exceeded its shared budget");
     }
 }
-int main(){
+int main(int argc,char** argv){
  try{
+        uploadFrameTests();spillTests();selectionAuthorityTests();missingSelectionTests();failedEvictionTests();
+        if(argc==2&&std::string_view(argv[1])=="--save-storage"){std::cout<<"PASS checked native save framing and bounded lossless storage\n";return 0;}
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER,"dummy");
     using namespace sampling;using namespace prepared;
     const std::string capture="cap_"+std::string(32,'a'),sha(64,'b'),key(64,'c'),timeline="tl_"+std::string(32,'d');
