@@ -77,7 +77,7 @@ class Workspace {
     bool draftDirty=false;
     void get(std::string tag,std::string path);
     void command(std::string operation,Json payload);
-    void sendSave(Json&,std::shared_ptr<const NativeSession::Clip> = {});
+    void sendPending(Json&,std::shared_ptr<const NativeSession::Clip> = {});
     void browse();
     SourceRef sourceRef()const;
     DraftValue draftValue()const;

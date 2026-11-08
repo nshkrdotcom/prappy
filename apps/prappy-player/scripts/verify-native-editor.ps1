@@ -1,8 +1,9 @@
 param([Parameter(Mandatory)][string]$Manifest,[string]$BuildVariant='Release',
-    [ValidateRange(1,100)][int]$Iterations=1,[switch]$EvictSourcePages,[switch]$InjectAnalysisPending,[switch]$InjectCatalogOffline,[switch]$VerifySaveExport)
+    [ValidateRange(1,100)][int]$Iterations=1,[switch]$EvictSourcePages,[switch]$InjectAnalysisPending,[switch]$InjectCatalogOffline,[switch]$VerifySaveExport,[switch]$VerifyCommands)
 $ErrorActionPreference='Stop'
 $app=Split-Path $PSScriptRoot -Parent
 $fixture=Get-Content -LiteralPath $Manifest -Raw|ConvertFrom-Json
+if($VerifyCommands -and (!$VerifySaveExport -or !$fixture.generated_codec -or $fixture.url -match ':8765(/|$)')){throw 'Command/retry injection requires generated fixture media and save/export verification.'}
 $stateDirectory=Join-Path $app ('build/native-editor-'+[guid]::NewGuid().ToString('N'))
 $null=New-Item -ItemType Directory $stateDirectory
 $encoding=[Text.UTF8Encoding]::new($false)
@@ -35,7 +36,7 @@ try {
  Click list;Click library-0
  $song=Wait-Ui {param($ui)$ui.Duration-gt 14.9} 'native source playback'
  $playerWidth=$song.Width;$playerHeight=$song.Height
- $headers=if($EvictSourcePages -or $InjectAnalysisPending){@{Authorization='Bearer '+[IO.File]::ReadAllText($fixture.token_file).Trim()}}else{@{}}
+ $headers=if($EvictSourcePages -or $InjectAnalysisPending -or $VerifyCommands){@{Authorization='Bearer '+[IO.File]::ReadAllText($fixture.token_file).Trim()}}else{@{}}
  if($InjectAnalysisPending){$null=Invoke-RestMethod -Method Post -Headers $headers -Uri ($fixture.gate_url+'/analysis-pending?count=2')}
  if($EvictSourcePages){$null=Invoke-RestMethod -Method Post -Headers $headers -Uri ($fixture.gate_url+'/evict?capture='+$fixture.capture_id)}
  $clock=[Diagnostics.Stopwatch]::StartNew()
@@ -60,6 +61,10 @@ try {
   $ready=Wait-Ui {param($ui)$ui.Width-ge 1100 -and $ui.Height-ge 850 -and $ui.Sample.capture -and ($ui.Sample.pcm_selection_ready -and $ui.Sample.waveform_detail_bins -gt 0 -and $ui.Sample.waveform_stride -gt 0 -and $ui.Sample.waveform_stride -lt 4096) -and !$ui.Sample.mark_pending} 'random-position native detail'
   $measurements.Add($clock.ElapsedMilliseconds)
  }
+ if($VerifyCommands){
+  Click sample-classify
+  $null=Wait-Ui {param($ui)$ui.Sample.notice.StartsWith('Analysis queued;') -and $ui.Sample.pending-eq 0} 'editor generic classify command'
+ }
  if($VerifySaveExport){
   Click sample-new
   $draft=Wait-Ui {param($ui)$ui.Sample.active_draft -and $ui.Sample.selection_defined} 'explicit sample draft'
@@ -70,7 +75,13 @@ try {
   Click sample-redo
   $null=Wait-Ui {param($ui)$ui.Sample.start-eq $draft.Sample.start+1} 'native trim redo'
   Scroll-Editor -8
+  if($VerifyCommands){$null=Invoke-RestMethod -Method Post -Headers $headers -Uri ($fixture.gate_url+'/lose-save-reply')}
   Click sample-save
+  if($VerifyCommands){
+   $null=Wait-Ui {param($ui)$ui.Sample.pending-eq 1 -and $ui.Sample.notice.Contains('Injected committed-save response loss')} 'committed save with lost response'
+   Scroll-Editor -16
+   Click sample-retry
+  }
   $saved=Wait-Ui {param($ui)$ui.Sample.region.id -and $ui.Sample.pending-eq 0} 'native region save acknowledgment'
   if($saved.Sample.region.timeline_id-ne $fixture.mark_capture.timeline_id){throw 'Saved region changed native timeline.'}
   if($saved.Sample.region.span.start_frame-ne $saved.Sample.start -or $saved.Sample.region.span.end_frame-ne $saved.Sample.end){throw 'Saved region changed native boundaries.'}
@@ -96,5 +107,5 @@ try {
  if($log-match 'tag=(hash|resolve|source-import|pcm|audition) '){throw 'Editor used retired source registration or raw PCM paths.'}
  $ordered=@($measurements|Sort-Object)
  $percentiles=@(.5,.95,.99)|ForEach-Object {$ordered[[Math]::Ceiling($_*$ordered.Count)-1]}
- [pscustomobject]@{result='PASS';open_ms=$openMs;open_ms_p50_p95_p99=$percentiles;iterations=$Iterations;advisory_eviction=[bool]$EvictSourcePages;sample_rate=$rate;capture=$ready.Sample.capture;audition_chunks=$playing.Sample.playback_chunks;state=$stateDirectory}|ConvertTo-Json
+ [pscustomobject]@{result='PASS';open_ms=$openMs;open_ms_p50_p95_p99=$percentiles;iterations=$Iterations;advisory_eviction=[bool]$EvictSourcePages;commands_verified=[bool]$VerifyCommands;lost_save_reply_recovered=[bool]$VerifyCommands;sample_rate=$rate;capture=$ready.Sample.capture;audition_chunks=$playing.Sample.playback_chunks;state=$stateDirectory}|ConvertTo-Json
 }finally{Stop-Player}

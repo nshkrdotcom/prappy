@@ -57,6 +57,7 @@ def gated_app(config):
     held_requests = waiting_requests = cancelled_requests = cancellation_epoch = 0
     analysis_pending = 0
     catalog_offline = 0
+    lose_save_reply = False
 
     def state():
         return {'ready': True, 'pid': os.getpid(), 'library_id': config['library_id'],
@@ -69,7 +70,7 @@ def gated_app(config):
 
     @app.middleware('http')
     async def hold_product_requests(request, call_next):
-        nonlocal held_requests, waiting_requests, cancelled_requests,catalog_offline,analysis_pending
+        nonlocal held_requests, waiting_requests, cancelled_requests,catalog_offline,analysis_pending,lose_save_reply
         if request.url.path.startswith('/v1/') and not gate.is_set():
             if not hmac.compare_digest(request.headers.get('Authorization', ''), 'Bearer ' + token):
                 return JSONResponse({'error': 'invalid credentials'}, status_code=401)
@@ -86,6 +87,9 @@ def gated_app(config):
                                               'message': 'Held fixture request cancelled'}}, status_code=503)
         route = request.url.path
         response=await call_next(request)
+        if response.status_code==200 and route.endswith('/native-saves') and lose_save_reply:
+            lose_save_reply=False
+            return JSONResponse({'error':{'code':'fixture_reply_lost','message':'Injected committed-save response loss'}},status_code=503)
         if response.status_code==200 and ((route.endswith('/audio') and analysis_pending) or (route=='/v1/catalog' and catalog_offline)):
             if route.endswith('/audio'):analysis_pending-=1
             else:catalog_offline-=1
@@ -96,6 +100,12 @@ def gated_app(config):
                 for item in body['items']:item['state']='Offline'
             return JSONResponse(body)
         return response
+
+    @app.post('/_fixture/lose-save-reply', dependencies=[Depends(authenticate)])
+    async def lose_next_save_reply():
+        nonlocal lose_save_reply
+        lose_save_reply=True
+        return {'armed':True}
 
     @app.post('/_fixture/append-source', dependencies=[Depends(authenticate)])
     def append_source():
