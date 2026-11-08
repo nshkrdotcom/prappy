@@ -16,6 +16,23 @@ struct CatalogSource {
     std::optional<double> loudness,peak;
     std::vector<std::pair<std::string,std::string>> tags;
     bool ready()const{return state=="Playable";}
+    void analysis(const nlohmann::json& analysis){
+        loudness.reset();peak.reset();
+        if(analysis.contains("source_tags")){
+            const auto& originalTags=analysis.at("source_tags");
+            if(!originalTags.is_object())throw std::runtime_error("Invalid original gain tags.");
+            tags.clear();
+            for(const auto& [name,value]:originalTags.items()){
+                if(!value.is_string())throw std::runtime_error("Invalid original gain tag.");
+                tags.emplace_back(name,value.get<std::string>());
+            }
+        }
+        if(analysis.value("state",std::string("Ready"))!="Ready")return;
+        if(analysis.contains("loudness_lufs")&&!analysis.at("loudness_lufs").is_null())loudness=analysis.at("loudness_lufs").get<double>();
+        if(analysis.contains("sample_peak")&&!analysis.at("sample_peak").is_null())peak=analysis.at("sample_peak").get<double>();
+        if((loudness&&!std::isfinite(*loudness))||
+           (peak&&(!std::isfinite(*peak)||*peak<0)))throw std::runtime_error("Invalid source analysis.");
+    }
 };
 inline int64_t integer(const nlohmann::json& value) {
     if(!value.is_number_integer()||
@@ -55,19 +72,7 @@ inline std::vector<CatalogSource> parseCatalog(const nlohmann::json& snapshot) {
         // bounded source descriptor when editing starts, independently of analysis.
         if(!std::isfinite(source.duration)||source.duration<=0||source.native.rate<1||source.native.rate>768000||
            source.native.channels<1||source.native.channels>32)throw std::runtime_error("Invalid source media dimensions.");
-        if(row.contains("analysis")){
-            const auto& analysis=row.at("analysis");
-            if(analysis.contains("loudness_lufs")&&!analysis.at("loudness_lufs").is_null())source.loudness=analysis.at("loudness_lufs").get<double>();
-            if(analysis.contains("sample_peak")&&!analysis.at("sample_peak").is_null())source.peak=analysis.at("sample_peak").get<double>();
-            if((source.loudness&&!std::isfinite(*source.loudness))||
-               (source.peak&&(!std::isfinite(*source.peak)||*source.peak<0)))throw std::runtime_error("Invalid source analysis.");
-            const auto tags=analysis.value("source_tags",nlohmann::json::object());
-            if(!tags.is_object())throw std::runtime_error("Invalid original gain tags.");
-            for(const auto& [name,value]:tags.items()){
-                if(!value.is_string())throw std::runtime_error("Invalid original gain tag.");
-                source.tags.emplace_back(name,value.get<std::string>());
-            }
-        }
+        if(row.contains("analysis"))source.analysis(row.at("analysis"));
         result.push_back(std::move(source));
     }
     return result;

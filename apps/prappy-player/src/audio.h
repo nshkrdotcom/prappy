@@ -106,6 +106,7 @@ struct Audio {
             loadedSerial=serial;const auto& descriptor=native->descriptor();
             auto source=std::make_shared<prepared::CatalogSource>(*preparedSource);source->timeline=descriptor.at("timeline_id");
             source->native={state.rate,prepared::integer(descriptor.at("channels")),state.frames,prepared::sampleType(descriptor.at("sample_format").get<std::string>())};
+            if(descriptor.contains("analysis"))source->analysis(descriptor.at("analysis"));
             info.codec=source->codec;info.sampleRate=state.rate;info.channels=source->native.channels;info.sampleFormat=descriptor.at("sample_format");preparedSource=std::move(source);
             if(logPlayback)debuglog::write("play.loaded","serial="+std::to_string(serial)+" ms="+std::to_string(debuglog::elapsed(loadStarted))+" native_rate="+std::to_string(state.rate));
         }

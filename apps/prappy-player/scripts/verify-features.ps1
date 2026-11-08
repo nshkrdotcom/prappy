@@ -47,7 +47,11 @@ function Stop-Player {
   $process.Refresh();$null=[FeatureNative]::PostMessage($process.MainWindowHandle,0x10,[IntPtr]::Zero,[IntPtr]::Zero)
   if(!$process.WaitForExit(5000)){Stop-Process -Id $process.Id;throw 'Owned feature player did not close.'}
  }
- if($process){Require ($process.ExitCode-eq 0) 'clean native feature shutdown';$script:process=$null}
+ if($process){
+  Require ($process.ExitCode-eq 0) 'clean native feature shutdown'
+  if($BuildVariant.StartsWith('Debug') -and $env:PRAPPY_LEAK_REPORT){Require ((Get-Content -LiteralPath $env:PRAPPY_LEAK_REPORT -Raw)-match '^PASS no CRT leaks\s*$') 'each feature instance has no CRT leaks'}
+  $script:process=$null
+ }
 }
 try {
  Start-Player
@@ -58,6 +62,13 @@ try {
  }
  $layout=Read-Ui
  Require ($layout.Controls['volume-value'].Right-lt $layout.Controls['volume'].Left) 'volume value cannot be covered by its slider'
+ $bounds=[FeatureNative+Rect]::new();[FeatureNative]::GetWindowRect($hwnd,[ref]$bounds)|Out-Null
+ $frameHeight=$bounds.Bottom-$bounds.Top-$layout.Height;$frameWidth=$bounds.Right-$bounds.Left-$layout.Width
+ [FeatureNative]::SetWindowPos($hwnd,[IntPtr]::Zero,40,40,900+$frameWidth,360+$frameHeight,0x14)|Out-Null
+ $null=Wait-Ui {param($s)$s.Width-eq 900 -and $s.Height-eq 360} 'small native window'
+ Require (!(Read-Ui).Controls.ContainsKey('directories')) 'small window does not overlap browser and transport'
+ [FeatureNative]::SetWindowPos($hwnd,[IntPtr]::Zero,40,40,500+$frameWidth,250+$frameHeight,0x14)|Out-Null
+ $null=Wait-Ui {param($s)$s.Width-eq 500 -and $s.Height-eq 250} 'minimum native window'
  $initial=Read-Ui
  foreach($mode in @(0,1,2)){
   Click repeat;$next=Wait-Ui {param($s)$s.Repeat-eq (($initial.Repeat+$mode+1)%3)} 'repeat mode persists'
@@ -107,6 +118,20 @@ try {
  if(!(Read-Ui).Paused){Click play}
  Capture matched
  Click Clear
+ $searchBefore=Read-Ui;Click refresh
+ $null=Wait-Ui {param($s)!$s.Catalog.refreshing -and $s.Visible-eq $searchBefore.Visible -and $s.Session-eq $searchBefore.Session} 'native catalog refresh preserves browser query and filters'
+ Click filters;Select-Combo extension 1
+ $codec=@($catalog.items.media.codec|Sort-Object -Unique)[0]
+ $expected=@($catalog.items|Where-Object {$_.media.codec-eq $codec}).Count
+ $null=Wait-Ui {param($s)$s.Visible-eq $expected} 'native codec filter'
+ $field=(Wait-Ui {param($s)$s.Controls.ContainsKey('duration-min')} 'duration field').Controls['duration-min']
+ Click-At duration-min ($field.Left+30) $field.Y
+ Send-UiInput 'KEY CTRL 1';Send-UiInput 'KEY A 1';Send-UiInput 'KEY A 0';Send-UiInput 'KEY CTRL 0'
+ $minimum=[Math]::Ceiling(($catalog.items.media.duration_seconds|Measure-Object -Maximum).Maximum)+1
+ Send-UiInput ('TEXT "'+$minimum+'"');Send-UiInput 'TAP ENTER'
+ $null=Wait-Ui {param($s)$s.Visible-eq 0} 'duration bound intersects codec filter'
+ Click filter-reset;Dismiss-Popup
+ $null=Wait-Ui {param($s)$s.Visible-eq $all.Visible} 'combined filter reset'
  Click filters;Select-Combo availability 2;Dismiss-Popup
  $null=Wait-Ui {param($s)$s.Visible-eq 0} 'offline filter excludes online sources'
  Click filters;Click filter-reset;Dismiss-Popup
@@ -141,6 +166,16 @@ try {
  $null=Move-Control transport-resize;Send-UiInput DOUBLE_CLICK
  $null=Wait-Ui {param($s)$s.PanelPreferred-eq 202} 'waveform double-click reset'
  Require ([Math]::Abs((Read-Ui).Position-$position)-lt .02) 'resize preserves native position'
+ [FeatureNative]::ShowWindow($hwnd,3)|Out-Null
+ $null=Wait-Ui {param($s)$s.Width-gt 1000 -and $s.WaveVertices-le $s.Width*64+512} 'maximized waveform remains bounded'
+ [FeatureNative]::ShowWindow($hwnd,9)|Out-Null
+ $null=Wait-Ui {param($s)$s.Width-eq 500 -and $s.Paused} 'normal size and pause survive maximize'
+ Send-UiInput 'MOVE 0 0';$settling=[Diagnostics.Stopwatch]::StartNew();$quiet=[Diagnostics.Stopwatch]::StartNew();$presents=(Read-Ui).Presents
+ do {
+  Start-Sleep -Milliseconds 100;$now=(Read-Ui).Presents
+  if($now-ne $presents){$presents=$now;$quiet.Restart()}
+ }while($quiet.Elapsed.TotalSeconds-lt 2 -and $settling.Elapsed.TotalSeconds-lt 20)
+ Require ($quiet.Elapsed.TotalSeconds-ge 2) 'paused native UI settles without idle frames'
  $beforeReset=Read-Ui;Send-UiInput RENDER_RESET
  $null=Wait-Ui {param($s)$s.TextRasterized-gt $beforeReset.TextRasterized -and $s.WaveBuilds-gt $beforeReset.WaveBuilds} 'renderer reset restores native waveform/text'
  Click more;Click topmost

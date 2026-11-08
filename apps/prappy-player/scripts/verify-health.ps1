@@ -7,7 +7,7 @@ if (!$SkipBuild) {
     & "$PSScriptRoot/build.ps1" -VariantSuffix $VariantSuffix
     & "$PSScriptRoot/build.ps1" -Analyze -VariantSuffix $VariantSuffix
     & "$PSScriptRoot/build.ps1" -Config Debug -VariantSuffix $VariantSuffix
-    & "$PSScriptRoot/build.ps1" -Config Debug -Asan -VariantSuffix $VariantSuffix
+    & "$PSScriptRoot/build.ps1" -Asan -VariantSuffix $VariantSuffix
 }
 $out = Join-Path $app 'build/health'
 New-Item -ItemType Directory -Force $out | Out-Null
@@ -20,7 +20,7 @@ function Require-LeakReport([string]$Path) {
 }
 try {
     # Static analysis is a compile-time check; exercise Release behavior once.
-    foreach ($variant in @('Release','Debug','Debug-Asan')) {
+    foreach ($variant in @('Release','Debug','Release-Asan')) {
         $buildVariant = $variant
         if ($VariantSuffix) { $buildVariant += "-$VariantSuffix" }
         for ($cycle=1; $cycle -le $Repetitions; $cycle++) {

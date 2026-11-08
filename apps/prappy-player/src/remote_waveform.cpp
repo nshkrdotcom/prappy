@@ -26,6 +26,7 @@ bool RemoteWaveform::collect() {
                 if(reply.body.at("capture").at("id")!=source.source.capture||reply.body.at("capture").at("blob_sha256")!=source.asset)
                     throw std::runtime_error("Waveform source identity changed.");
                 source.timeline=reply.body.at("timeline_id");
+                if(reply.body.contains("analysis"))source.analysis(reply.body.at("analysis"));
                 source.native={prepared::integer(reply.body.at("sample_rate")),prepared::integer(reply.body.at("channels")),
                     prepared::integer(reply.body.at("frame_count")),prepared::sampleType(reply.body.at("sample_format").get<std::string>())};
                 source.native.validate();

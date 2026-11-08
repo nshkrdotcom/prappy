@@ -331,7 +331,9 @@ int runPlayer(HINSTANCE instance) {
             gain::Tags tags;
             if(audio.preparedSource&&key(path)==key(audio.current)) {
                 const auto& source=*audio.preparedSource;
-                measured.loudness=source.loudness;measured.samplePeak=source.peak;
+                const auto& latest=preparedWaveform.metadata();
+                const auto& measurement=latest.source==source.source&&latest.asset==source.asset&&latest.loudness?latest:source;
+                measured.loudness=measurement.loudness;measured.samplePeak=measurement.peak;
                 tags=gain::parseTags(source.tags,lower(source.codec).find("opus")!=std::string::npos);
             }
             return gain::choose(serial, playback.sourceIdentity(path),

@@ -16,8 +16,10 @@ normalization preferences and restart. Release passes both the 3,147-source
 isolated library and generated AAC fixture; Debug passes the library with a
 clean CRT report. Model/state tests retain detailed subtree/alias/extension/
 duration/persistence cases. Those model tests do not substitute for still-needed
-native GUI coverage of small/maximized-window transitions, idle rendering,
-combined extension/duration filtering and group/search/refresh interactions.
+native GUI coverage of changing catalog membership during an active group/search/
+filter combination. Native small/maximized transitions, paused idle, and combined
+codec/duration filtering now also pass on the AAC fixture. Catalog refresh retains
+the current query/filters; detailed subtree exclusion behavior remains model-tested.
 `verify-health.ps1` now takes both `-Manifest` and `-StateSource`, and runs these
 native feature checks sequentially with the existing editor/window/relaunch checks.
 

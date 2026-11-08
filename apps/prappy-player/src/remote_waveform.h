@@ -18,5 +18,6 @@ public:
     bool collect();
     void clear(){if(client)client->cancelReads(sampling::ReadScope::Audio);++generation;identity.clear();waveform.reset();message.clear();}
     const auto& value()const{return waveform;}
+    const auto& metadata()const{return source;}
     const std::string& status()const{return message;}
 };

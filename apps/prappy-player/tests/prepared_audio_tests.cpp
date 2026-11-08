@@ -57,6 +57,13 @@ int main() {
     require(catalog.size()==1&&catalog[0].source==source&&catalog[0].native.rate==44100);
     require(catalog[0].native.frames==0&&catalog[0].ready()&&!catalog[0].loudness);
     require(catalog[0].timeline.empty());
+    auto measured=catalog[0];measured.analysis({{"state","Ready"},{"loudness_lufs",-23.0},{"sample_peak",.25}});
+    require(measured.loudness==-23.0&&measured.peak==.25);
+    measured.tags={{"replaygain_track_gain","-3 dB"}};
+    measured.analysis({{"state","Unsupported"},{"reason","unknown channel map"}});
+    require(measured.tags.size()==1&&measured.tags[0].second=="-3 dB");
+    require(!measured.loudness&&!measured.peak);
+    rejects([&]{measured.analysis({{"state","Ready"},{"sample_peak",-1}});});
     rejects([&]{parseCatalog({{"protocol",3},{"items",nlohmann::json::array({row,row})}});});
     rejects([&]{parseCatalog({{"protocol",2},{"items",nlohmann::json::array({row})}});});
     row["media"]["sample_rate"]=1.5;
