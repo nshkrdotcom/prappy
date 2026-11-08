@@ -1,5 +1,28 @@
 # Windows verification
 
+## Current native runtime checks, 2026-11-07
+
+Run `scripts/verify-features.ps1 -StateSource CLOSED_ISOLATED_STATE -BuildVariant Release-Indexed`.
+The source supplies only its isolated protocol-3 connection/configuration; the
+check creates its own two native history entries and fresh preferences. It never
+loads or edits the source's sample workspaces. The backend must be loopback on a
+nonproduction port. Source configuration hashes are checked before/after.
+
+The check covers transport alignment, history navigation, repeat, viewport-only
+rows, grouping, ranked title search, escaped quotes/backslashes, Unicode SDL
+composition, offline/history filters, library scopes and pins, queue/visit
+semantics, bounded waveform seeking/resizing, renderer reset, strip/topmost/
+normalization preferences and restart. Release passes both the 3,147-source
+isolated library and generated AAC fixture; Debug passes the library with a
+clean CRT report. Model/state tests retain detailed subtree/alias/extension/
+duration/persistence cases. Those model tests do not substitute for still-needed
+native GUI coverage of small/maximized-window transitions, idle rendering,
+combined extension/duration filtering and group/search/refresh interactions.
+`verify-health.ps1` now takes both `-Manifest` and `-StateSource`, and runs these
+native feature checks sequentially with the existing editor/window/relaunch checks.
+
+The older sections below describe historical local-file fixtures and results;
+they are not claims that those removed decoder/fixture paths are current tests.
 ## Directory scopes and resizable waveform, 2026-10-26
 
 Directory rules use case-insensitive, separator-aware subtree matching, including

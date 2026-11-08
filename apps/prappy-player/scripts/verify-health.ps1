@@ -1,5 +1,5 @@
 #Requires -Version 7.0
-param([Parameter(Mandatory)][string]$Manifest,[switch]$SkipBuild, [ValidateRange(1,10)][int]$Repetitions=2,
+param([Parameter(Mandatory)][string]$Manifest,[Parameter(Mandatory)][string]$StateSource,[switch]$SkipBuild, [ValidateRange(1,10)][int]$Repetitions=2,
     [ValidatePattern('^[A-Za-z0-9-]*$')][string]$VariantSuffix='')
 $ErrorActionPreference='Stop'
 $app = Split-Path $PSScriptRoot -Parent
@@ -32,6 +32,10 @@ try {
         $report = Join-Path $out "$variant-ui-$([Guid]::NewGuid().ToString('N')).log"
         $env:PRAPPY_LEAK_REPORT = $report
         & "$PSScriptRoot/verify-native-editor.ps1" -Manifest $Manifest -BuildVariant $buildVariant -VerifySaveExport
+        if ($variant -eq 'Debug') { Require-LeakReport $report }
+        $report = Join-Path $out "$variant-features-$([Guid]::NewGuid().ToString('N')).log"
+        $env:PRAPPY_LEAK_REPORT = $report
+        & "$PSScriptRoot/verify-features.ps1" -StateSource $StateSource -BuildVariant $buildVariant
         if ($variant -eq 'Debug') { Require-LeakReport $report }
         $report = Join-Path $out "$variant-window-$([Guid]::NewGuid().ToString('N')).log"
         $env:PRAPPY_LEAK_REPORT = $report

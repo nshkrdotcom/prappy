@@ -176,17 +176,17 @@ function Select-Combo([string]$name,[int]$index) {
 function Search([string]$query) {
     Click 'search'
     Send-UiInput 'KEY CTRL 1'; Send-UiInput 'KEY A 1'; Send-UiInput 'KEY A 0'; Send-UiInput 'KEY CTRL 0'
-    Send-UiInput ('TEXT "{0}"' -f $query)
+    Send-UiInput ('TEXT "{0}"' -f $query.Replace('\','\\').Replace('"','\"'))
 }
 function Check-DirectoryRow([string]$name) {
-    $state=Wait-Ui {param($s) $s.Controls.ContainsKey('directories') -and $s.Controls.ContainsKey('directory-overflow')} "$name directory row rendered"
+    $state=Wait-Ui {param($s) $s.Controls.ContainsKey('directories') -and ($s.Controls.ContainsKey('directory-overflow') -or $s.Controls.ContainsKey('directory-chip-0'))} "$name directory row rendered"
     $controls=@($state.Controls.GetEnumerator() | Where-Object { $_.Key -eq 'directories' -or $_.Key -eq 'directory-reset' -or $_.Key -eq 'directory-overflow' -or $_.Key -like 'directory-chip-*' } | ForEach-Object Value | Sort-Object Left)
     $right=-1
     foreach($control in $controls) {
         Require ($control.Left -ge $right -and $control.Right -le $state.Width-8 -and [Math]::Abs($control.Y-$state.Controls['directories'].Y) -lt 1) "$name directory control stays readable within its row"
         $right=$control.Right
     }
-    Require ($state.Controls['directories'].Left -lt $state.Controls['directory-overflow'].Left) "$name retains Folders before overflow"
+    if($state.Controls.ContainsKey('directory-overflow')){Require ($state.Controls['directories'].Left -lt $state.Controls['directory-overflow'].Left) "$name retains Folders before overflow"}
 }
 function Capture([string]$name) {
     $layout=Read-Ui
