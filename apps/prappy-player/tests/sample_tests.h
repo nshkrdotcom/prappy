@@ -1,6 +1,7 @@
 #pragma once
 #include "sample_editor.h"
 #include "sample_client.h"
+#include "prepared_requests.h"
 #include "sample_audition.h"
 #include "state_io.h"
 #include "waveform_amplitude.h"
@@ -57,41 +58,56 @@ inline int integrationTest(const fs::path& manifestPath,const fs::path& logPath)
         };
         auto libraries=request("libraries","GET","/v1/libraries").body;
         require(!libraries.empty(),"No HTTP libraries");
-        auto rows=request("browse","GET",base+"/recordings").body.at("items");require(!rows.empty(),"No recordings");
-        const auto capture=rows[0];const auto cap=capture.at("id").get<std::string>();
-        const auto timeline=capture.at("timeline_id").get<std::string>();
-        auto pcm=request("pcm","GET",base+"/captures/"+cap+"/pcm?start=1000&end=2000&timeline="+timeline).pcm;
-        require(pcm.size()==2000,"PCM exact frame count failed");
-        require(std::abs(pcm[0]-.5f)<.000001f && std::abs(pcm[1998]+.5f)<.000001f,"PCM sample boundaries failed");
-        log<<"PASS native Windows HTTP authentication, catalog and exact canonical PCM\n";
+        const auto cap=manifest.at("capture_id").get<std::string>(),endpoint=base+"/captures/"+cap+"/audio";
+        const auto source=request("source-descriptor","GET",endpoint).body;
+        const auto timeline=source.at("timeline_id").get<std::string>(),sourceKey=source.at("source_key").get<std::string>();
+        auto decoded=request("source-pcm","GET",endpoint+"/pcm?start=1000&count=1000&timeline="+timeline+"&source_key="+sourceKey,prepared::pcmContext(source,1000,1000));
+        require(decoded.preparedPcm&&decoded.preparedPcm->start()==1000&&decoded.preparedPcm->frames()==1000,"Typed PCM exact frame count failed");
+        PcmBudget uploadMemory;NativeSession clips(decoded.preparedPcm->source(),sourceKey,timeline,1,uploadMemory);
+        clips.adopt(decoded.preparedPcm,uploadMemory.reserve(decoded.preparedPcm->bytes().size()),sourceKey,timeline,1,decoded.body.at("decoder_epoch"));
+        const auto save=[&](const Json& payload,std::string id=""){
+            Request hash{"native-save-hash","LOCAL","",Json::object(),0,{}};
+            hash.upload=clips.clip(payload.at("span").at("start_frame"),payload.at("span").at("end_frame"));
+            const auto fingerprint=perform(connection,hash);require(fingerprint.error.empty(),"Native save hash failed");
+            Request upload{"command","POST",base+"/native-saves",{{"request_id",id.empty()?uuid():id},{"operation","region.save"},
+                {"payload",payload},{"source_key",sourceKey},{"pcm_sha256",fingerprint.body.at("sha256")},{"decoder_epoch",hash.upload->decoderEpoch}},0,{}};
+            upload.upload=hash.upload;auto reply=perform(connection,upload);
+            if(!reply.error.empty())throw std::runtime_error(reply.error);return reply.body;
+        };
+        log<<"PASS native Windows HTTP authentication, catalog and typed native PCM\n";
         const auto cmd=[&](std::string operation,Json payload,std::string id=""){
             if(id.empty())id=uuid();
             return request("command","POST",base+"/commands",{{"request_id",id},{"operation",operation},{"payload",payload}}).body;
         };
         const auto commandId=uuid();
-        Json payload={{"capture_id",cap},{"name","Native exact splice"},{"kind","one_shot"},{"span",{{"start_frame",1000},{"end_frame",2000}}},{"facts",Json::array({{{"facet","tags"},{"value",Json::array({"native-test","hit"})},{"origin","human"},{"state","accepted"}}})}};
-        const auto first=cmd("region.save",payload,commandId);const auto region=first.at("region");const auto id=region.at("id").get<std::string>();
+        Json payload={{"capture_id",cap},{"timeline_id",timeline},{"name","Native exact splice"},{"kind","one_shot"},{"span",{{"start_frame",1000},{"end_frame",2000}}},{"facts",Json::array({{{"facet","tags"},{"value",Json::array({"native-test","hit"})},{"origin","human"},{"state","accepted"}}})}};
+        const auto first=save(payload,commandId);const auto region=first.at("region");const auto id=region.at("id").get<std::string>();
         payload["id"]=id;payload["expected"]=1;payload["span"]["start_frame"]=1001;
-        require(cmd("region.save",payload).at("region").at("revision")==2,"Region edit revision failed");
+        require(save(payload).at("region").at("revision")==2,"Region edit revision failed");
         payload.erase("id");payload.erase("expected");payload["span"]["start_frame"]=1000;
-        require(cmd("region.save",payload,commandId).at("region").at("revision")==1,"Exact replay after later edit failed");
+        require(save(payload,commandId).at("region").at("revision")==1,"Exact replay after later edit failed");
         auto samples=request("browse","GET",base+"/regions?q=native-test").body.at("items");require(!samples.empty(),"Sample metadata search failed");
         auto collection=cmd("collection.create",{{"name","Native sample collection"}}).at("collection");
         cmd("collection.add",{{"id",collection.at("id")},{"expected",1},{"region",{{"id",id},{"revision",1}}}});
         auto prepared=request("export","POST",base+"/regions/"+id+"/exports/1",Json::object()).body;
         require(prepared.at("variant").at("frame_count")==1000,"Export frame count failed");
-        const auto destination=logPath.parent_path()/"native-export.flac";
+        const auto frozenEndpoint=base+"/regions/"+id+"/revisions/1/audio";
+        const auto frozen=request("source-descriptor","GET",frozenEndpoint).body;
+        auto reopened=request("source-pcm","GET",frozenEndpoint+"/pcm?start=1000&count=1000&source_key="+frozen.at("source_key").get<std::string>()+"&timeline="+timeline,prepared::pcmContext(frozen,1000,1000));
+        require(reopened.preparedPcm&&reopened.preparedPcm->bytes()==decoded.preparedPcm->bytes(),"Frozen save changed authoritative PCM");
+        const std::string extension=source.at("sample_format")=="float64"?".w64":".wv";
+        const auto destination=logPath.parent_path()/("native-export"+extension),rejected=logPath.parent_path()/("rejected"+extension);
         std::error_code ec;fs::remove(destination,ec);
         auto downloaded=perform(connection,{"artifact","GET",prepared.at("download_url"),{{"expected_sha256",prepared.at("variant").at("audio_sha256")}},0,destination});
         require(downloaded.error.empty(),"Artifact verification/download failed");
         downloaded=perform(connection,{"artifact","GET",prepared.at("download_url"),{{"expected_sha256",prepared.at("variant").at("audio_sha256")}},0,destination});
         require(downloaded.error.empty(),"Repeated verified export failed");
-        auto corrupt=perform(connection,{"artifact","GET",prepared.at("download_url"),{{"expected_sha256",std::string(64,'0')}},0,logPath.parent_path()/"rejected.flac"});
-        require(!corrupt.error.empty() && !fs::exists(logPath.parent_path()/"rejected.flac.partial"),"Corrupt download must be removed");
+        auto corrupt=perform(connection,{"artifact","GET",prepared.at("download_url"),{{"expected_sha256",std::string(64,'0')}},0,rejected});
+        require(!corrupt.error.empty() && !fs::exists(rejected) && !fs::exists(fs::path(rejected.wstring()+L".partial")),"Corrupt download and partial file must be removed");
         std::stop_source stopped;stopped.request_stop();require(!perform(connection,{"libraries","GET","/v1/libraries",nullptr,0,{}},stopped.get_token()).error.empty(),"Cancelled request should stop");
         SDL_SetHint(SDL_HINT_AUDIO_DRIVER,"dummy");
         PcmBudget memory;NativeSession native({44100,2,2000,prepared::SampleType::Float32},"test","timeline",1,memory);
-        const auto bytes=std::as_bytes(std::span(pcm));
+        const std::vector<float> pcm(2000,.1f);const auto bytes=std::as_bytes(std::span(pcm));
         auto block=std::make_shared<const prepared::Block>(prepared::NativeTimeline{44100,2,2000,prepared::SampleType::Float32},1000,1000,bytes);
         auto buffer=native.adopt(block,memory.reserve(bytes.size()),"test","timeline",1);
         Audition preview(memory);preview.start(buffer,{1000,2000},1000,true);SDL_Delay(100);

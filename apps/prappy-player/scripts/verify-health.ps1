@@ -29,6 +29,13 @@ try {
             & "$PSScriptRoot/test-state.ps1" -BuildVariant $buildVariant
             if ($variant -eq 'Debug') { Require-LeakReport $report }
         }
+        $report = Join-Path $out "$variant-sampling-$([Guid]::NewGuid().ToString('N')).log"
+        $env:PRAPPY_LEAK_REPORT = "$report.crt"
+        $process = Start-Process -FilePath "$app/build/$buildVariant/tests/PrappyStateTests.exe" -WindowStyle Hidden -PassThru `
+            -RedirectStandardError "$report.stderr" -ArgumentList '--sampling-test',('"{0}"' -f $Manifest),('"{0}"' -f $report)
+        if (!$process.WaitForExit(120000)) { Stop-Process -Id $process.Id -Force; throw 'Native sampling regression timed out.' }
+        if ($process.ExitCode -ne 0 -or !(Test-Path -LiteralPath $report) -or (Get-Content -LiteralPath $report -Raw) -notmatch 'ALL PASS') { throw "Native sampling regression failed: $report" }
+        if ($variant -eq 'Debug') { Require-LeakReport "$report.crt" }
         $report = Join-Path $out "$variant-ui-$([Guid]::NewGuid().ToString('N')).log"
         $env:PRAPPY_LEAK_REPORT = $report
         & "$PSScriptRoot/verify-native-editor.ps1" -Manifest $Manifest -BuildVariant $buildVariant -VerifySaveExport
