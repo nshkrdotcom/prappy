@@ -46,6 +46,7 @@ public:
     struct Stored {virtual ~Stored()=default;virtual size_t bytes()const=0;virtual void read(std::span<std::byte>)const=0;};
     virtual ~PcmBacking()=default;
     virtual std::shared_ptr<const Stored> store(std::span<const std::byte>)=0;
+    virtual std::shared_ptr<PcmBacking> fork()const=0;
 };
 
 class NativeSession {
@@ -121,6 +122,7 @@ public:
     bool hasBacking()const{return static_cast<bool>(backing);}
     void preserve(prepared::Frame start,prepared::Frame end,std::shared_ptr<PcmBacking> storage={}){
         if(start<0||end<=start||end>source.frames||(!backing&&!storage))throw std::runtime_error("Invalid preserved selection.");
+        if(preserved){start=std::min(start,preserved->first);end=std::max(end,preserved->second);}
         if(!backing)backing=std::move(storage);preserved={{start,end}};
     }
     void clearPreservation(){preserved.reset();}
@@ -184,9 +186,11 @@ public:
         if(start<0||end<=start||end>source.frames||(!covers(start,end)&&(!load||!backing)))
             throw std::runtime_error("Save requires the complete selected audio window.");
         auto result=std::make_shared<Clip>();result->source=source;result->first=start;result->last=end;result->budget=budget;
-        result->sourceKey=sourceKey;result->timeline=timeline;result->backing=backing;result->load=std::move(load);
+        result->sourceKey=sourceKey;result->timeline=timeline;result->load=std::move(load);
         auto at=start;const auto stride=static_cast<size_t>(source.channels)*prepared::sampleBytes(source.type);
-        const auto gap=[&](prepared::Frame stop){while(at<stop){
+        const auto gap=[&](prepared::Frame stop){
+            if(!result->backing)result->backing=backing->fork();
+            while(at<stop){
             const auto count=std::min<prepared::Frame>(stop-at,1024*1024/stride);
             result->segments.push_back({{},{},at,count,at,{}});at+=count;
         }};

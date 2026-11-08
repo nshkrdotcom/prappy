@@ -12,17 +12,24 @@ class CompressedSpill final:public PcmBacking {
     static constexpr uint64_t globalLimit=8ULL*1024*1024*1024,reserve=1024ULL*1024*1024;
     static inline std::mutex quotaMutex;
     static inline uint64_t charged=0;
-    struct File {
-        HANDLE handle=INVALID_HANDLE_VALUE;
+    struct Codec {
         COMPRESSOR_HANDLE compressor=nullptr;DECOMPRESSOR_HANDLE decompressor=nullptr;
-        mutable std::mutex mutex;
-        PcmBudget::Permit scratch;
+        mutable std::mutex mutex;PcmBudget::Permit scratch;
+        explicit Codec(PcmBudget budget):scratch(budget.reserve(8*1024*1024)){
+            if(!CreateCompressor(COMPRESS_ALGORITHM_XPRESS_HUFF,nullptr,&compressor)||
+               !CreateDecompressor(COMPRESS_ALGORITHM_XPRESS_HUFF,nullptr,&decompressor)){
+                if(compressor)CloseCompressor(compressor);if(decompressor)CloseDecompressor(decompressor);
+                throw std::runtime_error("Windows lossless editing compression is unavailable.");
+            }
+        }
+        ~Codec(){CloseCompressor(compressor);CloseDecompressor(decompressor);}
+    };
+    struct File {
+        HANDLE handle=INVALID_HANDLE_VALUE;std::shared_ptr<Codec> codec;
         uint64_t raw=0,encoded=0,cost=0,limit;size_t records=0;std::wstring directory;
-        explicit File(PcmBudget budget,uint64_t ceiling):scratch(budget.reserve(8*1024*1024)),limit(ceiling){}
+        File(std::shared_ptr<Codec> context,uint64_t ceiling):codec(std::move(context)),limit(ceiling){}
         ~File(){
             if(handle!=INVALID_HANDLE_VALUE)CloseHandle(handle);
-            if(compressor)CloseCompressor(compressor);
-            if(decompressor)CloseDecompressor(decompressor);
             std::lock_guard lock(quotaMutex);charged-=cost;
         }
         void open(){
@@ -33,9 +40,6 @@ class CompressedSpill final:public PcmBacking {
             directory=folder.data();handle=CreateFileW(path.data(),GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_EXISTING,
                 FILE_ATTRIBUTE_TEMPORARY|FILE_FLAG_DELETE_ON_CLOSE,nullptr);
             if(handle==INVALID_HANDLE_VALUE){DeleteFileW(path.data());throw std::runtime_error("Cannot open temporary editing storage.");}
-            if(!CreateCompressor(COMPRESS_ALGORITHM_XPRESS_HUFF,nullptr,&compressor)||
-               !CreateDecompressor(COMPRESS_ALGORITHM_XPRESS_HUFF,nullptr,&decompressor))
-                throw std::runtime_error("Windows lossless editing compression is unavailable.");
         }
     };
     std::shared_ptr<File> file;
@@ -56,21 +60,24 @@ class CompressedSpill final:public PcmBacking {
         size_t bytes()const override{return raw;}
         void read(std::span<std::byte> output)const override{
             if(output.size()!=raw)throw std::runtime_error("Stored editing PCM destination differs.");
-            std::lock_guard lock(owner->mutex);std::vector<std::byte> packed(encoded);
+            std::lock_guard lock(owner->codec->mutex);std::vector<std::byte> packed(encoded);
             LARGE_INTEGER at;at.QuadPart=static_cast<LONGLONG>(offset);DWORD count=0;SIZE_T size=0;
             if(!SetFilePointerEx(owner->handle,at,nullptr,FILE_BEGIN)||
                !ReadFile(owner->handle,packed.data(),encoded,&count,nullptr)||count!=encoded||
-               !Decompress(owner->decompressor,packed.data(),packed.size(),output.data(),output.size(),&size)||size!=raw||hash(output)!=digest)
+               !Decompress(owner->codec->decompressor,packed.data(),packed.size(),output.data(),output.size(),&size)||size!=raw||hash(output)!=digest)
                 throw std::runtime_error("Temporary editing PCM is incomplete or corrupt; retained work was not replaced.");
         }
     };
+    CompressedSpill(std::shared_ptr<Codec> context,uint64_t limit):file(std::make_shared<File>(std::move(context),limit)){}
 public:
-    explicit CompressedSpill(PcmBudget budget,uint64_t limit=globalLimit):file(std::make_shared<File>(std::move(budget),limit)){
+    static uint64_t quotaUsed(){std::lock_guard lock(quotaMutex);return charged;}
+    explicit CompressedSpill(PcmBudget budget,uint64_t limit=globalLimit):file(std::make_shared<File>(std::make_shared<Codec>(std::move(budget)),limit)){
         if(!limit||limit>globalLimit)throw std::runtime_error("Temporary editing storage limit must be between 1 byte and 8 GiB.");
     }
+    std::shared_ptr<PcmBacking> fork()const override{return std::shared_ptr<PcmBacking>(new CompressedSpill(file->codec,file->limit));}
     std::shared_ptr<const Stored> store(std::span<const std::byte> bytes)override{
         if(bytes.empty()||bytes.size()>1024*1024)throw std::runtime_error("Temporary PCM writes must be at most 1 MiB.");
-        std::lock_guard lock(file->mutex);
+        std::lock_guard lock(file->codec->mutex);
         {std::lock_guard quota(quotaMutex);
             if(bytes.size()>file->limit-file->raw||bytes.size()>globalLimit-charged||file->records>=16384)
                 throw std::runtime_error("Active editing audio reached its temporary storage limit; your retained audio is unchanged.");
@@ -79,7 +86,7 @@ public:
         if(!GetDiskFreeSpaceExW(file->directory.c_str(),&free,nullptr,nullptr)||free.QuadPart<reserve+bytes.size()+65536)
             throw std::runtime_error("Temporary editing storage needs 1 GiB free headroom.");
         std::vector<std::byte> packed(bytes.size()+65536);SIZE_T size=0;
-        if(!Compress(file->compressor,const_cast<std::byte*>(bytes.data()),bytes.size(),packed.data(),packed.size(),&size))
+        if(!Compress(file->codec->compressor,const_cast<std::byte*>(bytes.data()),bytes.size(),packed.data(),packed.size(),&size))
             throw std::runtime_error("Cannot compress authoritative editing PCM.");
         const auto digest=hash(bytes);auto result=std::make_shared<Chunk>(file,file->encoded,bytes.size(),static_cast<DWORD>(size),digest);
         LARGE_INTEGER at;at.QuadPart=static_cast<LONGLONG>(file->encoded);DWORD written=0;

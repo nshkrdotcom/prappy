@@ -38,7 +38,7 @@ private:
     }
     void newOwner(){
         client.cancelReads(ReadScope::PCM);release();output.stop();pending=started=false;decodedEnd=-1;++generation;owner=uuid();
-        if(retained&&retained->preserving())retained->restart(generation);
+        if(retained&&cacheWindow)retained->restart(generation);
         else retained=std::make_shared<NativeSession>(timeline(),manifest.at("source_key"),manifest.at("timeline_id"),generation,budget);
         if(manifest.at("access_mode")=="indexed")leasePath=endpoint+"/session?source_key="+manifest.at("source_key").get<std::string>()+
             "&timeline="+manifest.at("timeline_id").get<std::string>()+"&owner="+owner;
@@ -63,11 +63,20 @@ private:
         const auto bytes=static_cast<size_t>(frames)*stride;
         return bytes+extra+std::min<size_t>(32*1024*1024,bytes)<=working;
     }
+    bool preserveSelection(){
+        if(!cacheWindow||!retained)return true;
+        if(!retained->hasBacking()){
+            if(budget.limit()-budget.used()<8*1024*1024)return false;
+            retained->preserve(cacheWindow->start,cacheWindow->end,std::make_shared<CompressedSpill>(budget));
+        }else retained->preserve(cacheWindow->start,cacheWindow->end);
+        return true;
+    }
     void request(Frame frame,bool forPlayback=true){
         const auto bound=forPlayback?range:cacheWindow.value_or(coverage);
         if(frame<bound.start||frame>=bound.end)return;
         if(auto cached=retained->find(frame)){if(forPlayback)feed(std::move(cached));return;}
         if(pending)return;
+        if(!preserveSelection()){if(forPlayback)status.buffering=true;return;}
         const auto t=timeline();
         const size_t stride=static_cast<size_t>(t.channels)*prepared::sampleBytes(t.type);
         if(keepWindow())retained->retain(cacheWindow->start,cacheWindow->end);
@@ -157,11 +166,7 @@ public:
     void cache(Span window){
         if(manifest.is_null()||window.start<coverage.start||window.end>coverage.end||window.end<=window.start)
             throw std::runtime_error("Cache window exceeds verified native coverage.");
-        if(retained){
-            if(!retained->hasBacking())retained->preserve(window.start,window.end,std::make_shared<CompressedSpill>(budget));
-            else retained->preserve(window.start,window.end);
-        }
-        cacheWindow=window;
+        cacheWindow=window;preserveSelection();
     }
     void seek(Frame frame){if(manifest.is_null())throw std::runtime_error("Native source clock is not loaded.");start(range,std::clamp(frame,range.start,range.end-1),repeat,status.paused);}
     void pause(bool value){status.paused=value;if(started)output.pause(value);}
@@ -185,6 +190,7 @@ public:
                     throw std::runtime_error("Native playback decoder expired; retained audio is unchanged.");
             }
             if(manifest.is_null()||!status.error.empty())return;
+            preserveSelection();
             if(started){
                 const auto state=output.snapshot();status.submitted=state.submitted;status.cursor=state.cursor;status.finished=state.finished;status.buffering=state.buffering;
                 if(!state.finished&&state.needed>=0)request(state.needed);

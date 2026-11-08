@@ -33,6 +33,10 @@ static void spillTests(){
     for(auto& byte:input){value^=value<<13;value^=value>>17;value^=value<<5;byte=static_cast<std::byte>(value);}
     {
         CompressedSpill backing(budget);saved=backing.store(input);
+        const auto charged=budget.used(),stored=CompressedSpill::quotaUsed();auto saveStore=backing.fork();
+        auto other=saveStore->store(input);std::vector<std::byte> copy(input.size());other->read(copy);
+        require(copy==input&&budget.used()==charged&&CompressedSpill::quotaUsed()>stored,"Independent save backing duplicated scratch or did not charge storage");
+        other.reset();saveStore.reset();require(CompressedSpill::quotaUsed()==stored,"Discarded save backing retained its storage quota");
         require(budget.used()>before,"Spill scratch escaped the PCM budget");
         std::vector<std::byte> result(input.size());saved->read(result);require(result==input,"Compressed spill changed authoritative native bits");
         bool failed=false;try{saved->read(std::span(result).first(result.size()-1));}catch(const std::exception&){failed=true;}
@@ -54,6 +58,7 @@ static void selectionAuthorityTests(){
         auto block=std::make_shared<Block>(source,start,262144,std::span(expected).subspan(static_cast<size_t>(start)*4,1024*1024));
         session.adopt(block,budget.reserve(block->bytes().size()),"key","timeline",7,"epoch-a");
     }
+    session.preserve(524288,786432); // Undo must retain audio from the previous selection.
     session.retain(786432,900000);
     require(session.frames()==0,"Eviction still pinned active selection PCM");
     auto saved=session.clip(0,524288);std::vector<std::byte> output;
@@ -61,7 +66,7 @@ static void selectionAuthorityTests(){
     require(output==std::vector<std::byte>(expected.begin(),expected.begin()+2*1024*1024),"Eviction changed already-adopted native bits");
     require(session.nextMissingEnd(524288,900000)==900000&&session.nextMissingEnd(0,900000)==0,"Preserved coverage boundaries shifted");
     require(session.find(300000)->pcm->bytes()==std::vector<std::byte>(expected.begin()+1024*1024,expected.begin()+2*1024*1024),"Audition reread lost authoritative samples");
-    session.restart(8);
+    session.preserve(0,786432);session.restart(8);
     auto next=std::make_shared<Block>(source,524288,262144,std::span(expected).subspan(2*1024*1024));
     session.adopt(next,budget.reserve(next->bytes().size()),"key","timeline",8,"epoch-b");
     auto mixed=session.clip(0,786432);require(mixed->decoderEpochs.size()==2,"Save lost decoder-span provenance");output.clear();
@@ -95,7 +100,7 @@ static void missingSelectionTests(){
 }
 static void failedEvictionTests(){
     using namespace sampling;using namespace prepared;
-    struct Full: PcmBacking {std::shared_ptr<const Stored> store(std::span<const std::byte>)override{throw std::runtime_error("injected full editing disk");}};
+    struct Full: PcmBacking {std::shared_ptr<PcmBacking> fork()const override{return std::make_shared<Full>();}std::shared_ptr<const Stored> store(std::span<const std::byte>)override{throw std::runtime_error("injected full editing disk");}};
     PcmBudget budget(64);NativeTimeline source{48000,1,1000,SampleType::Int32};NativeSession session(source,"key","timeline",1,budget);
     session.preserve(0,1000,std::make_shared<Full>());auto pcm=std::make_shared<Block>(source,0,1000,std::vector<std::byte>(4000));
     session.adopt(pcm,budget.reserve(4000),"key","timeline",1,"heard");
@@ -350,8 +355,12 @@ int main(int argc,char** argv){
             return reply;
         };
         PcmBudget memory(64);Connection connection;connection.token=std::string(48,'t');
-        NativePlayback player(connection,memory,[]{},transport);player.load("/large/audio",capture,sha,false,0);
+        NativePlayback player(connection,memory,[]{},transport);player.load("/large/audio",capture,sha,false,0);until(player,[&]{return player.state().loaded;});player.cache({0,total});
         until(player,[&]{require(memory.used()<=memory.limit(),"Sliding playback exceeded its cap");return player.state().cursor>=rate*9;});
+        auto saved=player.saveClip(0,rate*9);uint64_t bytes=0;
+        saved->each([&](std::span<const std::byte> data){require(std::all_of(data.begin(),data.end(),[](auto v){return v==std::byte{};}),"Wide double spill changed sample bits");bytes+=data.size();});
+        require(bytes==static_cast<uint64_t>(rate)*9*channels*8&&bytes>memory.limit()&&memory.used()<=memory.limit(),"Wide double save did not remain bounded beyond RAM");
+        std::cout<<"WIDE_SAVE native_bytes="<<bytes<<" pcm_reserved="<<memory.used()<<" pcm_limit="<<memory.limit()<<'\n';
     }
     std::cout<<"PASS native playback: exact 44.1/48 kHz frame, native types, pause/seek/EOF, cancellation, frozen bounds and shared backpressure\n";
     return 0;

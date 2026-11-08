@@ -11,6 +11,11 @@ static void largeSaveTest(const sampling::Connection& connection,const sampling:
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(10);
     while(!player.state().loaded&&player.state().error.empty()&&std::chrono::steady_clock::now()<deadline){player.tick();Sleep(1);}
     if(!player.state().loaded)throw std::runtime_error("Large fixture editor did not open: "+player.state().error);
+    const auto heardFrames=player.session()->last();Request heardRequest{"native-save-hash","LOCAL","",Json::object(),0,{}};
+    heardRequest.upload=player.session()->clip(0,heardFrames);const auto heard=perform(connection,heardRequest);
+    if(!heard.error.empty())throw std::runtime_error(heard.error);
+    heardRequest.upload.reset();player.session()->retain(total,total);
+    if(player.session()->frames()!=0||!player.session()->covers(0,heardFrames))throw std::runtime_error("Eviction lost already-heard native audio.");
     auto clip=player.saveClip(0,total);player.stop(); // Snapshot must outlive its source/playback owner.
     if(clip->bytes()<=1024ULL*1024*1024||clip->bytes()<=memory.limit())throw std::runtime_error("Large save fixture does not exceed both required bounds.");
     const auto started=std::chrono::steady_clock::now();
@@ -45,7 +50,7 @@ static void largeSaveTest(const sampling::Connection& connection,const sampling:
     auto artifact=perform(connection,download);if(artifact.status!=200||!artifact.error.empty())throw std::runtime_error("Large export download failed: "+artifact.error);
     PROCESS_MEMORY_COUNTERS counters{};if(!GetProcessMemoryInfo(GetCurrentProcess(),&counters,sizeof(counters)))throw std::runtime_error("Cannot measure large save process memory.");
     Json result={{"raw_bytes",clip->bytes()},{"native_frames",total},{"sample_format",source.at("sample_format")},{"channels",source.at("channels")},
-        {"raw_sha256",fingerprint.body.at("sha256")},{"hash_prepare_ms",std::chrono::duration<double,std::milli>(hashed-started).count()},
+        {"raw_sha256",fingerprint.body.at("sha256")},{"heard_frames",heardFrames},{"heard_raw_sha256",heard.body.at("sha256")},{"hash_prepare_ms",std::chrono::duration<double,std::milli>(hashed-started).count()},
         {"upload_freeze_ms",std::chrono::duration<double,std::milli>(uploaded-hashed).count()},{"client_pcm_limit",memory.limit()},
         {"client_pcm_reserved_after_save",memory.used()},{"client_process_peak_rss",counters.PeakWorkingSetSize},{"region",region},
         {"export_path",utf8(download.download)},{"export",exported.body.at("variant")},{"reopen_verified",true},{"retry_idempotent",true},{"inflight_cancel_no_partial_publish",true},{"snapshot_outlived_source_owner",true}};
