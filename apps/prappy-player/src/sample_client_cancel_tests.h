@@ -24,6 +24,23 @@ inline void sampleClientCancellationTests(std::ostream& log) {
         require(result.size()==2&&result[0].request.path=="monitor"&&result[1].request.path=="native-latest","Native request coalescing retained an obsolete region window.");
     }
     {
+        std::promise<void> entered,release,completed;ReleaseOnExit releaseOnExit{release};auto gate=release.get_future().share();
+        Connection connection;connection.token=std::string(32,'x');std::vector<std::string> order;std::atomic<int> finished=0;
+        Client barrier(connection,[]{},[&](const Connection&,const Request&,std::stop_token){entered.set_value();gate.wait();return Reply{};});
+        barrier.submit({"source-waveform","GET","barrier",nullptr,0,{}});
+        require(entered.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready,"Audio priority barrier did not start.");
+        const auto transport=[&](const Connection&,const Request& request,std::stop_token){order.push_back(request.path);return Reply{};};
+        const auto notify=[&]{if(++finished==4)completed.set_value();};
+        Client overview(connection,notify,transport),prefetch(connection,notify,transport),audition(connection,notify,transport);
+        overview.submit({"source-waveform","GET","overview",nullptr,1,{}});
+        prefetch.submit({"source-pcm","GET","prefetch",{{"native_feed",false}},1,{}});
+        audition.submit({"source-waveform","GET","detail",nullptr,1,{}});
+        audition.submit({"source-pcm","GET","audition",{{"native_feed",true}},1,{}});
+        release.set_value();
+        require(completed.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready,"Queued audio priorities did not complete.");
+        require(order==std::vector<std::string>({"audition","prefetch","overview","detail"}),"Queued audible PCM waited behind speculative PCM or waveform display.");
+    }
+    {
         std::promise<void> entered,latest;std::mutex mutex;std::condition_variable_any wake;
         Connection connection;connection.token=std::string(32,'x');
         Client client(connection,[]{},[&](const Connection&,const Request& request,std::stop_token stop){

@@ -300,16 +300,28 @@ class ClientExecutor {
     std::vector<std::weak_ptr<ClientState>> clients;
     std::deque<std::shared_ptr<ClientState>> cleanup;
     static bool closesSession(const Request& request){return request.tag=="source-session-close"&&request.method=="DELETE";}
+    static int priority(const Request& request){
+        if(request.tag!="source-pcm")return 2;
+        return request.body.is_object()&&(request.body.value("native_feed",false)||request.body.value("audition",false))?0:1;
+    }
+    static auto next(ClientState& state,size_t index){
+        auto best=state.pending.end();
+        if(state.credentialsReady)for(auto it=state.pending.begin();it!=state.pending.end();++it)
+            if(requestLane(*it)==index&&(best==state.pending.end()||priority(*it)<priority(*best)))best=it;
+        return best;
+    }
 
     std::shared_ptr<ClientState> find(size_t index) {
         std::erase_if(cleanup,[&](const auto& state){return state->pending.empty()&&std::none_of(lanes.begin(),lanes.end(),[&](const auto& lane){return lane.active==state;});});
         if(index==1)for(const auto& state:cleanup)if(!state->pending.empty())return state;
 
+        std::shared_ptr<ClientState> best;int rank=3;
         for(auto& weak:clients)if(auto state=weak.lock();state&&!state->retired) {
             if(index==1&&!state->credentialsStarted)return state;
-            if(std::any_of(state->pending.begin(),state->pending.end(),[&](const Request& request){return requestLane(request)==index&&state->credentialsReady;}))return state;
+            const auto request=next(*state,index);
+            if(request!=state->pending.end()&&priority(*request)<rank){best=state;rank=priority(*request);}
         }
-        return {};
+        return best;
     }
     void run(Lane& lane,std::stop_token shutdown) {
         while(!shutdown.stop_requested()) {
@@ -322,8 +334,8 @@ class ClientExecutor {
                 credentials=lane.index==1&&!state->credentialsStarted;
                 if(credentials)state->credentialsStarted=true;
                 else {
-                    const auto next=std::find_if(state->pending.begin(),state->pending.end(),[&](const Request& item){return requestLane(item)==lane.index&&state->credentialsReady;});
-                    request=std::move(*next);state->pending.erase(next);
+                    const auto selected=next(*state,lane.index);
+                    request=std::move(*selected);state->pending.erase(selected);
                     lane.cancel=std::stop_source{};lane.request=request;
                 }
                 connection=state->connection;
