@@ -97,6 +97,18 @@ def gated_app(config):
             return JSONResponse(body)
         return response
 
+    @app.post('/_fixture/append-source', dependencies=[Depends(authenticate)])
+    def append_source():
+        # Generated media only; exercise a real catalog change while UI filters stay active.
+        import numpy as np
+        import soundfile as sf
+        from audioharvest.services.sources import SourceService
+        name='appended-'+secrets.token_hex(8)
+        path=Path(config['directory'])/'media'/(name+'.wav')
+        sf.write(path,np.random.default_rng().uniform(-.1,.1,(96000,2)),32000,subtype='PCM_16')
+        imported=SourceService(Path(config['library'])).import_file(path,complete=True,title='Appended recording '+name)
+        return {'capture_id':imported['capture_id'],'sources':len(sources.snapshot()['items'])}
+
     @app.post('/_fixture/catalog-offline', dependencies=[Depends(authenticate)])
     async def inject_catalog_offline():
         nonlocal catalog_offline

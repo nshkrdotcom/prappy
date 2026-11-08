@@ -1,5 +1,5 @@
 #Requires -Version 7.0
-param([Parameter(Mandatory)][string]$StateSource,[string]$BuildVariant='Release-Indexed')
+param([Parameter(Mandatory)][string]$StateSource,[string]$BuildVariant='Release-Indexed',[string]$FixtureManifest)
 $ErrorActionPreference='Stop'
 $app=Split-Path $PSScriptRoot -Parent
 $source=(Resolve-Path -LiteralPath $StateSource).Path
@@ -9,6 +9,12 @@ if($uri.Host-ne '127.0.0.1' -or $uri.Port-eq 8765){throw 'Use a closed isolated 
 $headers=@{Authorization='Bearer '+[IO.File]::ReadAllText($connection.token_file).Trim()}
 $caps=Invoke-RestMethod -Uri ($connection.url+'/v1/capabilities') -Headers $headers
 if($caps.protocol-ne 3){throw 'Feature checks require the native protocol.'}
+$fixture=$null
+if($FixtureManifest){
+ $fixture=Get-Content -LiteralPath $FixtureManifest -Raw|ConvertFrom-Json
+ if($fixture.url-ne $connection.url -or $fixture.token_file-ne $connection.token_file -or $fixture.generated_codec-notin @('pcm','opus','aac')){throw 'Membership mutation requires the matching generated fixture manifest.'}
+}
+
 $catalog=Invoke-RestMethod -Uri ($connection.url+'/v1/catalog') -Headers $headers
 if($catalog.items.Count-lt 2){throw 'Use a catalog with at least two sources.'}
 $stateDirectory=Join-Path $app ('build/feature-ui/native-'+[guid]::NewGuid().ToString('N'))
@@ -117,9 +123,22 @@ try {
  $null=Wait-Ui {param($s)!$s.Pending -and $s.Count-eq $matched.Count+1 -and $s.Session.Contains($term)} 'native search selection retains query and adds one visit'
  if(!(Read-Ui).Paused){Click play}
  Capture matched
+ if($fixture){
+  $codecs=@($catalog.items.media.codec|Sort-Object -Unique)
+  Click filters;Select-Combo extension ([Array]::IndexOf($codecs,$catalog.items[0].media.codec)+1);Dismiss-Popup
+ }
+ $searchBefore=Read-Ui
+ if($fixture){
+  $added=Invoke-RestMethod -Method Post -Uri ($fixture.gate_url+'/append-source') -Headers $headers
+  Require ($added.sources-eq $catalog.items.Count+1) 'generated source adds real catalog membership'
+  $catalog=Invoke-RestMethod -Uri ($connection.url+'/v1/catalog') -Headers $headers
+  $all.Visible=$catalog.items.Count
+ }
+ Click refresh
+ $null=Wait-Ui {param($s)!$s.Catalog.refreshing -and $s.Catalog.sources-eq $catalog.items.Count -and $s.Visible-eq $searchBefore.Visible -and $s.Session-eq $searchBefore.Session} 'native catalog membership refresh preserves active query and filters'
+ if($fixture){Click filters;Click filter-reset;Dismiss-Popup}
  Click Clear
- $searchBefore=Read-Ui;Click refresh
- $null=Wait-Ui {param($s)!$s.Catalog.refreshing -and $s.Visible-eq $searchBefore.Visible -and $s.Session-eq $searchBefore.Session} 'native catalog refresh preserves browser query and filters'
+ $null=Wait-Ui {param($s)$s.Visible-eq $all.Visible} 'cleared query includes new catalog membership'
  Click filters;Select-Combo extension 1
  $codec=@($catalog.items.media.codec|Sort-Object -Unique)[0]
  $expected=@($catalog.items|Where-Object {$_.media.codec-eq $codec}).Count

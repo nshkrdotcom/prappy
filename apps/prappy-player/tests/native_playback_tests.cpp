@@ -110,18 +110,20 @@ static void failedEvictionTests(){
 static void speakerOutputTest(){
     using namespace sampling;using namespace prepared;
     struct Probe {
-        std::array<std::atomic<float>,8> peak{};
+        std::array<std::atomic<float>,8> peak{};std::atomic<uint64_t> frames{0};
         static void SDLCALL receive(void* context,const SDL_AudioSpec* spec,float* pcm,int bytes){
-            auto& self=*static_cast<Probe*>(context);
+            auto& self=*static_cast<Probe*>(context);self.frames+=static_cast<uint64_t>(bytes/4/spec->channels);
             for(int i=0;i<bytes/4;++i){const auto channel=static_cast<size_t>(i%spec->channels);const float value=std::abs(pcm[i]);
                 if(channel<self.peak.size()&&value>self.peak[channel].load())self.peak[channel]=value;}
         }
     };
-    const std::vector<std::string> order{"FL","FR","FC","SL","SR"};
+    for(const auto& order:std::vector<std::vector<std::string>>{
+            {"FL","FR","FC","SL","SR"},{"FL","FR","FC","LFE","BL","BR"},
+            {"FL","FR","FC","LFE","BL","BR","SL","SR"}})
     for(size_t channel=0;channel<order.size();++channel){
-        PcmBudget budget(64);const NativeTimeline source{192000,5,192000,SampleType::Float64};
-        std::vector<double> samples(static_cast<size_t>(source.frames)*5);
-        for(size_t at=channel;at<samples.size();at+=5)samples[at]=.125+1e-11;
+        PcmBudget budget(64);const NativeTimeline source{192000,static_cast<int64_t>(order.size()),192000,SampleType::Float64};
+        std::vector<double> samples(static_cast<size_t>(source.frames)*order.size());
+        for(size_t at=channel;at<samples.size();at+=order.size())samples[at]=.125+1e-11;
         auto pcm=std::make_shared<const Block>(source,0,source.frames,std::as_bytes(std::span(samples)));
         auto buffer=std::make_shared<const NativeSession::Buffer>(NativeSession::Buffer{pcm,budget.reserve(pcm->bytes().size())});
         Audition output(budget);output.start(buffer,{0,source.frames},0,true,true,order);
@@ -129,7 +131,7 @@ static void speakerOutputTest(){
         require(device.channels<=8,"Unexpected output channel count");
         const SDL_AudioSpec input{SDL_AUDIO_F32,8,192000},destination{SDL_AUDIO_F32,device.channels,device.freq};
         auto* reference=SDL_CreateAudioStream(&input,&destination);require(reference!=nullptr,"Cannot create speaker reference");
-        std::vector<float> bed(4096*8);const DeviceLayout mapping(5,order);
+        std::vector<float> bed(4096*8);const DeviceLayout mapping(static_cast<int64_t>(order.size()),order);
         for(size_t at=mapping.inputs[channel];at<bed.size();at+=8)bed[at]=.125f;
         require(SDL_PutAudioStreamData(reference,bed.data(),static_cast<int>(bed.size()*4))&&SDL_FlushAudioStream(reference),"Speaker reference failed");
         std::vector<float> expected(static_cast<size_t>(SDL_GetAudioStreamAvailable(reference))/4);
@@ -138,9 +140,10 @@ static void speakerOutputTest(){
         for(size_t i=0;i<expected.size();++i)maxima[i%device.channels]=std::max(maxima[i%device.channels],std::abs(expected[i]));
         Probe probe;require(SDL_SetAudioPostmixCallback(output.device(),Probe::receive,&probe),"Cannot capture speaker output");
         output.pause(false);const auto deadline=SDL_GetTicks()+3000;
-        const auto matches=[&]{for(int ch=0;ch<device.channels;++ch)if(std::abs(probe.peak[ch].load()-maxima[ch])>=.0001f)return false;return true;};
+        const auto matches=[&]{if(!probe.frames.load())return false;for(int ch=0;ch<device.channels;++ch)if(std::abs(probe.peak[ch].load()-maxima[ch])>=.0001f)return false;return true;};
         while(!matches()&&SDL_GetTicks()<deadline)SDL_Delay(1);
         output.pause(true);SDL_SetAudioPostmixCallback(output.device(),nullptr,nullptr);
+        require(probe.frames.load()>0,"Speaker probe did not receive device frames");
         for(int ch=0;ch<device.channels;++ch)if(std::abs(probe.peak[ch].load()-maxima[ch])>=.0001f)
             throw std::runtime_error("Native speaker "+order[channel]+" output "+std::to_string(ch)+" peak "+std::to_string(probe.peak[ch].load())+" differs from "+std::to_string(maxima[ch]));
         require(budget.used()<=budget.limit(),"Speaker audition exceeded its shared budget");
@@ -362,7 +365,7 @@ int main(int argc,char** argv){
         require(bytes==static_cast<uint64_t>(rate)*9*channels*8&&bytes>memory.limit()&&memory.used()<=memory.limit(),"Wide double save did not remain bounded beyond RAM");
         std::cout<<"WIDE_SAVE native_bytes="<<bytes<<" pcm_reserved="<<memory.used()<<" pcm_limit="<<memory.limit()<<'\n';
     }
-    std::cout<<"PASS native playback: exact 44.1/48 kHz frame, native types, pause/seek/EOF, cancellation, frozen bounds and shared backpressure\n";
+    std::cout<<"PASS native playback: 5.0/5.1/7.1 callback frames, exact clocks/types, pause/seek/EOF, cancellation and bounded authority; build "<<__DATE__<<" "<<__TIME__<<"\n";
     return 0;
  }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
 }

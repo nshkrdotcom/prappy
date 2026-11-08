@@ -34,6 +34,9 @@ int main() {
     rejects([]{DeviceLayout unknown(5,{});});
     rejects([]{DeviceLayout duplicate(4,{"FL","FR","FL","FR"});});
     rejects([]{DeviceLayout unknown(3,{"FL","FR","NONE"});});
+    require(DeviceLayout(8,{"FL","FR","FC","LFE","BL","BR","SL","SR"}).inputs==std::vector<size_t>({0,1,2,3,4,5,6,7}));
+    rejects([]{DeviceLayout height(3,{"FL","FR","TFL"});});
+    rejects([]{DeviceLayout wide(32,std::vector<std::string>(32,"FL"));});
     NativeTimeline timeline{96000,6,5000000000LL,SampleType::Float64};timeline.validate();
     require(timeline.seconds(96000)==1);
     require(timeline.fromSeconds(1.5)==144000);
@@ -104,5 +107,5 @@ int main() {
     require(saved==native->bytes());rejects([&]{session.clip(4999999998LL,5000000000LL);});
     session.retain(0,1);require(!session.find(4999999999LL)&&memory.used()==8);
     stored.reset();require(memory.used()==8);frozen.reset();require(memory.used()==0);
-    stored.reset();require(memory.used()==0);    std::cout<<"PASS prepared source identity, native timeline, precision and bounded payloads\n";
+    stored.reset();require(memory.used()==0);    std::cout<<"PASS native source identity, precision, 5.0/5.1/7.1 speaker layouts and bounded payloads; build "<<__DATE__<<" "<<__TIME__<<"\n";
 }
