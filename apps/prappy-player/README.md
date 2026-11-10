@@ -45,13 +45,13 @@ in `dotfiles_private/windows/bootstrap_windows`; set `DOTFILES_PRIVATE` if neede
 ```powershell
 pwsh scripts/deps.ps1
 pwsh scripts/build.ps1 -Run
-pwsh scripts/build.ps1 -Config Debug
+pwsh scripts/build.ps1 -Config Release
 ```
 
-Executable: `build/Release/PrappyPlayer.exe`. Keep `fonts/`, `licenses/` and the
+Development builds default to Debug. Executable: `build/Debug/PrappyPlayer.exe`. Keep `fonts/`, `licenses/` and the
 icon with it. The MSVC runtime and SDL are statically linked. Explicit regression
 executables and their independent MPV oracle live under `build/Release/tests/`;
-they are excluded from the player runtime.
+they are excluded from the player runtime. A Debug build alone does not capture crash dumps; automatic crash capture and matched-symbol installation are still being implemented.
 State beside the executable includes `player.ini`, `player-ui.txt`,
 `player-history.txt`, `sampling-connection.json` and `sample-workspaces.json`.
 Preserve those files and their backups when relocating the application.

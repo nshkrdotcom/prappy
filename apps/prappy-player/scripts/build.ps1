@@ -1,5 +1,5 @@
 #Requires -Version 7.0
-param([ValidateSet('Release','Debug')][string]$Config='Release', [switch]$Run,
+param([ValidateSet('Release','Debug')][string]$Config='Debug', [switch]$Run,
     [switch]$Analyze, [switch]$Asan, [ValidatePattern('^[A-Za-z0-9-]*$')][string]$VariantSuffix='')
 $ErrorActionPreference='Stop'
 $app = Split-Path $PSScriptRoot -Parent
