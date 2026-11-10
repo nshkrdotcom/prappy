@@ -25,6 +25,16 @@ struct AmplitudeScale {
 };
 
 struct PeakBin {int64_t start=0,end=0;double lmin=0,lmax=0,rmin=0,rmax=0;};
+inline std::vector<PeakBin> waveformWithContext(std::span<const PeakBin> saved,std::span<const PeakBin> context,int64_t start,int64_t end){
+    std::vector<PeakBin> bins;
+    for(auto bin:saved){bin.start=std::max(bin.start,start);bin.end=std::min(bin.end,end);if(bin.start<bin.end)bins.push_back(bin);}
+    for(auto bin:context){
+        if(bin.start<start){auto before=bin;before.end=std::min(before.end,start);bins.push_back(before);}
+        if(bin.end>end){bin.start=std::max(bin.start,end);bins.push_back(bin);}
+    }
+    std::sort(bins.begin(),bins.end(),[](const auto& a,const auto& b){return a.start<b.start;});
+    return bins;
+}
 
 // Raw source amplitude stays separate from the display transform. A bounded envelope
 // is rebuilt on viewport/data changes, then reprojected only when its scale changes.

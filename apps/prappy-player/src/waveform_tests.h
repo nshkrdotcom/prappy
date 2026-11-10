@@ -1,10 +1,21 @@
 #pragma once
 #include "waveform_view.h"
+#include "waveform_amplitude.h"
 #include "imgui_impl_sdlrenderer3.h"
 #include <ostream>
 
 inline void waveformRenderTests(std::ostream& log) {
     const auto require = [](bool value,const char* message) { if (!value) throw std::runtime_error(message); };
+    {
+        const std::vector<sampling::PeakBin> saved{{10,20,-.2,.2,-.3,.3}};
+        const std::vector<sampling::PeakBin> context{{0,10,-.5,.5,-.6,.6},{10,20,-99,99,-99,99},{20,30,-.7,.7,-.8,.8}};
+        const auto bins=sampling::waveformWithContext(saved,context,10,20);
+        require(bins.size()==3&&bins.front().start==0&&bins.back().end==30,"Saved waveform lost surrounding context.");
+        require(bins[1].start==10&&bins[1].end==20&&bins[1].lmax==.2,"Original context replaced preserved saved peaks.");
+        const auto offline=sampling::waveformWithContext(saved,{},10,20);
+        require(offline.size()==1&&offline.front().lmax==.2,"Missing original context hid saved peaks.");
+        log<<"PASS saved waveform preserves frozen peaks and adds only outside original context\n";
+    }
     struct Canvas {
         SDL_Surface* surface = nullptr;
         SDL_Renderer* renderer = nullptr;

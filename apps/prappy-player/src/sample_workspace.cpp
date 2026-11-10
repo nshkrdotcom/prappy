@@ -51,7 +51,7 @@ void Workspace::browse(){
     get("collections",endpoint(library)+"/collections");
 }
 void Workspace::openCapture(Json item,std::optional<Span> selected,std::optional<Frame> cue){
-    stash();stopTransport();++generation;++waveformRevision;overviewBins.clear();detailBins.clear();detailPath.clear();overviewDue={};envelope.clear();displayEnvelope.clear();projectedGain=-1;analysisJob.clear();
+    stash();stopTransport();++generation;++waveformRevision;overviewBins.clear();detailBins.clear();contextManifest=nullptr;contextBins.clear();contextPath.clear();detailPath.clear();overviewDue={};envelope.clear();displayEnvelope.clear();projectedGain=-1;analysisJob.clear();
     capture=std::move(item);sourceLibrary=library;activeDraft.clear();region=nullptr;selectionDefined=false;sourceRegions=Json::array();
     closeNativeSession();beats.clear();onsets.clear();anchors.clear();overview=nullptr;timing=nullptr;gridId.clear();gridRevision=0;
     rate=capture.at("timeline").at("sample_rate");transport.rate=rate;
@@ -89,6 +89,17 @@ void Workspace::loadDetails(bool refresh){
         if(first<last){nativePlayback->start({first,last},first,false,true);nativePlayback->cache({first,last});}
     }
     loadOverview();
+    if(preparedManifest.is_object()&&preparedManifest.value("access_mode",std::string{})=="frozen") {
+        if(contextManifest.is_null()) {
+            if(contextPath.empty()||refresh){contextPath=endpoint(sourceLibrary)+"/captures/"+capture.at("id").get<std::string>()+"/audio";get("context-descriptor",contextPath);}
+        } else {
+            const auto range=waveformRange(viewportStart,viewportEnd,editor.total);
+            int level=-12;Frame stride=1;while((range.end-range.start+stride-1)/stride>1024){++level;stride*=2;}
+            const Frame first=range.start/stride,last=(range.end-1)/stride+1;
+            const auto path=endpoint(sourceLibrary)+"/captures/"+capture.at("id").get<std::string>()+"/audio/waveform?source_key="+contextManifest.at("source_key").get<std::string>()+"&timeline="+capture.at("timeline_id").get<std::string>()+"&level="+std::to_string(level)+"&start="+std::to_string(first)+"&count="+std::to_string(last-first);
+            if(path!=contextPath||refresh){contextPath=path;contextBins.clear();++waveformRevision;client->submit({"source-waveform","GET",path,{{"source_key",contextManifest.at("source_key")},{"timeline_id",capture.at("timeline_id")},{"channels",contextManifest.at("channels")},{"start_bin",first},{"bin_count",last-first},{"frames_per_bin",stride},{"level",level},{"overview",false},{"context",true}},generation,{}});}
+        }
+    }
     const auto range=waveformRange(viewportStart,viewportEnd,editor.total);
     const auto coverage=preparedManifest.value("coverage",Json{{"start_frame",0},{"end_frame",editor.total}});
     const Frame start=std::max(range.start,coverage.at("start_frame").get<Frame>()),end=std::min(range.end,coverage.at("end_frame").get<Frame>());
@@ -428,6 +439,8 @@ bool Workspace::current(const Request& request)const{
     if(tag=="collections"&&request.path!=endpoint(library)+"/collections")return false;
     if(tag=="browse"&&request.path!=browsePath)return false;
     if((tag=="capture"||tag=="source-analysis")&&request.path!=descriptorPath)return false;
+    if(tag=="context-descriptor")return request.path==contextPath;
+    if(tag=="source-waveform"&&request.body.value("context",false))return !contextManifest.is_null()&&request.path==contextPath&&request.body.at("source_key")==contextManifest.at("source_key");
     if(tag=="source-waveform"&&(preparedManifest.is_null()||request.body.at("source_key")!=preparedManifest.at("source_key")))return false;
     return tag!="source-waveform"||request.body.value("overview",false)||request.path==detailPath;
 }
@@ -441,6 +454,7 @@ void Workspace::process(){
         if(!reply.error.empty()&&tag=="source-waveform"&&reply.request.body.value("overview",false)){
             preparedManifest.erase("waveform");overviewBins.clear();overviewDue=std::chrono::steady_clock::now()+std::chrono::seconds(1);
         }
+        if(!reply.error.empty()&&(tag=="context-descriptor"||(tag=="source-waveform"&&reply.request.body.value("context",false)))){contextPath.clear();contextBins.clear();++waveformRevision;}
         if(!reply.error.empty()){if(pendingMark&&(tag=="mark-prepared"||tag=="libraries"||tag=="capabilities"))pendingMark->failed=true;notice=reply.error;if(reply.status==409){notice="Conflict: local draft retained. Reload the saved sample or Fork before saving. "+notice;if(tag=="command")for(auto& row:pending)if(row.at("command").at("request_id")==reply.request.body.at("request_id")){row["conflict"]=true;if(row.contains("source"))sampleLibrary.conflict(SourceRef::parse(row.at("source")),row.at("draft_id"),row.at("command").at("request_id"));}persist();}continue;}
         if(tag=="native-save-hash"){
             auto row=std::find_if(pending.begin(),pending.end(),[&](const auto& entry){return entry.at("command").at("request_id")==reply.request.body.at("request_id");});
@@ -480,11 +494,15 @@ void Workspace::process(){
             const auto& r=reply.body;auto value=draftValue();value.span={r.at("span").at("start_frame"),r.at("span").at("end_frame")};value.attributes["name"]=r.at("name");value.attributes["kind"]=r.at("kind");
             sampleLibrary.reloadSaved(sourceRef(),activeDraft,r,value);activateDraft(activeDraft);fetchSourceRegions();persist();
         }
+        else if(tag=="context-descriptor"){
+            if(reply.body.at("timeline_id")!=preparedManifest.at("timeline_id")||reply.body.at("sample_rate")!=preparedManifest.at("sample_rate")||reply.body.at("frame_count")!=preparedManifest.at("frame_count")) {notice="Original waveform context has a different source clock.";continue;}
+            contextManifest=reply.body;loadDetails();
+        }
         else if(tag=="collections")collections=reply.body.at("items");
         else if(tag=="source-waveform"){
             const auto& context=reply.request.body;
             const bool full=context.at("overview");
-            auto& bins=full?overviewBins:detailBins;bins.clear();if(full)overview=context;
+            auto& bins=context.value("context",false)?contextBins:full?overviewBins:detailBins;bins.clear();if(full)overview=context;
             const Frame channels=context.at("channels"),step=context.at("frames_per_bin");
             Frame at=context.at("start_bin").get<Frame>()*step;
             for(size_t i=0;i<reply.pcm.size();i+=static_cast<size_t>(channels)*2){
@@ -682,7 +700,12 @@ void Workspace::waveform(Audio& audio,const std::function<void(const char*,bool)
         const bool settled=detailDue==std::chrono::steady_clock::time_point{} || now>=detailDue;
         const bool changed=envelopeRevision!=waveformRevision || envelopeStart!=first || envelopeEnd!=end || envelopeBudget!=budget;
         if(changed && (settled || envelope.x.empty() || fitAmplitudeNow)){
-            envelope.fromOverview(detailBins.empty()?overviewBins:detailBins,first,end);
+            auto bins=detailBins.empty()?overviewBins:detailBins;
+            if(preparedManifest.is_object()&&preparedManifest.value("access_mode",std::string{})=="frozen"){
+                const auto coverage=preparedManifest.at("coverage");const Frame a=coverage.at("start_frame"),b=coverage.at("end_frame");
+                bins=waveformWithContext(bins,contextBins,a,b);
+            }
+            envelope.fromOverview(bins,first,end);
             envelopeRevision=waveformRevision;envelopeStart=first;envelopeEnd=end;envelopeBudget=budget;++envelopeBuilds;projectedGain=-1;
             if(amplitude.mode==AmplitudeMode::Visible && !envelope.x.empty())amplitude.fit(envelope.peak,true);
         }
