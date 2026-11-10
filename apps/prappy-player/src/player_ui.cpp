@@ -1,4 +1,5 @@
 #include "evaluation_state.h"
+#include "debug_crash.h"
 // UI setup follows Dear ImGui's MIT-licensed example_sdl3_sdlrenderer3.
 #include "player_ui.h"
 #include "analysis_dsp.h"
@@ -292,6 +293,7 @@ int runPlayer(HINSTANCE instance) {
             debuglog::instance().configure(stateDirectory/"player-debug.log",settings.debugLog);
             debuglog::write("app.start","debug_log=true");
         } catch (const std::exception& e) { library.notice = e.what(); }
+        debugcrash::start(executableDir(),windowTest);
         sampling::PcmBudget pcmMemory(settings.editorPcmMib);
         audio.openNative(windowTest,pcmMemory);
         audio.setNotify([wake] { wake->notify(UiWake::Audio); });

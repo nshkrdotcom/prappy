@@ -6,6 +6,7 @@ external/
 *.suo
 *.VC.db
 *.pdb
+*.dmp
 *.ilk
 *.obj
 *.exe

@@ -31,5 +31,25 @@ if ($Asan) {
 if (Test-Path -LiteralPath "$env:USERPROFILE/.config/prappy/development-signing.json") {
     & "$PSScriptRoot/sign-development.ps1" -BuildDirectory $build
 }
+if ($Config -eq 'Debug') {
+    $tools=Join-Path $app 'build/crash-tools'
+    $monitor=Join-Path $tools 'procdump64.exe'
+    if (!(Test-Path -LiteralPath $monitor)) {
+        New-Item -ItemType Directory -Force $tools | Out-Null
+        Invoke-WebRequest 'https://download.sysinternals.com/files/Procdump.zip' -OutFile "$tools/procdump.zip"
+        Expand-Archive -LiteralPath "$tools/procdump.zip" -DestinationPath $tools -Force
+    }
+    $signature=Get-AuthenticodeSignature -LiteralPath $monitor
+    if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw 'Invalid Microsoft ProcDump signature.' }
+    Copy-Item -LiteralPath $monitor -Destination $build -Force
+}
+$packageFiles=@('PrappyPlayer.exe','PrappyPlayer.pdb','PrappyPlayer.ico')
+if ($Config -eq 'Debug') { $packageFiles+='procdump64.exe' }
+$hashes=[ordered]@{}
+foreach($name in $packageFiles) {
+    $hashes[$name]=(Get-FileHash -LiteralPath (Join-Path $build $name) -Algorithm SHA256).Hash
+}
+[ordered]@{configuration=$Config;commit=(& git -C $app rev-parse HEAD);source_dirty=[bool](& git -C $app status --porcelain);files=$hashes} |
+    ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $build 'player-build.json') -Encoding utf8
 Write-Host "Built $build\PrappyPlayer.exe"
 if ($Run) { Start-Process -FilePath "$build\PrappyPlayer.exe" -WorkingDirectory $build -WindowStyle Hidden }
