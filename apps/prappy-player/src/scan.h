@@ -1,5 +1,6 @@
 #pragma once
 #include "library.h"
+#include "sample_client.h"
 #include <SDL3/SDL_thread.h>
 #include <condition_variable>
 #include <future>
@@ -54,7 +55,11 @@ class Executor {
             {std::lock_guard guard(mutex);active.reset();}
         }
     }
-    Executor():worker([this](std::stop_token stop){run(stop);SDL_CleanupTLS();}){}
+    Executor():worker([this](std::stop_token stop){run(stop);SDL_CleanupTLS();}){
+        // The scan worker creates Clients. Construct their executor before this
+        // static finishes construction, so scans join before HTTP teardown.
+        sampling::Client::initializeExecutor();
+    }
 public:
     static Executor& instance(){static Executor executor;return executor;}
     ~Executor() {

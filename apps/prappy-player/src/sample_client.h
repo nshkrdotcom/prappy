@@ -53,6 +53,8 @@ public:
 private:
     std::shared_ptr<ClientState> state;
 public:
+    // Establish dependencies before starting a longer-lived producer worker.
+    static void initializeExecutor();
     Client(Connection, std::function<void()>,Transport = {},CredentialReader = {},Bootstrap = {});
     ~Client();
     Client(const Client&) = delete;

@@ -483,8 +483,9 @@ public:
     }
 };
 }
+void Client::initializeExecutor(){(void)debuglog::instance();(void)ClientExecutor::instance();}
 Client::Client(Connection connection,std::function<void()> notify,Transport transport,CredentialReader reader,Bootstrap bootstrap):state(std::make_shared<ClientState>()) {
-    (void)debuglog::instance(); // Construct before the executor's worker threads.
+    initializeExecutor();
     state->connection=std::move(connection);state->notify=std::move(notify);
     if(!state->connection.token.empty()) {
         state->credentialsStarted=true;state->credentialsReady=true;
