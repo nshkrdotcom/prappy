@@ -3,6 +3,8 @@
 #include "state_io.h"
 #include "evaluation_state.h"
 #include "imgui.h"
+#include "imgui_internal.h"
+#include "debug_log.h"
 #include "implot.h"
 #include "waveform_view.h"
 #include <fstream>
@@ -741,6 +743,8 @@ void Workspace::draw(Audio& audio,const std::function<void(const char*,bool)>& o
         if(ImGui::Button("Return to player"))open=false;
         ImGui::End();return;
     }
+    ImGuiErrorRecoveryState drawState;
+    ImGui::ErrorRecoveryStoreState(&drawState);
     try {
         if(readOnly)ImGui::TextDisabled("Read-only trial: edits are not saved.");
         else if(evaluationTrial)ImGui::TextDisabled("Trial saves stay in this evaluation library.");
@@ -916,7 +920,15 @@ void Workspace::draw(Audio& audio,const std::function<void(const char*,bool)>& o
         }else ImGui::TextWrapped("Choose a recording, reopen a sample, or mark the song currently playing.");
         if(sidebar)ImGui::EndChild();
         if(!pending.empty()&&!readOnly){ImGui::Separator();ImGui::Text("%zu pending command(s) retained locally",pending.size());if(button("Retry pending","sample-retry")&&connectionReady)for(auto& entry:pending)if(!entry.value("conflict",false)&&!entry.value("sending",false))sendPending(entry);ImGui::SameLine();if(ImGui::Button("Discard unsaved metadata commands")){pending.erase(std::remove_if(pending.begin(),pending.end(),[](const auto& row){return !row.contains("source");}),pending.end());persist();}}
-    }catch(const std::exception& e){notice=e.what();}
+    }catch(const std::exception& e){
+        notice=e.what();debuglog::write("editor.draw.error",notice);
+        // ImGui explicitly supports stack recovery after a C++ exception.
+        // Recover this draw only; ordinary UI assertions remain enabled.
+        auto& io=ImGui::GetIO();const bool assertions=io.ConfigErrorRecoveryEnableAssert;
+        io.ConfigErrorRecoveryEnableAssert=false;
+        ImGui::ErrorRecoveryTryToRecoverState(&drawState);
+        io.ConfigErrorRecoveryEnableAssert=assertions;
+    }
     ImGui::End();
 }
 }

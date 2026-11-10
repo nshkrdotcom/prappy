@@ -1,6 +1,7 @@
 #pragma once
 #include "sample_workspace.h"
 #include <ostream>
+#include "imgui_internal.h"
 inline void sampleWorkspaceTests(const std::filesystem::path& root,std::ostream& log){
     using namespace sampling;
     const auto require=[](bool ok,const char* message){if(!ok)throw std::runtime_error(message);};
@@ -21,6 +22,19 @@ inline void sampleWorkspaceTests(const std::filesystem::path& root,std::ostream&
     require(state.at("open")&&state.at("capture")==source.capture&&state.at("selection_defined")&&state.at("start")==rate*2+1000,
         "Editor did not restore its native draft while offline.");
     require(state.at("playhead")==rate*2+1500,"Editor restart discarded the native cursor.");
+    // A renderer/observer exception inside nested children must not poison
+    // ImGui's next EndFrame or leave ordinary assertion checking disabled.
+    ImGui::CreateContext();
+    auto& io=ImGui::GetIO();io.DisplaySize={1100,850};io.DeltaTime=1.f/60;
+    io.IniFilename=nullptr;io.Fonts->Build();
+    ImGui::NewFrame();Audio audio;bool injected=false;
+    workspace->draw(audio,[&](const char* id,bool){
+        if(std::string_view(id)=="sample-source-item-0"){injected=true;throw std::runtime_error("Injected editor draw failure");}
+    });
+    require(injected&&workspace->preparationStatus()=="Injected editor draw failure","Editor draw error was not reported.");
+    require(io.ConfigErrorRecoveryEnableAssert,"Editor recovery disabled ordinary assertions.");
+    ImGui::Render();ImGui::DestroyContext();
+    log<<"PASS editor draw exception restores nested ImGui state without disabling assertions\n";
     workspace->returnToPlayer();
     auto reopened=std::make_unique<Workspace>(directory,[]{});
     require(!Json::parse(reopened->diagnostics()).at("open").get<bool>(),"Restart ignored persisted player mode.");

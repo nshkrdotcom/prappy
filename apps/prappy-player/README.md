@@ -22,21 +22,13 @@ span and transport requests cannot replace the current view.
 
 ## Backend setup
 
-This branch is undergoing validation against an **isolated evaluation root**;
-production migration is still pending. The root contains copied canonical state
-and read-only original references. Do not redirect it at production journals.
-Run the scraper indexed service against that initialized root:
-
-```bash
-.venv-studio/bin/python -m audioharvest.indexed_server --evaluation-root "$EVALUATION_ROOT" --native-state
-```
-
-Use the root's configured endpoint and private token in Prappy's
-`sampling-connection.json`, and launch `PrappyPlayer.exe --evaluation STATE_ROOT`.
-The evaluation marker must match the isolated state root and connection. Ordinary
-production startup remains a separate cutover task. See
-[sampling workflow](docs/sampling.md) for editor controls.
-
+Normal Prappy startup launches the configured WSL checkout's `./prappy.sh` and
+connects to its authenticated native service on `127.0.0.1:8765`. Library scope
+comes from `~/.config/audioharvest/workstation.json`; the independent background
+analysis service supplies optional peaks. No song preparation is required.
+See [sampling workflow](docs/sampling.md) for editor controls. Disposable evaluations
+use separate roots, tokens, ports and player state; never run mutation tests on
+real libraries.
 ## Build and configuration
 
 Use PowerShell 7, MSVC x64, Windows SDK, CMake and Ninja. Toolchain setup lives
