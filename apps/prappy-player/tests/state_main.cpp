@@ -6,6 +6,7 @@
 #include <objbase.h>
 #include <iostream>
 int wmain(int argc,wchar_t** argv){
+    std::cout<<"State regression build "<<__DATE__<<' '<<__TIME__<<'\n';
     const auto com=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     struct Lifetime{HRESULT com;~Lifetime(){SDL_Quit();if(SUCCEEDED(com))CoUninitialize();}} lifetime{com};
     try{

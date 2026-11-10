@@ -8,6 +8,21 @@ inline void sampleClientCancellationTests(std::ostream& log) {
     const auto require=[](bool value,const char* message){if(!value)throw std::runtime_error(message);};
     struct ReleaseOnExit {std::promise<void>& promise;~ReleaseOnExit(){try{promise.set_value();}catch(const std::future_error&){}}};
     {
+        std::promise<void> entered,release,completed;ReleaseOnExit cleanup{release};auto gate=release.get_future().share();std::atomic<int> replies=0;
+        Client client(Connection{},[&]{if(++replies==3)completed.set_value();},
+            [](const Connection&,const Request&,std::stop_token){return Reply{};},
+            [&,gate](const fs::path&,std::stop_token){entered.set_value();gate.wait();return std::string(32,'x');});
+        require(entered.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready,"Waveform barrier did not start.");
+        client.submit({"source-waveform","GET","saved-old",{{"overview",false}},1,{}});
+        client.submit({"source-waveform","GET","context",{{"overview",false},{"context",true}},1,{}});
+        client.submit({"source-waveform","GET","saved-latest",{{"overview",false}},1,{}});
+        client.submit({"source-waveform","GET","overview",{{"overview",true},{"context",true}},1,{}});
+        release.set_value();
+        require(completed.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready,"Context cancelled saved waveform or overview.");
+        const auto result=client.collect();require(result.size()==3&&result[0].request.path=="context"&&result[1].request.path=="saved-latest"&&result[2].request.path=="overview","Waveform request identities are conflated.");
+        log<<"PASS frozen detail, original context and overview coexist while obsolete detail is replaced\n";
+    }
+    {
         std::promise<void> entered,release,completed;
         ReleaseOnExit releaseOnExit{release};auto gate=release.get_future().share();
         std::atomic<int> replies=0;

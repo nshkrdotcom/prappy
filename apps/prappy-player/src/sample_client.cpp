@@ -431,7 +431,7 @@ public:
         if(old.tag!=request.tag)return false;
         const auto flag=[](const Request& item,const char* key){return item.body.is_object()&&item.body.value(key,false);};
         if(request.tag=="source-pcm")return flag(old,"audition")==flag(request,"audition");
-        if(request.tag=="source-waveform")return flag(old,"overview")==flag(request,"overview");
+        if(request.tag=="source-waveform")return flag(old,"overview")==flag(request,"overview")&&flag(old,"context")==flag(request,"context");
         return request.tag!="collectionMember"||old.path==request.path;
     }
     void submit(const std::shared_ptr<ClientState>& state,Request request){

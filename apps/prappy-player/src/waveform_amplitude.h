@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <span>
 #include <vector>
+#include <limits>
 
 namespace sampling {
 enum class AmplitudeMode { Actual, Visible, Manual };
@@ -61,7 +62,11 @@ struct StereoEnvelope {
         return true;
     }
     void fromOverview(std::span<const PeakBin> bins,int64_t first,int64_t end){
-        clear();for(const auto& bin:bins)if(bin.end>first && bin.start<end)add(static_cast<double>(bin.start),bin.lmin,bin.lmax,bin.rmin,bin.rmax);
+        clear();int64_t previous=first;
+        for(const auto& bin:bins)if(bin.end>first && bin.start<end){
+            if(!x.empty()&&bin.start>previous){const auto gap=std::numeric_limits<double>::quiet_NaN();add(gap,gap,gap,gap,gap);}
+            add(static_cast<double>(bin.start),bin.lmin,bin.lmax,bin.rmin,bin.rmax);previous=bin.end;
+        }
     }
     void project(const AmplitudeScale& scale,StereoEnvelope& output)const{
         output.clear();output.x=x;output.individual=individual;output.peak=peak;

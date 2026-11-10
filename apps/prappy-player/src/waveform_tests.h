@@ -14,6 +14,9 @@ inline void waveformRenderTests(std::ostream& log) {
         require(bins[1].start==10&&bins[1].end==20&&bins[1].lmax==.2,"Original context replaced preserved saved peaks.");
         const auto offline=sampling::waveformWithContext(saved,{},10,20);
         require(offline.size()==1&&offline.front().lmax==.2,"Missing original context hid saved peaks.");
+        sampling::StereoEnvelope envelope;const std::vector<sampling::PeakBin> gap{{0,10,-1,1,-1,1},{20,30,-1,1,-1,1}};
+        envelope.fromOverview(gap,0,30);
+        require(envelope.x.size()==3&&std::isnan(envelope.x[1]),"Missing waveform data was interpolated as audio.");
         log<<"PASS saved waveform preserves frozen peaks and adds only outside original context\n";
     }
     struct Canvas {

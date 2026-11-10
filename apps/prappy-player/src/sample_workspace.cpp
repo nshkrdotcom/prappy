@@ -115,18 +115,20 @@ void Workspace::loadDetails(bool refresh){
     }
 }
 void Workspace::loadOverview(){
-    if(preparedManifest.is_null()||preparedManifest.value("access_mode",std::string{})=="frozen")return;
-    if(!preparedManifest.contains("waveform")){
+    const bool frozen=preparedManifest.is_object()&&preparedManifest.value("access_mode",std::string{})=="frozen";
+    const auto& source=frozen?contextManifest:preparedManifest;
+    if(source.is_null())return;
+    if(!source.contains("waveform")){
         if(overviewDue==std::chrono::steady_clock::time_point{})overviewDue=std::chrono::steady_clock::now()+std::chrono::seconds(1);
         return;
     }
     overviewDue={};if(!overviewBins.empty())return;
     int level=0;Frame stride=4096;while((editor.total+stride-1)/stride>2048){++level;stride*=2;}
     const Frame count=(editor.total+stride-1)/stride;
-    const auto path=audioEndpoint()+"/waveform?source_key="+preparedManifest.at("source_key").get<std::string>()+"&timeline="+capture.at("timeline_id").get<std::string>()+
+    const auto path=(frozen?endpoint(sourceLibrary)+"/captures/"+capture.at("id").get<std::string>()+"/audio":audioEndpoint())+"/waveform?source_key="+source.at("source_key").get<std::string>()+"&timeline="+capture.at("timeline_id").get<std::string>()+
         "&level="+std::to_string(level)+"&start=0&count="+std::to_string(count);
-    client->submit({"source-waveform","GET",path,{{"source_key",preparedManifest.at("source_key")},{"timeline_id",capture.at("timeline_id")},
-        {"channels",preparedManifest.at("channels")},{"start_bin",0},{"bin_count",count},{"frames_per_bin",stride},{"level",level},{"overview",true}},generation,{}});
+    client->submit({"source-waveform","GET",path,{{"source_key",source.at("source_key")},{"timeline_id",capture.at("timeline_id")},
+        {"channels",source.at("channels")},{"start_bin",0},{"bin_count",count},{"frames_per_bin",stride},{"level",level},{"overview",true},{"context",frozen}},generation,{}});
 }
 void Workspace::metadataFields(const Json& values){editedFacets.clear();fields=Json::object();for(const char* key:{"title","artist","album","date","genres","moods","instruments","roles","tags","uses","key","tempo_bpm","energy","notes","character"})fields[key]=values.contains(key)?show(values[key]):"";}
 Json Workspace::humanFacts(bool forSample)const{
@@ -439,8 +441,8 @@ bool Workspace::current(const Request& request)const{
     if(tag=="collections"&&request.path!=endpoint(library)+"/collections")return false;
     if(tag=="browse"&&request.path!=browsePath)return false;
     if((tag=="capture"||tag=="source-analysis")&&request.path!=descriptorPath)return false;
-    if(tag=="context-descriptor")return request.path==contextPath;
-    if(tag=="source-waveform"&&request.body.value("context",false))return !contextManifest.is_null()&&request.path==contextPath&&request.body.at("source_key")==contextManifest.at("source_key");
+    if(tag=="context-descriptor")return !capture.is_null()&&request.path==endpoint(sourceLibrary)+"/captures/"+capture.at("id").get<std::string>()+"/audio";
+    if(tag=="source-waveform"&&request.body.value("context",false))return !contextManifest.is_null()&&(request.body.value("overview",false)||request.path==contextPath)&&request.body.at("source_key")==contextManifest.at("source_key");
     if(tag=="source-waveform"&&(preparedManifest.is_null()||request.body.at("source_key")!=preparedManifest.at("source_key")))return false;
     return tag!="source-waveform"||request.body.value("overview",false)||request.path==detailPath;
 }
@@ -452,7 +454,7 @@ void Workspace::process(){
         if(tag=="command"||tag=="native-save-hash")for(auto& entry:pending)
             if(entry.at("command").at("request_id")==reply.request.body.at("request_id"))entry["sending"]=false;
         if(!reply.error.empty()&&tag=="source-waveform"&&reply.request.body.value("overview",false)){
-            preparedManifest.erase("waveform");overviewBins.clear();overviewDue=std::chrono::steady_clock::now()+std::chrono::seconds(1);
+            (reply.request.body.value("context",false)?contextManifest:preparedManifest).erase("waveform");overviewBins.clear();overviewDue=std::chrono::steady_clock::now()+std::chrono::seconds(1);
         }
         if(!reply.error.empty()&&(tag=="context-descriptor"||(tag=="source-waveform"&&reply.request.body.value("context",false)))){contextPath.clear();contextBins.clear();++waveformRevision;}
         if(!reply.error.empty()){if(pendingMark&&(tag=="mark-prepared"||tag=="libraries"||tag=="capabilities"))pendingMark->failed=true;notice=reply.error;if(reply.status==409){notice="Conflict: local draft retained. Reload the saved sample or Fork before saving. "+notice;if(tag=="command")for(auto& row:pending)if(row.at("command").at("request_id")==reply.request.body.at("request_id")){row["conflict"]=true;if(row.contains("source"))sampleLibrary.conflict(SourceRef::parse(row.at("source")),row.at("draft_id"),row.at("command").at("request_id"));}persist();}continue;}
@@ -502,7 +504,7 @@ void Workspace::process(){
         else if(tag=="source-waveform"){
             const auto& context=reply.request.body;
             const bool full=context.at("overview");
-            auto& bins=context.value("context",false)?contextBins:full?overviewBins:detailBins;bins.clear();if(full)overview=context;
+            auto& bins=full?overviewBins:context.value("context",false)?contextBins:detailBins;bins.clear();if(full)overview=context;
             const Frame channels=context.at("channels"),step=context.at("frames_per_bin");
             Frame at=context.at("start_bin").get<Frame>()*step;
             for(size_t i=0;i<reply.pcm.size();i+=static_cast<size_t>(channels)*2){
@@ -632,7 +634,7 @@ void Workspace::tick(Audio& audio){
         if(previousState!=transport.state&&notify)notify();
         const auto now=std::chrono::steady_clock::now();
         if(open&&client&&overviewDue!=std::chrono::steady_clock::time_point{}&&now>=overviewDue){
-            overviewDue=now+std::chrono::seconds(1);get("source-analysis",descriptorPath);
+            overviewDue=now+std::chrono::seconds(1);if(preparedManifest.value("access_mode",std::string{})=="frozen")get("context-descriptor",endpoint(sourceLibrary)+"/captures/"+capture.at("id").get<std::string>()+"/audio");else get("source-analysis",descriptorPath);
         }
         if(!analysisJob.empty()&&now>=jobDue){jobDue=now+std::chrono::seconds(1);get("job",endpoint(library)+"/jobs/"+analysisJob);}
         if(detailDue!=std::chrono::steady_clock::time_point{} && now>=detailDue){detailDue={};loadDetails();}
@@ -700,8 +702,9 @@ void Workspace::waveform(Audio& audio,const std::function<void(const char*,bool)
         const bool settled=detailDue==std::chrono::steady_clock::time_point{} || now>=detailDue;
         const bool changed=envelopeRevision!=waveformRevision || envelopeStart!=first || envelopeEnd!=end || envelopeBudget!=budget;
         if(changed && (settled || envelope.x.empty() || fitAmplitudeNow)){
-            auto bins=detailBins.empty()?overviewBins:detailBins;
-            if(preparedManifest.is_object()&&preparedManifest.value("access_mode",std::string{})=="frozen"){
+            const bool frozen=preparedManifest.is_object()&&preparedManifest.value("access_mode",std::string{})=="frozen";
+            auto bins=frozen||!detailBins.empty()?detailBins:overviewBins;
+            if(frozen){
                 const auto coverage=preparedManifest.at("coverage");const Frame a=coverage.at("start_frame"),b=coverage.at("end_frame");
                 bins=waveformWithContext(bins,contextBins,a,b);
             }
