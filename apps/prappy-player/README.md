@@ -1,5 +1,9 @@
 # Prappy Player
 
+<p align="center">
+  <img src="assets/player-banner.jpg" alt="Sculpted mint glass and gold sound ribbons on charcoal" width="100%">
+</p>
+
 Native Windows x64 player and sampling editor using SDL3, Dear ImGui, ImPlot
 and native SDL audio. Indexed source access and analysis run independently in WSL.
 
