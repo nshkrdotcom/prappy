@@ -141,3 +141,38 @@ all three state suites, and the complete Debug-Asan health suite passed. ASan
 CTest also passed all six tests across the initial run and unchanged-binary
 retries (two launches initially returned BAD_COMMAND). See `final-*.log`,
 `final-ctest-asan-retry.log` and `health-asan-final.log` in the evidence root.
+
+
+### Final package and installation
+
+Code commit: `a93d309bcb8b6920101e5b2ea31c680b180ed004`. A fresh compile/link
+and existing development signing produced clean-source Debug build ID
+`98ea1683b548426abaf78dd9cd3b2429d643c133db083f7454774c16c16c593b`.
+After the fresh link, Debug and Debug-Asan CTest each passed 6/6 without a
+launch retry (`relink-ctest-*.log`). No security policy was changed.
+
+The 100-cycle Debug editor run passed with eviction, pending analysis and an
+injected offline catalog. `editor-stress-100.log` contains every resource sample;
+`editor-resources-summary.json` summarizes the ranges: private bytes
+183,074,816–203,202,560; kernel handles 623–638; GDI handles exactly 17; USER
+handles 18–19; accounted PCM 18,313,216–21,385,216 bytes, always below its budget.
+Editor opening p50/p95/p99 was 137/186/201 ms. These are bounded observations,
+not a proof that no slower leak exists.
+
+`scripts/install.ps1 -Config Debug -NoBuild` succeeded after the validated build.
+All installed package hashes, including both PDBs, match the manifest and the
+exact build-ID symbol archive. Every existing canonical state file in the
+pre-install snapshot is byte-identical after installation (`install-state.log`).
+The previous installed package/state and incident backup remain preserved.
+
+The installed package (directory name `Release`, actual configuration Debug)
+passed `verify-native-editor.ps1 -BuildVariant Release -VerifySaveExport
+-VerifyCommands` and `verify-relaunch.ps1 -BuildVariant Release` using disposable
+fixture state: startup, waveform/editor, save/export/retry and clean shutdown.
+See `installed-editor.log`, `installed-relaunch.log`, `installed-build.json`.
+
+Automatic approval review rejected the combined install/startup command with
+`blocked by policy`; the supported installer succeeded when run separately.
+Review also rejected the smoke test that opened canonical live state. That
+specific live-state startup/shutdown check was not performed; the isolated
+installed-package checks above passed and canonical user state stayed untouched.
