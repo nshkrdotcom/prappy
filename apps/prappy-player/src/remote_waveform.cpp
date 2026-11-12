@@ -8,13 +8,24 @@ void RemoteWaveform::select(const prepared::CatalogSource& selected,const sampli
     if(!client||connection.url!=backend.url||connection.token!=backend.token){
         connection=backend;client=std::make_unique<sampling::Client>(connection,notify);
     }
-    client->submit({"source-descriptor","GET",source.source.endpoint(),nullptr,generation,{}});message="Reading waveform";
+    try {
+        client->submit({"source-descriptor","GET",source.source.endpoint(),nullptr,generation,{}});
+        message="Reading waveform";
+    } catch(const std::exception& error) {
+        // The source is still selected; a saturated executor must not make
+        // this identity permanently unrequestable until the user switches away.
+        message=error.what();pollAt=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+    }
 }
 
 bool RemoteWaveform::collect() {
     if(!client)return false;
     if(pollAt!=std::chrono::steady_clock::time_point{}&&std::chrono::steady_clock::now()>=pollAt){
-        pollAt={};client->submit({"source-descriptor","GET",source.source.endpoint(),nullptr,generation,{}});
+        pollAt={};
+        try {client->submit({"source-descriptor","GET",source.source.endpoint(),nullptr,generation,{}});}
+        catch(const std::exception& error){
+            message=error.what();pollAt=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+        }
     }
     bool changed=false;
     for(auto& reply:client->collect()){
@@ -31,11 +42,11 @@ bool RemoteWaveform::collect() {
                     prepared::integer(reply.body.at("frame_count")),prepared::sampleType(reply.body.at("sample_format").get<std::string>())};
                 source.native.validate();
                 int level=0;prepared::Frame stride=4096;
-                while((source.native.frames+stride-1)/stride>2048){++level;stride*=2;}
+                while(prepared::ceilDivPositive(source.native.frames,stride)>2048){++level;stride*=2;}
                 if(!reply.body.contains("waveform")&&source.native.frames>source.native.rate*6){
                     message="Waveform analysis pending";pollAt=std::chrono::steady_clock::now()+std::chrono::seconds(5);continue;
                 }
-                const auto count=(source.native.frames+stride-1)/stride;
+                const auto count=prepared::ceilDivPositive(source.native.frames,stride);
                 const auto key=reply.body.at("source_key").get<std::string>();
                 sampling::Request request;request.tag="source-waveform";request.generation=generation;
                 request.path=source.source.endpoint()+"/waveform?source_key="+key+"&timeline="+source.timeline+"&level="+
@@ -58,7 +69,11 @@ bool RemoteWaveform::collect() {
                 }
                 waveform=std::move(result);message="Ready";
             }
-        }catch(const std::exception& error){message=error.what();}
+        }catch(const std::exception& error){
+            message=error.what();
+            if(std::string_view(error.what()).find("request/reply queue is full")!=std::string_view::npos)
+                pollAt=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+        }
     }
     return changed;
 }

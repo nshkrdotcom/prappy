@@ -1,6 +1,7 @@
 #pragma once
 #include "prepared_audio.h"
 #include <algorithm>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -17,7 +18,7 @@ class PcmBudget {
     }
 public:
     struct Reservation {
-        std::shared_ptr<State> owner;size_t bytes;
+        const std::shared_ptr<State> owner;const size_t bytes;
         Reservation(std::shared_ptr<State> state,size_t count):owner(std::move(state)),bytes(count){}
         Reservation(const Reservation&)=delete;Reservation& operator=(const Reservation&)=delete;
         ~Reservation(){std::lock_guard lock(owner->mutex);owner->used-=bytes;}
@@ -73,7 +74,12 @@ public:
         }
         template<class Consumer> void each(Consumer consume,std::stop_token stop={})const{
             std::lock_guard lock(mutex);
+            source.validate();
             const auto stride=static_cast<size_t>(source.channels)*prepared::sampleBytes(source.type);
+            // Each pass writes its lazy spans to a separate backing transaction.
+            // A failed/cancelled pass must not pin unreferenced compressed bytes
+            // in the file used by successful earlier passes.
+            std::shared_ptr<PcmBacking> writing;
             const auto emit=[&](std::span<const std::byte> bytes){for(size_t at=0;at<bytes.size();at+=65536){
                 if(stop.stop_requested())throw std::runtime_error("Native selection save cancelled.");
                 consume(bytes.subspan(at,std::min<size_t>(65536,bytes.size()-at)));
@@ -81,19 +87,37 @@ public:
             for(auto& part:segments){
                 if(stop.stop_requested())throw std::runtime_error("Native selection save cancelled.");
                 if(!part.buffer&&!part.stored){
+                    if(!load||!backing)throw std::runtime_error("Save reader has no backing or PCM loader.");
                     auto block=load(part.first,part.count,stop);
                     if(!block||!block->pcm||block->pcm->start()!=part.first||block->pcm->frames()!=part.count||
                        block->pcm->source().rate!=source.rate||block->pcm->source().channels!=source.channels||
-                       block->pcm->source().type!=source.type||block->pcm->source().frames!=source.frames)
+                       block->pcm->source().type!=source.type||block->pcm->source().frames!=source.frames||
+                       !budget.owns(block->memory)||block->memory->bytes!=block->pcm->bytes().size())
                         throw std::runtime_error("Save reader returned a different native span.");
+                    if(block->decoderEpoch.empty()||
+                       (decoderEpochs.size()>=512&&std::find(decoderEpochs.begin(),decoderEpochs.end(),block->decoderEpoch)==decoderEpochs.end()))
+                        throw std::runtime_error("Selected audio lacks supported decoder provenance.");
+                    if(!writing)writing=backing->fork();
+                    auto stored=writing->store(block->pcm->bytes());
                     remember(block->decoderEpoch);part.decoderEpoch=block->decoderEpoch;
-                    part.stored=backing->store(block->pcm->bytes());
+                    part.stored=std::move(stored);
                     emit(block->pcm->bytes());continue;
                 }
+                if(part.origin<0||part.first<part.origin||part.count<=0||part.first>source.frames||part.count>source.frames-part.first||
+                   static_cast<uint64_t>(part.first-part.origin)>SIZE_MAX/stride||
+                   static_cast<uint64_t>(part.count)>SIZE_MAX/stride)
+                    throw std::runtime_error("Stored native selection span is invalid.");
+                const auto offset=static_cast<size_t>(part.first-part.origin)*stride;
+                const auto size=static_cast<size_t>(part.count)*stride;
+                const auto available=part.stored?part.stored->bytes():part.buffer->pcm->bytes().size();
+                if(offset>available||size>available-offset||
+                   (part.buffer&&(part.buffer->pcm->start()!=part.origin||
+                       part.buffer->pcm->source().rate!=source.rate||part.buffer->pcm->source().channels!=source.channels||
+                       part.buffer->pcm->source().type!=source.type||part.buffer->pcm->source().frames!=source.frames)))
+                    throw std::runtime_error("Stored native selection bytes differ from the source.");
                 PcmBudget::Permit scratch;std::vector<std::byte> raw;
                 if(part.stored){scratch=budget.reserve(part.stored->bytes());raw.resize(part.stored->bytes());part.stored->read(raw);}
-                const auto* data=(part.stored?raw.data():part.buffer->pcm->bytes().data())+static_cast<size_t>(part.first-part.origin)*stride;
-                const auto size=static_cast<size_t>(part.count)*stride;
+                const auto* data=(part.stored?raw.data():part.buffer->pcm->bytes().data())+offset;
                 emit(std::span<const std::byte>(data,size));
             }
         }
@@ -123,7 +147,8 @@ public:
     void preserve(prepared::Frame start,prepared::Frame end,std::shared_ptr<PcmBacking> storage={}){
         if(start<0||end<=start||end>source.frames||(!backing&&!storage))throw std::runtime_error("Invalid preserved selection.");
         if(preserved){start=std::min(start,preserved->first);end=std::max(end,preserved->second);}
-        if(!backing)backing=std::move(storage);preserved={{start,end}};
+        if(!backing)backing=std::move(storage);
+        preserved={{start,end}};
     }
     void clearPreservation(){preserved.reset();}
     void restart(uint64_t epoch){if(epoch<=generation)throw std::runtime_error("Native session generation did not advance.");generation=epoch;decoderEpoch.clear();}
@@ -142,10 +167,15 @@ public:
         if(!preserved&&!decoderEpoch.empty()&&decoder!=decoderEpoch)throw std::runtime_error("Decoder session changed; reopen the bounded region before extending its audio.");
         if(preserved&&nextMissingEnd(pcm->start(),pcm->start()+pcm->frames())!=pcm->start()+pcm->frames())
             throw std::runtime_error("Decoder output would replace authoritative selection audio.");
-        decoderEpoch=decoder;
-        auto buffer=std::make_shared<const Buffer>(Buffer{std::move(pcm),std::move(memory),std::string(decoder)});
+        for(const auto& existing:buffers)
+            if(pcm->start()<existing->pcm->start()+existing->pcm->frames()&&
+               existing->pcm->start()<pcm->start()+pcm->frames())
+                throw std::runtime_error("Native decoder returned overlapping resident audio.");
+        std::string nextEpoch(decoder);
+        auto buffer=std::make_shared<const Buffer>(Buffer{std::move(pcm),std::move(memory),nextEpoch});
         buffers.push_back(buffer);
         std::sort(buffers.begin(),buffers.end(),[](const auto& a,const auto& b){return a->pcm->start()<b->pcm->start();});
+        decoderEpoch.swap(nextEpoch);
         return buffer;
     }
     std::shared_ptr<const Buffer> find(prepared::Frame frame)const{
@@ -154,6 +184,10 @@ public:
         if(found!=buffers.rend())return *found;
         const auto saved=std::find_if(cold.begin(),cold.end(),[&](const auto& p){return frame>=p.first&&frame<p.first+p.count;});
         if(saved==cold.end())return {};
+        const auto stride=static_cast<size_t>(source.channels)*prepared::sampleBytes(source.type);
+        if(saved->count<=0||static_cast<uint64_t>(saved->count)>32ULL*1024*1024/stride||
+           saved->stored->bytes()!=static_cast<size_t>(saved->count)*stride)
+            throw std::runtime_error("Stored PCM size differs from the native source clock.");
         auto permit=budget.reserve(saved->stored->bytes());auto temporary=budget.reserve(saved->stored->bytes());
         std::vector<std::byte> raw(saved->stored->bytes());saved->stored->read(raw);
         auto pcm=std::make_shared<prepared::Block>(source,saved->first,saved->count,raw);
@@ -164,7 +198,9 @@ public:
         if(start<0||end<=start||end>source.frames)return false;
         auto cursor=start;
         for(const auto& piece:pieces()){
-            if(piece.first>cursor)return false;cursor=std::max(cursor,piece.first+piece.count);if(cursor>=end)return true;
+            if(piece.first>cursor)return false;
+            cursor=std::max(cursor,piece.first+piece.count);
+            if(cursor>=end)return true;
         }
         return false;
     }
@@ -209,18 +245,26 @@ public:
         if(start<0||end<start||end>source.frames)throw std::runtime_error("Invalid native session window.");
         std::vector<Clip::Segment> staged;
         const auto stride=static_cast<size_t>(source.channels)*prepared::sampleBytes(source.type);
+        std::shared_ptr<PcmBacking> writing;
         if(preserved)for(const auto& b:buffers){
             if(b->pcm->start()<end&&b->pcm->start()+b->pcm->frames()>start)continue;
             auto at=std::max(b->pcm->start(),preserved->first);const auto stop=std::min(b->pcm->start()+b->pcm->frames(),preserved->second);
             while(at<stop){
                 const auto existing=std::find_if(cold.begin(),cold.end(),[&](const auto& p){return at>=p.first&&at<p.first+p.count;});
                 if(existing!=cold.end()){at=std::min(stop,existing->first+existing->count);continue;}
+                const auto newPiece=std::find_if(staged.begin(),staged.end(),[&](const auto& p){return at>=p.first&&at<p.first+p.count;});
+                if(newPiece!=staged.end()){at=std::min(stop,newPiece->first+newPiece->count);continue;}
                 const auto count=std::min<prepared::Frame>(stop-at,1024*1024/stride);
-                auto stored=backing->store(std::span(b->pcm->bytes()).subspan(static_cast<size_t>(at-b->pcm->start())*stride,static_cast<size_t>(count)*stride));
+                if(!writing)writing=backing->fork();
+                auto stored=writing->store(std::span(b->pcm->bytes()).subspan(static_cast<size_t>(at-b->pcm->start())*stride,static_cast<size_t>(count)*stride));
                 staged.push_back({{},std::move(stored),at,count,at,b->decoderEpoch});at+=count;
             }
         }
-        cold.insert(cold.end(),staged.begin(),staged.end());
+        // Reserve both commits before mutating state: disk/quota failure or a
+        // vector allocation cannot evict the authoritative resident buffer.
+        cold.reserve(cold.size()+staged.size());
+        if(!staged.empty())backing=backing->fork();
+        cold.insert(cold.end(),std::make_move_iterator(staged.begin()),std::make_move_iterator(staged.end()));
         std::erase_if(buffers,[&](const auto& b){return b->pcm->start()>=end||b->pcm->start()+b->pcm->frames()<=start;});
     }
 };

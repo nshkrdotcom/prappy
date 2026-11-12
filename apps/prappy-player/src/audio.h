@@ -82,13 +82,42 @@ struct Audio {
         nativeEditing=false;
         if(!native||!preparedSource)return;
         const auto& source=*preparedSource;
-        if(native->reference()==source.source.endpoint()&&(!native->descriptor().is_null()||native->state().buffering)){
+        const auto reopen=[&]{native->load(source.source.endpoint(),source.source.capture,source.asset,true,position);};
+        try{
             const auto& d=native->descriptor();
-            if(!d.is_null())native->start({0,prepared::integer(d.at("frame_count"))},nativeReturnFrame>=0?nativeReturnFrame:
-                static_cast<sampling::Frame>(std::llround(position*prepared::integer(d.at("sample_rate")))),false,true);
-            native->pause(true);native->clearCache();
-        }else native->load(source.source.endpoint(),source.source.capture,source.asset,true,position);
-        native->gain(static_cast<float>(volume/100*std::pow(10.,gain/20)));
+            const bool sameEndpoint=native->reference()==source.source.endpoint();
+            if(sameEndpoint&&d.is_object()){
+                const prepared::NativeTimeline clock{prepared::integer(d.at("sample_rate")),prepared::integer(d.at("channels")),
+                    prepared::integer(d.at("frame_count")),prepared::sampleType(d.at("sample_format").get<std::string>())};
+                clock.validate();
+                const auto coverage=d.value("coverage",sampling::Json{{"start_frame",0},{"end_frame",clock.frames}});
+                const sampling::Span span{prepared::integer(coverage.at("start_frame")),prepared::integer(coverage.at("end_frame"))};
+                if(span.start<0||span.end>clock.frames||span.end<=span.start)throw std::runtime_error("Player return has invalid audio coverage.");
+                const bool sameSource=d.at("capture").at("id")==source.source.capture&&
+                    d.at("capture").at("blob_sha256")==source.asset&&
+                    (source.timeline.empty()||d.at("timeline_id")==source.timeline);
+                const auto scaled=std::round(static_cast<long double>(position)*clock.rate);
+                const auto cursor=nativeReturnFrame>=0?static_cast<long double>(nativeReturnFrame):scaled;
+                if(!sameSource||!std::isfinite(cursor)||cursor<span.start||cursor>span.end){
+                    // A restored/editor region may only cover a subset of the
+                    // original recording. Re-fetch the original instead of
+                    // silently jumping to unrelated PCM or throwing in start().
+                    reopen();
+                }else{
+                    const auto frame=cursor>=span.end?span.end-1:static_cast<sampling::Frame>(cursor);
+                    native->start(span,frame,false,true);native->pause(true);native->clearCache();
+                }
+            }else if(sameEndpoint&&native->state().buffering)native->pause(true);
+            else reopen();
+            native->gain(static_cast<float>(volume/100*std::pow(10.,gain/20)));
+            error.clear();
+        }catch(const std::exception& first){
+            // A retired editor owner must not unwind through the player frame.
+            // The original catalog source remains the only valid fallback.
+            error=first.what();
+            try{reopen();native->gain(static_cast<float>(volume/100*std::pow(10.,gain/20)));error.clear();}
+            catch(const std::exception& recovery){error=recovery.what();loaded=active=false;}
+        }
     }
     void updateMeter(){
         const bool audible=loaded&&active&&!paused&&volume>0;
@@ -124,7 +153,14 @@ struct Audio {
     void setPaused(bool value){paused=pauseRequested=value;if(native&&!nativeEditing)native->pause(value);}
     void submitSeek(){
         if(pendingSeek||!queuedSeek||!native||native->state().rate<=0)return;
-        const auto target=std::llround(static_cast<long double>(*queuedSeek)*native->state().rate);
+        // Scale and clamp before converting to an int64 frame. Rounding a
+        // double-valued duration near INT64_MAX can otherwise overflow llround.
+        const auto& state=native->state();
+        if(state.frames<=0)return;
+        const long double scaled=std::round(static_cast<long double>(*queuedSeek)*state.rate);
+        if(!std::isfinite(scaled))throw std::runtime_error("Invalid playback seek time.");
+        const auto target=static_cast<sampling::Frame>(std::clamp(scaled,0.L,
+            static_cast<long double>(state.frames-1)));
         pendingSeek=++seekSequence;queuedSeek.reset();native->seek(target);
     }
     void setVolume(double value){if(!std::isfinite(value))return;volume=std::clamp(value,0.,100.);applyGain();}

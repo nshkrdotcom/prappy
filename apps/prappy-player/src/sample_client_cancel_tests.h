@@ -174,6 +174,23 @@ inline void sampleClientCancellationTests(std::ostream& log) {
     }
     {
         std::promise<void> completed;
+        std::atomic<size_t> notifications=0;
+        Connection connection;connection.token=std::string(32,'x');
+        Client client(connection,[&]{if(++notifications==512)completed.set_value();},
+            [](const Connection&,const Request&,std::stop_token){return Reply{};});
+        Request command;command.tag="command";command.method="POST";command.path="/disposable";
+        for(size_t i=0;i<512;++i)client.submit(command);
+        require(completed.get_future().wait_for(std::chrono::seconds(10))==std::future_status::ready,
+            "Completed-response quota test did not drain the worker queue.");
+        bool rejected=false;try{client.submit(command);}catch(const std::runtime_error&){rejected=true;}
+        require(rejected,"Completed HTTP responses grew without the client's collection boundary.");
+        const auto replies=client.collect();
+        require(replies.size()==512,"Completed-response limit discarded an acknowledged command.");
+        client.submit(command);
+        log<<"PASS completed HTTP requests have bounded retention; collection restores submit capacity\n";
+    }
+    {
+        std::promise<void> completed;
         std::atomic<int> reads=0,bootstraps=0,requests=0;
         Connection connection;connection.startWorkstation=true;
         Client client(connection,[&]{if(++requests==2)completed.set_value();},[](const Connection& prepared,const Request&,std::stop_token){

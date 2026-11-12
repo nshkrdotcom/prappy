@@ -22,7 +22,13 @@ struct Task {
     void complete(bool success) {
         promise.set_value(std::make_pair(std::move(next),success));
         std::lock_guard guard(state->notificationMutex);
-        if(!state->retired&&state->notify)state->notify();
+        if(!state->retired&&state->notify)try {state->notify();}
+        catch(const std::exception& e){
+            // A UI notification is not allowed to terminate the scanner thread
+            // after its promise has already been fulfilled.
+            OutputDebugStringA("Scan completion notification threw: ");
+            OutputDebugStringA(e.what());
+        }catch(...){OutputDebugStringA("Scan completion notification threw a nonstandard exception.");}
     }
 };
 // One active scan and one replaceable pending scan across UI lifetimes. Shared
@@ -55,16 +61,19 @@ class Executor {
             {std::lock_guard guard(mutex);active.reset();}
         }
     }
-    Executor():worker([this](std::stop_token stop){run(stop);SDL_CleanupTLS();}){
-        // The scan worker creates Clients. Construct their executor before this
-        // static finishes construction, so scans join before HTTP teardown.
-        sampling::Client::initializeExecutor();
-    }
+    Executor():worker([this](std::stop_token stop){run(stop);SDL_CleanupTLS();}){}
 public:
-    static Executor& instance(){static Executor executor;return executor;}
+    static Executor& instance(){
+        // Construct the HTTP executor BEFORE the scan singleton. C++ destroys
+        // local statics in reverse construction order: scans must stop and join
+        // before their worker's Clients can lose the HTTP executor.
+        sampling::Client::initializeExecutor();
+        static Executor executor;return executor;
+    }
     ~Executor() {
-        worker.request_stop();std::shared_ptr<Task> current;
-        {std::lock_guard guard(mutex);current=active;pending.reset();}
+        worker.request_stop();std::shared_ptr<Task> current,abandoned;
+        {std::lock_guard guard(mutex);current=active;abandoned=std::move(pending);}
+        if(abandoned)abandoned->cancel.request_stop();
         if(current)current->cancel.request_stop();
         wake.notify_all();if(worker.joinable())worker.join();
     }
@@ -75,8 +84,11 @@ public:
         wake.notify_all();
     }
     void retire(const std::shared_ptr<State>& state) {
-        std::lock_guard guard(mutex);
-        if(pending&&pending->state==state)pending.reset();
+        std::shared_ptr<Task> abandoned;
+        {std::lock_guard guard(mutex);if(pending&&pending->state==state)abandoned=std::move(pending);}
+        if(abandoned)abandoned->cancel.request_stop();
+        // Releasing a task can destroy a large library snapshot. Do it outside
+        // the executor's scheduling mutex.
     }
 };
 }
@@ -106,7 +118,11 @@ public:
         auto task=std::make_shared<scan_detail::Task>();task->state=state;task->action=action;task->config=config;
         task->next=std::move(baseline);task->next.order=order;task->cancel=cancel;
         {std::lock_guard guard(state->notificationMutex);state->notify=notify;}
-        job=task->promise.get_future();scan_detail::Executor::instance().submit(std::move(task));
+        auto future=task->promise.get_future();
+        scan_detail::Executor::instance().submit(std::move(task));
+        // A partial executor initialization failure must not leave Scan with a
+        // permanently valid future whose work was never submitted.
+        job=std::move(future);
     }
     bool update(Library& library) {
         if (!running() || job.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return false;

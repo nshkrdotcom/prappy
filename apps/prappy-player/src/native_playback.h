@@ -4,6 +4,7 @@
 #include "sample_audition.h"
 #include "prepared_requests.h"
 #include <cmath>
+#include <exception>
 
 namespace sampling {
 // UI-thread controller. The shared session owns PCM; the callback only reads it.
@@ -28,7 +29,10 @@ private:
     double initialSeconds=0;
     std::chrono::steady_clock::time_point renewDue{};
     void release(){
-        if(!leasePath.empty())client.submit({"source-session-close","DELETE",leasePath,nullptr,generation,{}});
+        if(leasePath.empty())return;
+        // Keep the close path retryable if the bounded executor rejects the
+        // command. The server also expires abandoned leases independently.
+        client.submit({"source-session-close","DELETE",leasePath,nullptr,generation,{}});
         leasePath.clear();
     }
     prepared::NativeTimeline timeline()const{
@@ -37,11 +41,21 @@ private:
         t.validate();return t;
     }
     void newOwner(){
-        client.cancelReads(ReadScope::PCM);release();output.stop();pending=started=false;decodedEnd=-1;++generation;owner=uuid();
-        if(retained&&cacheWindow)retained->restart(generation);
-        else retained=std::make_shared<NativeSession>(timeline(),manifest.at("source_key"),manifest.at("timeline_id"),generation,budget);
-        if(manifest.at("access_mode")=="indexed")leasePath=endpoint+"/session?source_key="+manifest.at("source_key").get<std::string>()+
-            "&timeline="+manifest.at("timeline_id").get<std::string>()+"&owner="+owner;
+        // Stage allocations and the next identity before retiring the old
+        // decoder/audio owner. A failed allocation cannot strand half a handoff.
+        if(generation==UINT64_MAX)throw std::runtime_error("Native playback generation exhausted.");
+        auto nextOwner=uuid();const auto nextGeneration=generation+1;
+        const bool reuse=retained&&cacheWindow;
+        auto nextSession=reuse?std::shared_ptr<NativeSession>{}:std::make_shared<NativeSession>(timeline(),
+            manifest.at("source_key"),manifest.at("timeline_id"),nextGeneration,budget);
+        std::string nextLease;
+        if(manifest.at("access_mode")=="indexed")nextLease=endpoint+"/session?source_key="+manifest.at("source_key").get<std::string>()+
+            "&timeline="+manifest.at("timeline_id").get<std::string>()+"&owner="+nextOwner;
+        client.cancelReads(ReadScope::PCM);output.stop();pending=started=false;
+        release();
+        if(reuse)retained->restart(nextGeneration);
+        else retained=std::move(nextSession);
+        generation=nextGeneration;decodedEnd=-1;owner.swap(nextOwner);leasePath.swap(nextLease);
         renewDue=std::chrono::steady_clock::now()+std::chrono::seconds(15);
     }
     void feed(std::shared_ptr<const NativeSession::Buffer> block){
@@ -93,7 +107,8 @@ private:
             "&timeline="+manifest.at("timeline_id").get<std::string>()+"&session="+owner+"&start="+std::to_string(frame)+"&count="+std::to_string(count),context,generation,{}};
         const auto bytes=static_cast<size_t>(count)*stride;
         message.incomingMemory=budget.reserve(bytes);message.pcmMemory=budget.reserve(bytes);
-        pending=true;pendingStart=frame;pendingEnd=frame+count;client.submit(std::move(message));
+        client.submit(std::move(message));
+        pending=true;pendingStart=frame;pendingEnd=frame+count;
     }
     void fillWindow(){
         if(pending||!keepWindow())return;
@@ -110,19 +125,29 @@ private:
             throw std::runtime_error("Native playback source clock identity is invalid.");
         const auto mode=value.at("access_mode").get<std::string>();
         if(mode!="indexed"&&mode!="frozen")throw std::runtime_error("Unsupported native playback source.");
-        manifest=std::move(value);const auto t=timeline();status.rate=t.rate;status.frames=t.frames;
-        const auto span=manifest.value("coverage",Json{{"start_frame",0},{"end_frame",t.frames}});
-        coverage={prepared::integer(span.at("start_frame")),prepared::integer(span.at("end_frame"))};
-        if(coverage.start<0||coverage.end>t.frames||coverage.end<=coverage.start)throw std::runtime_error("Invalid native playback coverage.");
-        range=coverage;
+        const prepared::NativeTimeline t{prepared::integer(value.at("sample_rate")),prepared::integer(value.at("channels")),
+            prepared::integer(value.at("frame_count")),prepared::sampleType(value.at("sample_format").get<std::string>())};
+        t.validate();
+        const auto span=value.value("coverage",Json{{"start_frame",0},{"end_frame",t.frames}});
+        const Span verified{prepared::integer(span.at("start_frame")),prepared::integer(span.at("end_frame"))};
+        if(verified.start<0||verified.end>t.frames||verified.end<=verified.start)throw std::runtime_error("Invalid native playback coverage.");
         const auto frame=std::round(static_cast<long double>(initialSeconds)*t.rate);
-        status.cursor=frame>=coverage.end?coverage.end-1:std::max(coverage.start,static_cast<Frame>(frame));
+        // Clamp in long double before converting to an int64 frame. Long files
+        // and malicious timestamps must never overflow the integer cast.
+        const Frame cursor=frame>=verified.end?verified.end-1:
+            frame<=verified.start?verified.start:static_cast<Frame>(frame);
+        manifest=std::move(value);status.rate=t.rate;status.frames=t.frames;
+        coverage=range=verified;status.cursor=cursor;
         newOwner();request(status.cursor);
     }
 public:
     NativePlayback(Connection connection,PcmBudget memory,std::function<void()> notify,Client::Transport transport={})
         :budget(std::move(memory)),output(budget),saveConnection(std::move(connection)),saveTransport(std::move(transport)),client(saveConnection,std::move(notify),saveTransport){}
-    ~NativePlayback(){release();}
+    ~NativePlayback() noexcept {
+        try{release();}
+        catch(const std::exception& e){OutputDebugStringA(e.what());}
+        catch(...){OutputDebugStringA("Native decoder lease could not be closed during teardown.");}
+    }
     NativePlayback(const NativePlayback&)=delete;NativePlayback& operator=(const NativePlayback&)=delete;
     SDL_AudioDeviceID device()const{return output.device();}
     const State& state()const{return status;}
@@ -172,8 +197,12 @@ public:
     void pause(bool value){status.paused=value;if(started)output.pause(value);}
     void gain(float value){if(!std::isfinite(value)||value<0)throw std::runtime_error("Invalid playback gain.");level=value;output.gain(value);}
     void stop(){
-        client.cancelReads(ReadScope::Audio);release();output.stop();retained.reset();manifest=nullptr;
+        client.cancelReads(ReadScope::Audio);
+        std::exception_ptr closingError;
+        try{release();}catch(...){closingError=std::current_exception();}
+        output.stop();retained.reset();manifest=nullptr;
         ++generation;pending=started=repeat=false;cacheWindow.reset();decodedEnd=-1;status=State{};
+        if(closingError)std::rethrow_exception(closingError);
     }
     void tick(){
         try{

@@ -23,10 +23,24 @@ public:
     const T& front() const { return (*this)[0]; }
     const T& back() const { return (*this)[count - 1]; }
     void push_back(T value) {
-        if (count % PageSize == 0) { pages.push_back(std::make_shared<Page>()); pages.back()->reserve(PageSize); }
-        auto& page = pages.back();
-        if (page.use_count() != 1) page = std::make_shared<Page>(*page);
-        page->push_back(std::move(value)); ++count;
+        if (count % PageSize == 0) {
+            // Prepare the entire first element before publishing a new page.
+            // On allocation/element failure, a ghost empty page would make the
+            // next successful operator[] index past that page's end.
+            auto page = std::make_shared<Page>();
+            page->reserve(PageSize);
+            page->push_back(std::move(value));
+            pages.push_back(std::move(page));
+        } else {
+            auto& page = pages.back();
+            if (page.use_count() != 1) {
+                // Snapshot readers must never observe a partially mutated page.
+                auto replacement = std::make_shared<Page>(*page);
+                replacement->push_back(std::move(value));
+                page = std::move(replacement);
+            } else page->push_back(std::move(value));
+        }
+        ++count;
     }
     struct Iterator {
         const PagedVector* owner;

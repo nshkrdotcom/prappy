@@ -152,6 +152,7 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
         if(!WinHttpSetOption(operation.value,WINHTTP_OPTION_REDIRECT_POLICY,&redirectPolicy,sizeof(redirectPolicy)))throw std::runtime_error("Cannot constrain backend redirects.");
         auto headers=wide("Authorization: Bearer "+token+"\r\nContent-Type: "+std::string(request.upload?"application/octet-stream":"application/json")+"\r\nX-Prappy-Request-Id: "+std::to_string(GetCurrentProcessId())+"_"+std::to_string(request.diagnosticId)+"\r\n");
         const auto body=request.method=="GET" || request.body.is_null() ? std::string{} : request.body.dump();
+        if(body.size()>8*1024*1024)throw std::runtime_error("Backend request metadata exceeds the 8 MiB limit.");
         bool sent=false;
         if(request.upload){
             const UploadFrame frame(body.size(),request.upload->bytes());const auto length=frame.metadata;
@@ -389,7 +390,11 @@ class ClientExecutor {
                 result.request=request;result.request.incomingMemory.reset();request.incomingMemory.reset();
                 bool deliver=false;
                 {std::lock_guard guard(mutex);if(!state->retired&&!stop.stop_requested()){state->completed.push_back(std::move(result));deliver=true;}lane.active.reset();lane.request.reset();}
-                if(deliver){std::lock_guard guard(state->notificationMutex);if(state->notify)state->notify();}
+                if(deliver){
+                    std::lock_guard guard(state->notificationMutex);
+                    if(state->notify)try{state->notify();}
+                    catch(const std::exception& e){debuglog::write("backend.notify.error",e.what());}
+                }
             }
         }
     }
@@ -445,7 +450,11 @@ public:
                 std::erase_if(state->pending,superseded);
                 for(auto& lane:lanes)if(lane.active==state&&lane.request&&superseded(*lane.request))stops.push_back(lane.cancel);
             }
-            if(state->pending.size()>=512)throw std::runtime_error("Backend request queue is full.");
+            // Responses also own PCM, upload snapshots and other large data.
+            // A client that is no longer collecting replies must not retain
+            // an unbounded completed queue while new requests are submitted.
+            if(state->pending.size()+state->completed.size()>=512)
+                throw std::runtime_error("Backend request/reply queue is full; collect completed work before retrying.");
             state->pending.push_back(std::move(request));wake.notify_all();
         }
         for(auto& stop:stops)stop.request_stop();
@@ -462,20 +471,37 @@ public:
         }
         for(auto& stop:stops)stop.request_stop();
     }
-    void retire(const std::shared_ptr<ClientState>& state) {
+    void retire(const std::shared_ptr<ClientState>& state) noexcept {
         {std::lock_guard guard(state->notificationMutex);state->notify={};}
+        std::deque<Request> abandoned;
+        std::vector<Reply> completed;
         {
             std::lock_guard guard(mutex);
             // Only idempotent lease release survives retirement; user commands and reads do not.
-            auto closing=std::make_shared<ClientState>();closing->connection=state->connection;closing->transport=state->transport;
-            closing->credentialsReady=closing->credentialsStarted=true;
-            for(auto& request:state->pending)if(closesSession(request))closing->pending.push_back(std::move(request));
-            for(const auto& lane:lanes)if(lane.active==state&&lane.request&&closesSession(*lane.request))closing->pending.push_back(*lane.request);
-            if(!closing->pending.empty()&&state->credentialsReady&&state->credentialError.empty()){
-                if(cleanup.size()<512)cleanup.push_back(std::move(closing));
-                else debuglog::write("backend.session_close","cleanup queue full; server lease expiry will release session");
+            state->retired=true;
+            if(state->credentialsReady&&state->credentialError.empty())try{
+                size_t queued=0;
+                for(const auto& item:cleanup)queued+=item->pending.size();
+                if(queued<512&&cleanup.size()<512){
+                    auto closing=std::make_shared<ClientState>();
+                    closing->connection=state->connection;closing->transport=state->transport;
+                    closing->credentialsReady=closing->credentialsStarted=true;
+                    const auto keep=[&](const Request& request){
+                        if(!closesSession(request))return;
+                        if(queued+closing->pending.size()<512)closing->pending.push_back(request);
+                        else debuglog::write("backend.session_close","close backlog full; server lease expiry will release session");
+                    };
+                    for(const auto& request:state->pending)keep(request);
+                    for(const auto& lane:lanes)if(lane.active==state&&lane.request)keep(*lane.request);
+                    if(!closing->pending.empty())cleanup.push_back(std::move(closing));
+                }else if(std::any_of(state->pending.begin(),state->pending.end(),closesSession))
+                    debuglog::write("backend.session_close","cleanup queue full; server lease expiry will release session");
+            }catch(const std::exception& e){
+                // Retirement is a destructor boundary: callbacks and reads
+                // must still be fenced when a close snapshot cannot allocate.
+                debuglog::write("backend.session_close",e.what());
             }
-            state->retired=true;state->pending.clear();state->completed.clear();
+            abandoned.swap(state->pending);completed.swap(state->completed);
             for(auto& lane:lanes)if(lane.active==state)CancelSynchronousIo(lane.worker.native_handle());
             std::erase_if(clients,[&](const auto& weak){auto value=weak.lock();return !value||value==state;});
         }

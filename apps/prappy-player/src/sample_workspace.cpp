@@ -29,7 +29,12 @@ Workspace::Workspace(fs::path d,std::function<void()> n,PcmBudget memory,Client:
     evaluationTrial=!stateio::evaluationState(directory).is_null();readOnly=evaluationTrial;
     tokenFile=utf8(fs::path(L"\\\\wsl.localhost\\ubuntu26-dev\\home\\home\\.config\\audioharvest\\server.token"));try{restore();}catch(const std::exception& e){storageBlocked=true;storageError=e.what();}
 }
-Workspace::~Workspace(){try{closeNativeSession();persist();}catch(const std::exception& e){OutputDebugStringA(e.what());}}
+Workspace::~Workspace(){
+    try{closeNativeSession();}catch(const std::exception& e){OutputDebugStringA(e.what());}
+    // Failing to enqueue a decoder close must not lose independently
+    // recoverable drafts and pending-save state during the final persist.
+    try{persist();}catch(const std::exception& e){OutputDebugStringA(e.what());}
+}
 void Workspace::get(std::string tag,std::string path){if(client){Json context=tag=="sampleMetadata"?draftSnapshot():Json();client->submit({std::move(tag),"GET",std::move(path),context,generation,{}});}}
 void Workspace::connect(){
     if(client)stopTransport(false);
@@ -94,7 +99,7 @@ void Workspace::loadDetails(bool refresh){
             if(contextPath.empty()||refresh){contextPath=endpoint(sourceLibrary)+"/captures/"+capture.at("id").get<std::string>()+"/audio";get("context-descriptor",contextPath);}
         } else {
             const auto range=waveformRange(viewportStart,viewportEnd,editor.total);
-            int level=-12;Frame stride=1;while((range.end-range.start+stride-1)/stride>1024){++level;stride*=2;}
+            int level=-12;Frame stride=1;while(prepared::ceilDivPositive(range.end-range.start,stride)>1024){++level;stride*=2;}
             const Frame first=range.start/stride,last=(range.end-1)/stride+1;
             const auto path=endpoint(sourceLibrary)+"/captures/"+capture.at("id").get<std::string>()+"/audio/waveform?source_key="+contextManifest.at("source_key").get<std::string>()+"&timeline="+capture.at("timeline_id").get<std::string>()+"&level="+std::to_string(level)+"&start="+std::to_string(first)+"&count="+std::to_string(last-first);
             if(path!=contextPath||refresh){contextPath=path;contextBins.clear();++waveformRevision;client->submit({"source-waveform","GET",path,{{"source_key",contextManifest.at("source_key")},{"timeline_id",capture.at("timeline_id")},{"channels",contextManifest.at("channels")},{"start_bin",first},{"bin_count",last-first},{"frames_per_bin",stride},{"level",level},{"overview",false},{"context",true}},generation,{}});}
@@ -103,7 +108,7 @@ void Workspace::loadDetails(bool refresh){
     const auto range=waveformRange(viewportStart,viewportEnd,editor.total);
     const Frame start=std::max(range.start,verifiedCoverage->start),end=std::min(range.end,verifiedCoverage->end);
     if(end<=start)return;
-    int level=-12;Frame stride=1;while((end-start+stride-1)/stride>1024){++level;stride*=2;}
+    int level=-12;Frame stride=1;while(prepared::ceilDivPositive(end-start,stride)>1024){++level;stride*=2;}
     const Frame first=start/stride,last=(end-1)/stride+1;
     const auto path=base+"/waveform?source_key="+preparedManifest.at("source_key").get<std::string>()+"&timeline="+capture.at("timeline_id").get<std::string>()+
         "&level="+std::to_string(level)+"&start="+std::to_string(first)+"&count="+std::to_string(last-first);
@@ -122,8 +127,8 @@ void Workspace::loadOverview(){
         return;
     }
     overviewDue={};if(!overviewBins.empty())return;
-    int level=0;Frame stride=4096;while((editor.total+stride-1)/stride>2048){++level;stride*=2;}
-    const Frame count=(editor.total+stride-1)/stride;
+    int level=0;Frame stride=4096;while(prepared::ceilDivPositive(editor.total,stride)>2048){++level;stride*=2;}
+    const Frame count=prepared::ceilDivPositive(editor.total,stride);
     const auto path=(frozen?endpoint(sourceLibrary)+"/captures/"+capture.at("id").get<std::string>()+"/audio":audioEndpoint())+"/waveform?source_key="+source.at("source_key").get<std::string>()+"&timeline="+capture.at("timeline_id").get<std::string>()+
         "&level="+std::to_string(level)+"&start=0&count="+std::to_string(count);
     client->submit({"source-waveform","GET",path,{{"source_key",source.at("source_key")},{"timeline_id",capture.at("timeline_id")},
@@ -382,7 +387,14 @@ std::optional<Span> Workspace::audioCoverage()const{
     try{
         if(!capture.is_object()||!preparedManifest.is_object()||descriptorPath!=audioEndpoint())return {};
         if(preparedManifest.at("capture").at("id")!=capture.at("id")||preparedManifest.at("timeline_id")!=capture.at("timeline_id")||
-           prepared::integer(preparedManifest.at("sample_rate"))!=rate||prepared::integer(preparedManifest.at("frame_count"))!=editor.total)return {};
+           preparedManifest.at("capture").at("blob_sha256")!=capture.at("blob_sha256")||
+           prepared::integer(preparedManifest.at("sample_rate"))!=rate||prepared::integer(preparedManifest.at("frame_count"))!=editor.total||
+           prepared::integer(preparedManifest.at("channels"))!=prepared::integer(capture.at("timeline").at("channels"))||
+           preparedManifest.at("sample_format")!=capture.at("timeline").at("sample_format"))return {};
+        const prepared::NativeTimeline clock{prepared::integer(preparedManifest.at("sample_rate")),
+            prepared::integer(preparedManifest.at("channels")),prepared::integer(preparedManifest.at("frame_count")),
+            prepared::sampleType(preparedManifest.at("sample_format").get<std::string>())};
+        clock.validate();
         const auto coverage=preparedManifest.value("coverage",Json{{"start_frame",0},{"end_frame",editor.total}});
         Span span{prepared::integer(coverage.at("start_frame")),prepared::integer(coverage.at("end_frame"))};
         if(span.start<0||span.end>editor.total||span.end<=span.start)return {};
@@ -390,8 +402,19 @@ std::optional<Span> Workspace::audioCoverage()const{
     }catch(const std::exception&){return {};}
 }
 bool Workspace::audioReady()const{
-    return audioCoverage().has_value()&&nativePlayback&&nativePlayback->reference()==descriptorPath&&
-        nativePlayback->descriptor().is_object()&&nativePlayback->descriptor().value("source_key",Json())==preparedManifest.value("source_key",Json())&&preparedManifest.contains("source_key");
+    const auto expected=audioCoverage();
+    if(!expected||!nativePlayback||!nativePlayback->session()||nativePlayback->reference()!=descriptorPath||
+       !nativePlayback->state().error.empty()||nativePlayback->state().rate!=rate||nativePlayback->state().frames!=editor.total)return false;
+    try{
+        const auto& loaded=nativePlayback->descriptor();
+        if(!loaded.is_object()||loaded.at("source_key")!=preparedManifest.at("source_key")||
+           loaded.at("timeline_id")!=preparedManifest.at("timeline_id")||
+           loaded.at("capture").at("id")!=capture.at("id")||loaded.at("capture").at("blob_sha256")!=capture.at("blob_sha256")||
+           loaded.at("sample_rate")!=preparedManifest.at("sample_rate")||loaded.at("frame_count")!=preparedManifest.at("frame_count")||
+           loaded.at("channels")!=preparedManifest.at("channels")||loaded.at("sample_format")!=preparedManifest.at("sample_format"))return false;
+        const auto span=loaded.value("coverage",Json{{"start_frame",0},{"end_frame",editor.total}});
+        return prepared::integer(span.at("start_frame"))==expected->start&&prepared::integer(span.at("end_frame"))==expected->end;
+    }catch(const std::exception&){return false;}
 }
 Span Workspace::monitorRange()const{
     const auto coverage=audioCoverage();
@@ -402,12 +425,30 @@ Span Workspace::monitorRange()const{
 }
 void Workspace::closeNativeSession(){
     stopTransport(false);
-    if(nativePlayback&&nativePlayback!=incomingPlayback)nativePlayback->stop();
+    std::exception_ptr closingError;
+    try{if(nativePlayback&&nativePlayback!=incomingPlayback)nativePlayback->stop();}
+    catch(...){closingError=std::current_exception();}
     nativeSession.reset();nativePlayback.reset();sharedPlayerSession=false;
+    if(closingError)std::rethrow_exception(closingError);
 }
 void Workspace::resetNativeSession(){
     closeNativeSession();
-    if(incomingPlayback&&incomingPlayback->reference()==audioEndpoint()&&incomingPlayback->descriptor().is_object()&&incomingPlayback->descriptor().at("source_key")==preparedManifest.at("source_key")){
+    const auto incomingMatches=[&]{
+        if(!incomingPlayback||incomingPlayback->reference()!=audioEndpoint()||!incomingPlayback->descriptor().is_object()||
+           !incomingPlayback->session()||!incomingPlayback->state().error.empty())return false;
+        try{
+            const auto& incoming=incomingPlayback->descriptor();
+            for(const char* field:{"source_key","timeline_id","sample_rate","frame_count","channels","sample_format"})
+                if(incoming.at(field)!=preparedManifest.at(field))return false;
+            if(incoming.at("capture").at("id")!=capture.at("id")||
+               incoming.at("capture").at("blob_sha256")!=capture.at("blob_sha256"))return false;
+            const auto coverage=audioCoverage();
+            const auto span=incoming.value("coverage",Json{{"start_frame",0},{"end_frame",editor.total}});
+            return coverage&&prepared::integer(span.at("start_frame"))==coverage->start&&
+                prepared::integer(span.at("end_frame"))==coverage->end;
+        }catch(const std::exception&){return false;}
+    };
+    if(incomingMatches()){
         nativePlayback=std::move(incomingPlayback);sharedPlayerSession=!incomingPrefetched;incomingPrefetched=false;
     }else{
         if(incomingPlayback)incomingPlayback->stop();incomingPlayback.reset();
@@ -475,6 +516,7 @@ void Workspace::process(){
     if(!client)return;
     for(auto& reply:client->collect()){
         const auto& tag=reply.request.tag;
+        try{
         if(!current(reply.request))continue;
         if(tag=="command"||tag=="native-save-hash")for(auto& entry:pending)
             if(entry.at("command").at("request_id")==reply.request.body.at("request_id"))entry["sending"]=false;
@@ -529,16 +571,30 @@ void Workspace::process(){
         else if(tag=="source-waveform"){
             const auto& context=reply.request.body;
             const bool full=context.at("overview");
-            auto& bins=full?overviewBins:context.value("context",false)?contextBins:detailBins;bins.clear();if(full)overview=context;
+            auto& bins=full?overviewBins:context.value("context",false)?contextBins:detailBins;
             const Frame channels=context.at("channels"),step=context.at("frames_per_bin");
-            Frame at=context.at("start_bin").get<Frame>()*step;
+            if(channels<1||channels>32||step<=0||reply.pcm.size()%(static_cast<size_t>(channels)*2)!=0)
+                throw std::runtime_error("Prepared waveform reply has invalid channel or bin dimensions.");
+            const auto binCount=reply.pcm.size()/(static_cast<size_t>(channels)*2);
+            const Frame firstBin=prepared::integer(context.at("start_bin"));
+            if(binCount>8192||firstBin<0||firstBin>editor.total/step||
+               binCount>static_cast<uint64_t>((INT64_MAX-firstBin*step)/step))
+                throw std::runtime_error("Prepared waveform frame offset overflows the source clock.");
+            // Validate and build new peaks without discarding the last good
+            // waveform if one reply is malformed or allocation fails.
+            std::vector<PeakBin> staged;staged.reserve(binCount);
+            Json nextOverview;if(full)nextOverview=context;
+            Frame at=firstBin*step;
             for(size_t i=0;i<reply.pcm.size();i+=static_cast<size_t>(channels)*2){
                 double low=reply.pcm[i],high=reply.pcm[i+1],rightLow=low,rightHigh=high;
                 if(channels==2){rightLow=reply.pcm[i+2];rightHigh=reply.pcm[i+3];}
                 else for(Frame c=1;c<channels;++c){low=std::min(low,static_cast<double>(reply.pcm[i+c*2]));high=std::max(high,static_cast<double>(reply.pcm[i+c*2+1]));rightLow=low;rightHigh=high;}
-                bins.push_back({at,std::min(editor.total,at+step),low,high,rightLow,rightHigh});at+=step;
+                if(!std::isfinite(low)||!std::isfinite(high)||!std::isfinite(rightLow)||!std::isfinite(rightHigh)||
+                   low>high||rightLow>rightHigh)throw std::runtime_error("Prepared waveform has invalid extrema.");
+                staged.push_back({at,std::min(editor.total,at+step),low,high,rightLow,rightHigh});at+=step;
             }
-            ++waveformRevision;
+            if(full)overview.swap(nextOverview);
+            bins.swap(staged);++waveformRevision;
         }
         else if(tag=="timing"){
             timing=reply.body;anchors.clear();onsets.clear();gridId.clear();gridRevision=0;
@@ -619,6 +675,12 @@ void Workspace::process(){
                 browse();
             }
             persist();
+        }
+        }catch(const std::exception& e){
+            // One malformed response must not drop unrelated completed
+            // commands, saves or descriptors collected in the same batch.
+            notice="Backend "+tag+" reply rejected: "+e.what();
+            debuglog::write("editor.reply.error",notice);
         }
     }
 }

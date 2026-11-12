@@ -122,7 +122,8 @@ cursor survive restart. See [sampling workflow](docs/sampling.md).
 Compact diagnostics default to on. `player-debug.log` rotates at 1 MiB with
 one backup. It records playback/preparation waits, HTTP queue/header/total times,
 request identity, cancellation and errors. Credentials and request bodies are
-excluded. See [diagnostics](docs/diagnostics.md).
+excluded. See [diagnostics](docs/diagnostics.md) and the
+[memory-repair findings and verification ledger](docs/memory-repair-verification.md).
 
 ```powershell
 ctest --test-dir build/Release --output-on-failure

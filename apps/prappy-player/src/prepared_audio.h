@@ -38,6 +38,11 @@ struct SourceRef {
     std::string endpoint()const {validate();return "/v1/libraries/"+library+"/captures/"+capture+"/audio";}
     bool operator==(const SourceRef&)const=default;
 };
+// Avoid count + chunk - 1: a valid int64 source can overflow that sum.
+inline Frame ceilDivPositive(Frame count,Frame chunk){
+    if(count<0||chunk<=0)throw std::runtime_error("Invalid native waveform span.");
+    return count/chunk+(count%chunk!=0);
+}
 inline Frame scaleFloor(Frame frame,int64_t fromRate,int64_t toRate) {
     if(frame<0||fromRate<=0||fromRate>768000||toRate<=0||toRate>768000)
         throw std::runtime_error("Invalid source frame conversion.");

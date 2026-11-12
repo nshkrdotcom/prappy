@@ -80,11 +80,15 @@ public:
         }
         SDL_AudioSpec output{};int frames=0;
         if(SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(stream),&output,&frames)&&output.freq>0)deviceFrames=static_cast<Frame>(std::ceil(static_cast<double>(frames)*nativeRate/output.freq));
+        std::shared_ptr<const Buffer> previous,previousNext,previousRetired;
         SDL_PauseAudioStreamDevice(stream);SDL_LockAudioStream(stream);SDL_ClearAudioStream(stream);
         if(!SDL_SetAudioStreamFormat(stream,&spec,nullptr)){
             SDL_UnlockAudioStream(stream);throw std::runtime_error(SDL_GetError());
         }
-        current=std::move(block);next.reset();retired.reset();range=span;initial=feeding=cursor;submitted=0;repeat=loop;paused=startPaused;done=starved=false;lastFeed=SDL_GetTicksNS();
+        // Never free potentially multi-megabyte native blocks while the SDL
+        // callback is locked. Reclaim old owners on the UI thread afterwards.
+        previous=std::move(current);previousNext=std::move(next);previousRetired=std::move(retired);
+        current=std::move(block);range=span;initial=feeding=cursor;submitted=0;repeat=loop;paused=startPaused;done=starved=false;lastFeed=SDL_GetTicksNS();
         fill(stream,static_cast<int>((scratch.size()*sizeof(float))));
         SDL_UnlockAudioStream(stream);if(!paused)SDL_ResumeAudioStreamDevice(stream);
     }
@@ -126,11 +130,19 @@ public:
             if(retired&&contains(*retired,cursor))current.swap(retired);
             else if(next&&contains(*next,cursor))current.swap(next);
         }
-        SDL_ClearAudioStream(stream);repeat=value;initial=feeding=std::min(cursor,range.end-1);submitted=0;done=starved=false;next.reset();lastFeed=SDL_GetTicksNS();
+        std::shared_ptr<const Buffer> oldNext;
+        SDL_ClearAudioStream(stream);repeat=value;initial=feeding=std::min(cursor,range.end-1);submitted=0;done=starved=false;oldNext=std::move(next);lastFeed=SDL_GetTicksNS();
         fill(stream,static_cast<int>((scratch.size()*sizeof(float))));
         SDL_UnlockAudioStream(stream);if(!paused)SDL_ResumeAudioStreamDevice(stream);
     }
-    void stop(){if(stream){SDL_PauseAudioStreamDevice(stream);SDL_LockAudioStream(stream);SDL_ClearAudioStream(stream);current.reset();next.reset();retired.reset();paused=false;SDL_UnlockAudioStream(stream);}}
+    void stop(){
+        if(!stream)return;
+        SDL_PauseAudioStreamDevice(stream);
+        std::shared_ptr<const Buffer> oldCurrent,oldNext,oldRetired;
+        SDL_LockAudioStream(stream);SDL_ClearAudioStream(stream);
+        oldCurrent=std::move(current);oldNext=std::move(next);oldRetired=std::move(retired);
+        paused=false;SDL_UnlockAudioStream(stream);
+    }
     void gain(float value){if(stream)SDL_SetAudioStreamGain(stream,value);}
 };
 }
