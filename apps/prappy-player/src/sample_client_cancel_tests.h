@@ -173,6 +173,19 @@ inline void sampleClientCancellationTests(std::ostream& log) {
         require(rejected,"Sampling pending request queue exceeded its 512-request bound.");
     }
     {
+        std::promise<void> recovered;
+        std::atomic<int> notifications=0;
+        Connection connection;connection.token=std::string(32,'x');
+        Client client(connection,[&]{if(++notifications==1)throw 17;recovered.set_value();},
+            [](const Connection&,const Request&,std::stop_token){return Reply{};});
+        Request command;command.tag="command";command.method="POST";command.path="/disposable";
+        client.submit(command);client.submit(command);
+        require(recovered.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready,
+            "Throwing notification killed the HTTP worker or retained its callback lock.");
+        require(client.collect().size()==2,"Throwing notification discarded completed HTTP replies.");
+        log<<"PASS nonstandard callback failure preserves HTTP workers and completed replies\n";
+    }
+    {
         std::promise<void> completed;
         std::atomic<size_t> notifications=0;
         Connection connection;connection.token=std::string(32,'x');

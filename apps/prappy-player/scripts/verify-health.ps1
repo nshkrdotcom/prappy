@@ -1,17 +1,25 @@
 #Requires -Version 7.0
 param([Parameter(Mandatory)][string]$Manifest,[Parameter(Mandatory)][string]$StateSource,[switch]$SkipBuild,[switch]$VerifyCommands, [ValidateRange(1,10)][int]$Repetitions=2,
-    [ValidatePattern('^[A-Za-z0-9-]*$')][string]$VariantSuffix='')
+    [ValidatePattern('^[A-Za-z0-9-]*$')][string]$VariantSuffix='',
+    [ValidateSet('Release','Debug','Debug-Asan')][string[]]$Variants=@('Release','Debug','Debug-Asan'))
 $ErrorActionPreference='Stop'
 $app = Split-Path $PSScriptRoot -Parent
+$releaseSuffix=if($VariantSuffix){'Memory-'+$VariantSuffix}else{'Memory'}
 if (!$SkipBuild) {
-    & "$PSScriptRoot/build.ps1" -VariantSuffix $VariantSuffix
-    & "$PSScriptRoot/build.ps1" -Analyze -VariantSuffix $VariantSuffix
+    & "$PSScriptRoot/build.ps1" -Config Release -VariantSuffix $releaseSuffix
+    & "$PSScriptRoot/build.ps1" -Config Debug -Analyze -VariantSuffix $VariantSuffix
     & "$PSScriptRoot/build.ps1" -Config Debug -VariantSuffix $VariantSuffix
-    & "$PSScriptRoot/build.ps1" -Asan -VariantSuffix $VariantSuffix
+    & "$PSScriptRoot/build.ps1" -Config Debug -Asan -VariantSuffix $VariantSuffix
 }
 $out = Join-Path $app 'build/health'
 New-Item -ItemType Directory -Force $out | Out-Null
 $previousReport = $env:PRAPPY_LEAK_REPORT
+# UI helpers use script-scoped process/input state. Give each verifier its own
+# PowerShell script scope, including its native type definitions and callbacks.
+function Invoke-Verifier([string]$Name, [object[]]$Arguments) {
+    & pwsh -NoProfile -File (Join-Path $PSScriptRoot $Name) @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "$Name failed (exit $LASTEXITCODE)." }
+}
 function Require-LeakReport([string]$Path) {
     if (!(Test-Path -LiteralPath $Path) -or (Get-Content -LiteralPath $Path -Raw) -notmatch '^PASS no CRT leaks\s*$') {
         throw "Missing or failed CRT leak report: $Path"
@@ -20,13 +28,14 @@ function Require-LeakReport([string]$Path) {
 }
 try {
     # Static analysis is a compile-time check; exercise Release behavior once.
-    foreach ($variant in @('Release','Debug','Release-Asan')) {
+    foreach ($variant in $Variants) {
         $buildVariant = $variant
-        if ($VariantSuffix) { $buildVariant += "-$VariantSuffix" }
+        if ($variant -eq 'Release') { $buildVariant += "-$releaseSuffix" }
+        elseif ($VariantSuffix) { $buildVariant += "-$VariantSuffix" }
         for ($cycle=1; $cycle -le $Repetitions; $cycle++) {
             $report = Join-Path $out "$variant-playback-$cycle-$([Guid]::NewGuid().ToString('N')).log"
             $env:PRAPPY_LEAK_REPORT = $report
-            & "$PSScriptRoot/test-state.ps1" -BuildVariant $buildVariant
+            Invoke-Verifier 'test-state.ps1' @('-BuildVariant', $buildVariant)
             if ($variant -eq 'Debug') { Require-LeakReport $report }
         }
         $report = Join-Path $out "$variant-sampling-$([Guid]::NewGuid().ToString('N')).log"
@@ -38,20 +47,22 @@ try {
         if ($variant -eq 'Debug') { Require-LeakReport "$report.crt" }
         $report = Join-Path $out "$variant-ui-$([Guid]::NewGuid().ToString('N')).log"
         $env:PRAPPY_LEAK_REPORT = $report
-        & "$PSScriptRoot/verify-native-editor.ps1" -Manifest $Manifest -BuildVariant $buildVariant -VerifySaveExport -VerifyCommands:$VerifyCommands
+        $editorArguments = @('-Manifest', $Manifest, '-BuildVariant', $buildVariant, '-VerifySaveExport')
+        if ($VerifyCommands) { $editorArguments += '-VerifyCommands' }
+        Invoke-Verifier 'verify-native-editor.ps1' $editorArguments
         if ($variant -eq 'Debug') { Require-LeakReport $report }
         $report = Join-Path $out "$variant-features-$([Guid]::NewGuid().ToString('N')).log"
         $env:PRAPPY_LEAK_REPORT = $report
-        & "$PSScriptRoot/verify-features.ps1" -StateSource $StateSource -BuildVariant $buildVariant
+        Invoke-Verifier 'verify-features.ps1' @('-StateSource', $StateSource, '-BuildVariant', $buildVariant)
         if ($variant -eq 'Debug') { Require-LeakReport $report }
         $report = Join-Path $out "$variant-window-$([Guid]::NewGuid().ToString('N')).log"
         $env:PRAPPY_LEAK_REPORT = $report
-        & "$PSScriptRoot/verify-window.ps1" -BuildVariant $buildVariant
+        Invoke-Verifier 'verify-window.ps1' @('-BuildVariant', $buildVariant)
         if ($variant -eq 'Debug') { Require-LeakReport $report }
         $report = Join-Path $out "$variant-relaunch-$([Guid]::NewGuid().ToString('N')).log"
         # Only Debug builds emit CRT reports; the relaunch check validates both exits.
         $env:PRAPPY_LEAK_REPORT = if ($variant -eq 'Debug') { $report } else { $null }
-        & "$PSScriptRoot/verify-relaunch.ps1" -BuildVariant $buildVariant
+        Invoke-Verifier 'verify-relaunch.ps1' @('-BuildVariant', $buildVariant)
         if ($variant -eq 'Debug') { Require-LeakReport $report }
     }
 } finally { $env:PRAPPY_LEAK_REPORT = $previousReport }

@@ -223,6 +223,7 @@ void Workspace::stash(){
     if(!activeDraft.empty())sampleLibrary.edit(sourceRef(),activeDraft,draftValue());
     ws.active=activeDraft;
     ws.view={{"capture",capture},{"viewport_start",viewportStart},{"viewport_end",viewportEnd},{"snap",snapMode},
+        {"span_start",editor.span.start},{"span_end",editor.span.end},
         {"loop",transport.loop},{"scope",static_cast<int>(transport.scope)},{"follow",transport.follow},
         {"amplitude_mode",static_cast<int>(amplitude.mode)},{"amplitude_gain",amplitude.gain},{"cursor",transport.cursor}};
 }
@@ -292,7 +293,7 @@ void Workspace::restore(){
     capture=ws.view.at("capture");
     if(capture.at("id")!=source.capture||capture.at("timeline_id")!=source.timeline||capture.at("timeline").at("frame_count")!=ws.total)throw std::runtime_error("Workspace capture does not match its canonical source.");
     rate=capture.at("timeline").at("sample_rate");transport.rate=rate;
-    editor.reset(ws.total,{0,std::min<Frame>(rate*4,ws.total)});
+    editor.reset(ws.total,{ws.view.value("span_start",Frame{0}),ws.view.value("span_end",std::min<Frame>(rate*4,ws.total))});
     transport.scope=static_cast<PlaybackScope>(ws.view.value("scope",0));transport.loop=ws.view.value("loop",true);transport.follow=ws.view.value("follow",false);
     snapMode=ws.view.value("snap",0);amplitude.mode=static_cast<AmplitudeMode>(ws.view.value("amplitude_mode",0));amplitude.gain=AmplitudeScale::bounded(ws.view.value("amplitude_gain",1.));
     if(!ws.active.empty())activateDraft(ws.active);
@@ -404,7 +405,7 @@ std::optional<Span> Workspace::audioCoverage()const{
 bool Workspace::audioReady()const{
     const auto expected=audioCoverage();
     if(!expected||!nativePlayback||!nativePlayback->session()||nativePlayback->reference()!=descriptorPath||
-       !nativePlayback->state().error.empty()||nativePlayback->state().rate!=rate||nativePlayback->state().frames!=editor.total)return false;
+       nativePlayback->state().rate!=rate||nativePlayback->state().frames!=editor.total)return false;
     try{
         const auto& loaded=nativePlayback->descriptor();
         if(!loaded.is_object()||loaded.at("source_key")!=preparedManifest.at("source_key")||

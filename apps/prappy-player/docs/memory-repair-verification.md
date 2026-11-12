@@ -64,3 +64,80 @@ These portable results test relevant real production logic with controlled fake 
 **Known limitations, not confirmed regressions:** Windows-only lifetimes need native compilation and concurrency/reproduction evidence; the impact of releasing large PCM owners just outside the SDL lock must be measured with a real device. HTTP lease cleanup is intentionally bounded and may rely on backend TTL when queues are saturated; test server behavior. A third-party native callback that throws a non-`std::exception`, incomplete DbgEng symbol setup or a malformed multi-gigabyte dump requires incident-specific verification. The UI `llround` coordinates from plot gesture input and other backend-driven JSON layout sizes warrant fuzz/ASan review if a real failing input emerges. None of these uncertainties is presented as a proven leak.
 
 No Git commit, push, Windows installer, third-party dependency download, genuine audio playback, or signing was performed in this sandbox.
+
+
+## Windows integration — 2026-11-11
+
+This section supersedes the Linux snapshot's pending Windows status above. The
+original incident is preserved; the source findings alone do not establish that
+incident's root cause. Validation uses generated Opus/WAV media and an isolated
+WSL backend on port 18861, never the production library or port 8765.
+
+Evidence root: `build/memory-validation-20261111-165240` (also recorded in
+`build/memory-validation-current.txt`). It contains the previous installed
+package/state, preserved incidents, exact build/test logs and Code Integrity
+launch failures. Existing build-ID symbol archives remain under LocalAppData.
+Build logs show the actual compiler/toolchain and development signature checks.
+
+Additional implemented corrections:
+
+- Persist the cue preview's native selection range even when no draft exists;
+  previously a restart reset it to the first four seconds. Add a real workspace
+  persistence regression and verify repeated random-position editor restarts.
+- Keep source readiness independent of a recoverable transport error, retaining
+  all identity, clock, format, session and coverage checks. Verify failed PCM
+  playback can explicitly retry instead of becoming permanently unavailable.
+- Update native fixtures to supply the required hash/channel/format identity;
+  reuse retained PCM in the integration test instead of adopting duplicates.
+- Remove MSVC analysis-reported oversized stack allocations from leak reporting
+  and handoff tests. Leak-report path storage uses the process heap and is freed
+  before CRT enumeration, so the instrumentation does not count itself.
+- Validate mapped dump headers, directory and stream extents before DbgEng or
+  DbgHelp access; use aligned exception-stream copies. A truncated dump returns
+  a visible error instead of reading outside its mapping.
+- Fence nonstandard HTTP completion-notification exceptions at the worker
+  boundary. The regression throws from one notification, then confirms the
+  worker delivers the next notification and retains both completed replies.
+- Run health verifiers in separate PowerShell processes: their script-scoped
+  process/input variables otherwise escape into the parent runner and readiness
+  checks can time out despite a ready application. Release validation uses
+  `Release-Memory`, preserving the installed `Release` directory. ASan validation
+  selects the built `Debug-Asan` variant. `-Variants` supports targeted resumes.
+- Record private bytes, kernel/GDI/USER handles and accounted PCM/budget at each
+  editor iteration, failing if the PCM budget is exceeded.
+
+Executed commands (from the repository root; scripts consume the generated
+absolute manifest/state paths):
+
+| Result | Native Windows check |
+| --- | --- |
+| PASS | `pwsh apps/prappy-player/scripts/build.ps1 -Config Debug`; signed MSVC x64 build; `ctest --test-dir apps/prappy-player/build/Debug --output-on-failure`: 6/6. |
+| PASS | `pwsh apps/prappy-player/scripts/build.ps1 -Config Release -VariantSuffix Memory`; signed build; CTest in `build/Release-Memory`: 5/5. |
+| PASS | `scripts/test-state.ps1 -BuildVariant Debug` and `Release-Memory`: native ownership, scan cancellation/coalescing, 512-message pending/completed bounds, handoff, persistence, source readiness, SDL playback and history checks. |
+| PASS | `scripts/build.ps1 -Config Debug -Analyze`: MSVC analysis after fixing C6262 findings, without suppressing warnings. |
+| PASS with launch retry | `scripts/build.ps1 -Config Debug -Asan`; ASan state suite passed. CTest initially could not start `prepared_audio`; the unchanged executable and targeted CTest both passed on retry. This was a launch failure, not a sanitizer finding. |
+| PASS | `scripts/test-crash-reporting.ps1 -BuildVariant Debug`: original throw/fault symbol correlation; native faults, worker, ImGui and hang reports; full-memory mapped snapshot; visible disk failures/retry; idempotency and bounded retention. Disposable collector port 19877. |
+| PASS | `scripts/verify-relaunch.ps1 -BuildVariant Debug`: old/new window cleanup overlap and independent disposable instance locks. |
+| PASS | `scripts/verify-native-editor.ps1 -Manifest <fixture> -BuildVariant Debug -VerifySaveExport -VerifyCommands`: exact native frame/identity save/export and committed-save reply-loss recovery. |
+| PASS | Same editor verifier with `-Iterations 10 -EvictSourcePages -InjectAnalysisPending -InjectCatalogOffline`: random-position handoff and restored preview ranges after the persistence fix. |
+| PASS | Health runner Release-Memory and Debug: native sampling integration, editor save/export/retry, feature/window/relaunch suites. All required Debug CRT reports say `PASS no CRT leaks`. |
+| PASS | Truncated minidump CLI analysis exits 1 with `Truncated minidump header.`; no crash. |
+
+Intermittent Application Control failures are preserved as failures in the logs,
+not sanitizer passes. Authenticode validation alone did not prevent them. The
+unchanged Debug state executable subsequently passed; no certificate purchase,
+security-policy change or replacement trust configuration was required.
+
+Remaining boundaries: AppVerifier's optional elevated query was declined by the
+user and was not retried; PageHeap was not enabled. Automated checks do not prove
+all schedules race-free or substitute for physical sound-card unplug/restart,
+a multi-hour soak, exact callback-deadline measurements, every low-memory/disk
+failure interleaving or a multi-gigabyte corrupt-dump fuzz campaign. No claim of
+those checks passing is made. The full-memory dump and storage retry checks above
+are the actual executed coverage, not a simulation of arbitrary disk exhaustion.
+
+Final updated-code rerun: Debug CTest 6/6 and Release-Memory CTest 5/5,
+all three state suites, and the complete Debug-Asan health suite passed. ASan
+CTest also passed all six tests across the initial run and unchanged-binary
+retries (two launches initially returned BAD_COMMAND). See `final-*.log`,
+`final-ctest-asan-retry.log` and `health-asan-final.log` in the evidence root.

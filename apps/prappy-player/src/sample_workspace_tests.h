@@ -20,7 +20,7 @@ struct WorkspaceReadinessTests {
         reject(); // Restored draft before its descriptor arrives.
         workspace.descriptorPath=workspace.audioEndpoint();
         const Json valid={{"capture",originalCapture},{"timeline_id",originalCapture.at("timeline_id")},
-            {"sample_rate",workspace.rate},{"frame_count",workspace.editor.total},{"source_key",std::string(64,'a')}};
+            {"sample_rate",workspace.rate},{"frame_count",workspace.editor.total},{"channels",2},{"sample_format","float32"},{"source_key",std::string(64,'a')}};
         workspace.preparedManifest=valid;require(workspace.audioCoverage().has_value());reject(); // Descriptor alone is not a playback owner.
         for(const auto& field:{"timeline_id","sample_rate","frame_count"}){
             workspace.preparedManifest=valid;workspace.preparedManifest[field]=nullptr;require(!workspace.audioCoverage());reject();
@@ -45,6 +45,11 @@ struct WorkspaceReadinessTests {
         workspace.nativePlayback=std::make_shared<NativePlayback>(Connection{},workspace.pcmBudget,[]{},offline);
         workspace.nativePlayback->load(workspace.descriptorPath,originalCapture.at("id"),std::string(64,'b'),true,0,ready);
         require(workspace.audioReady());workspace.beginAudition(audio);require(workspace.transport.state==PlaybackState::Loading);
+        const auto errorDeadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+        while(workspace.nativePlayback->state().error.empty()&&std::chrono::steady_clock::now()<errorDeadline){workspace.nativePlayback->tick();SDL_Delay(1);}
+        require(!workspace.nativePlayback->state().error.empty());
+        require(workspace.audioReady()); // Transport failure does not invalidate a verified source.
+        workspace.beginAudition(audio);require(workspace.nativePlayback->state().error.empty()&&workspace.transport.state==PlaybackState::Loading);
         workspace.preparedManifest["source_key"]=std::string(64,'c');reject(); // A different version cannot reuse this owner.
         workspace.closeNativeSession();workspace.preparedManifest=nullptr;
         workspace.transport.cursor=originalCursor;
@@ -57,8 +62,8 @@ inline void sampleWorkspaceTests(const std::filesystem::path& root,std::ostream&
     const SourceRef source{"lib_"+std::string(32,'a'),"cap_"+std::string(32,'b'),"tl_"+std::string(32,'c')};
     const Frame rate=44100,total=rate*10;
     const auto directory=root/"restored-native-editor";std::filesystem::create_directories(directory);
-    const Json capture={{"id",source.capture},{"timeline_id",source.timeline},
-        {"timeline",{{"frame_count",total},{"sample_rate",rate}}},{"recording",{{"title","Saved sample"}}}};
+    const Json capture={{"id",source.capture},{"blob_sha256",std::string(64,'b')},{"timeline_id",source.timeline},
+        {"timeline",{{"frame_count",total},{"sample_rate",rate},{"channels",2},{"sample_format","float32"}}},{"recording",{{"title","Saved sample"}}}};
     SampleLibrary samples;auto& ws=samples.open(source,total);
     samples.select(source,{{rate*2+1000,rate*2+2000},{{"name","Saved draft"}}},"restored-draft");
     ws.view={{"capture",capture},{"viewport_start",rate*2},{"viewport_end",rate*3},{"cursor",rate*2+1500}};
@@ -90,5 +95,15 @@ inline void sampleWorkspaceTests(const std::filesystem::path& root,std::ostream&
     auto reopened=std::make_unique<Workspace>(directory,[]{});
     require(!Json::parse(reopened->diagnostics()).at("open").get<bool>(),"Restart ignored persisted player mode.");
     require(Json::parse(reopened->diagnostics()).at("playhead")==rate*2+1500,"Returning to player lost the saved cursor.");
+    const auto previewDirectory=root/"restored-preview-range";fs::create_directories(previewDirectory);
+    SampleLibrary previews;auto& preview=previews.open(source,total);
+    preview.view={{"capture",capture},{"span_start",rate*5},{"span_end",rate*9},{"cursor",rate*6}};
+    auto previewState=Json::parse(stateio::read(directory/"sample-workspaces.json"));
+    previewState["workspaces"]=previews.json();previewState["active_source"]=source.json();previewState["open"]=true;
+    stateio::write(previewDirectory/"sample-workspaces.json",previewState.dump());
+    Workspace restoredPreview(previewDirectory,[]{});
+    const auto restoredState=Json::parse(restoredPreview.diagnostics());
+    require(!restoredState.at("selection_defined").get<bool>()&&restoredState.at("start")==rate*5&&restoredState.at("end")==rate*9,
+        "Restart discarded the cue preview range without an active draft.");
     log<<"PASS native editor drafts and cursor restore offline without a second audio cache\n";
 }

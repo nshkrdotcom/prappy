@@ -91,7 +91,7 @@ inline void nativeHandoffTests(const fs::path& root,std::ostream& log){
     freshPlayer();
     {
         auto pressure=memory.reserve(memory.limit()-memory.used()-4*1024*1024);
-        Workspace limited(trial,[]{},memory,transport);
+        auto limitedOwner=std::make_unique<Workspace>(trial,[]{},memory,transport);auto& limited=*limitedOwner;
         bool safe=true;try{limited.prefetch(audio,SecondsSpan{6.5,7.5});}catch(const std::exception&){safe=false;}
         require(safe&&audio.native->state().loaded&&memory.used()<=memory.limit(),"Speculative prefetch failed playback under memory pressure");
     }
@@ -103,7 +103,7 @@ inline void nativeHandoffTests(const fs::path& root,std::ostream& log){
             }
             return transport(c,request,stop);
         };
-        Workspace moving(trial,[]{},memory,slow);
+        auto movingOwner=std::make_unique<Workspace>(trial,[]{},memory,slow);auto& moving=*movingOwner;
         wait([&]{return blocked->load();},[&]{moving.prefetch(audio,SecondsSpan{6.5,7.5});},"Cancellable prefetch start");
         moving.prefetch(audio);
         require(Json::parse(moving.diagnostics()).at("prefetch_frames")==0,"Cancelled selection retained its speculative audio");
@@ -115,7 +115,7 @@ inline void nativeHandoffTests(const fs::path& root,std::ostream& log){
     }
     freshPlayer();
     {
-        Workspace switching(trial,[]{},memory,transport);
+        auto switchingOwner=std::make_unique<Workspace>(trial,[]{},memory,transport);auto& switching=*switchingOwner;
         wait([&]{return Json::parse(switching.diagnostics()).at("prefetch_ready").get<bool>();},[&]{switching.prefetch(audio,SecondsSpan{6.5,7.5});});
         const std::string otherCapture="cap_"+std::string(32,'6'),otherSha(64,'7');
         Client::Transport changed=[=](const Connection& c,const Request& request,std::stop_token stop){
@@ -144,7 +144,7 @@ inline void nativeHandoffTests(const fs::path& root,std::ostream& log){
             if(request.tag=="source-pcm"){++*started;while(!release->load()&&!stop.stop_requested())SDL_Delay(1);}
             return transport(c,request,stop);
         };
-        Workspace opening(trial,[]{},memory,pendingRead);
+        auto openingOwner=std::make_unique<Workspace>(trial,[]{},memory,pendingRead);auto& opening=*openingOwner;
         wait([&]{return started->load()>0;},[&]{opening.prefetch(audio,SecondsSpan{7.5,8});},"Overlapping prefetch start");
         opening.prefetch(audio,SecondsSpan{7.75,8});
         opening.mark(audio,SecondsSpan{7.75,8});
@@ -167,7 +167,7 @@ inline void nativeHandoffTests(const fs::path& root,std::ostream& log){
         recoveringAudio.native=std::make_shared<NativePlayback>(connection,memory,[]{},recovering);
         require(recoveringAudio.playNative(trial/"recovering.source",source,connection,true,0),"Peak recovery fixture failed");
         wait([&]{return recoveringAudio.loaded;},[&]{recoveringAudio.poll();});
-        Workspace repairing(trial,[]{},memory,recovering);repairing.mark(recoveringAudio);
+        auto repairingOwner=std::make_unique<Workspace>(trial,[]{},memory,recovering);auto& repairing=*repairingOwner;repairing.mark(recoveringAudio);
         wait([&]{return coarseAttempts->load()>=2&&analysisPolls->load()>0;},[&]{repairing.tick(recoveringAudio);},"Coarse peak regeneration");
         require(Json::parse(repairing.diagnostics()).at("pcm_frames").get<Frame>()>0,"Peak repair discarded authoritative editing PCM");
         repairing.returnToPlayer();recoveringAudio.resumeNative();

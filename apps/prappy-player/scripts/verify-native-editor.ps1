@@ -1,6 +1,13 @@
 param([Parameter(Mandatory)][string]$Manifest,[string]$BuildVariant='Release',
     [ValidateRange(1,100)][int]$Iterations=1,[switch]$EvictSourcePages,[switch]$InjectAnalysisPending,[switch]$InjectCatalogOffline,[switch]$VerifySaveExport,[switch]$VerifyCommands)
 $ErrorActionPreference='Stop'
+if(!('EditorMemoryNative' -as [type])){Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class EditorMemoryNative {
+ [DllImport("user32.dll")] public static extern uint GetGuiResources(IntPtr process,uint kind);
+}
+'@}
 $app=Split-Path $PSScriptRoot -Parent
 $fixture=Get-Content -LiteralPath $Manifest -Raw|ConvertFrom-Json
 if($VerifyCommands -and (!$VerifySaveExport -or !$fixture.generated_codec -or $fixture.url -match ':8765(/|$)')){throw 'Command/retry injection requires generated fixture media and save/export verification.'}
@@ -28,6 +35,11 @@ function Scroll-Editor([int]$Amount){
 function Stop-Player {
  if($process -and !$process.HasExited){$null=$process.CloseMainWindow();if(!$process.WaitForExit(5000)){Stop-Process -Id $process.Id}}
 }
+function Measure-EditorResources($ui){
+ $process.Refresh()
+ if($ui.Sample.pcm_bytes-gt $ui.Sample.pcm_budget_bytes){throw 'Editor exceeded its accounted PCM budget.'}
+ $resources.Add([pscustomobject]@{private_bytes=$process.PrivateMemorySize64;kernel_handles=$process.HandleCount;gdi_handles=[EditorMemoryNative]::GetGuiResources($process.Handle,0);user_handles=[EditorMemoryNative]::GetGuiResources($process.Handle,1);pcm_bytes=$ui.Sample.pcm_bytes;pcm_budget_bytes=$ui.Sample.pcm_budget_bytes})
+}
 try {
  if($InjectCatalogOffline){$fixtureHeaders=@{Authorization='Bearer '+[IO.File]::ReadAllText($fixture.token_file).Trim()};$null=Invoke-RestMethod -Method Post -Headers $fixtureHeaders -Uri ($fixture.gate_url+'/catalog-offline')}
  Start-Player
@@ -44,6 +56,8 @@ try {
  $ready=Wait-Ui {param($ui)$ui.Width-ge 1100 -and $ui.Height-ge 850 -and $ui.Sample.capture -and ($ui.Sample.pcm_selection_ready -and $ui.Sample.waveform_detail_bins -gt 0 -and $ui.Sample.waveform_stride -gt 0 -and $ui.Sample.waveform_stride -lt 4096) -and !$ui.Sample.mark_pending} 'native sample detail'
  $openMs=$clock.ElapsedMilliseconds
  $measurements=[Collections.Generic.List[long]]::new()
+ $resources=[Collections.Generic.List[object]]::new()
+ Measure-EditorResources $ready
  $measurements.Add($openMs)
  $rate=[long]$fixture.mark_capture.timeline.sample_rate
  if(($ready.Sample.end-$ready.Sample.start)-ne $rate*4 -or $ready.Sample.notice.Contains('exception')){throw 'Native editor source/rate or waveform failed.'}
@@ -60,6 +74,7 @@ try {
   Send-UiInput 'KEY CTRL 1';Send-UiInput 'KEY M 1';Send-UiInput 'KEY M 0';Send-UiInput 'KEY CTRL 0'
   $ready=Wait-Ui {param($ui)$ui.Width-ge 1100 -and $ui.Height-ge 850 -and $ui.Sample.capture -and ($ui.Sample.pcm_selection_ready -and $ui.Sample.waveform_detail_bins -gt 0 -and $ui.Sample.waveform_stride -gt 0 -and $ui.Sample.waveform_stride -lt 4096) -and !$ui.Sample.mark_pending} 'random-position native detail'
   $measurements.Add($clock.ElapsedMilliseconds)
+  Measure-EditorResources $ready
  }
  if($VerifyCommands){
   Click sample-classify
@@ -107,5 +122,5 @@ try {
  if($log-match 'tag=(hash|resolve|source-import|pcm|audition) '){throw 'Editor used retired source registration or raw PCM paths.'}
  $ordered=@($measurements|Sort-Object)
  $percentiles=@(.5,.95,.99)|ForEach-Object {$ordered[[Math]::Ceiling($_*$ordered.Count)-1]}
- [pscustomobject]@{result='PASS';open_ms=$openMs;open_ms_p50_p95_p99=$percentiles;iterations=$Iterations;advisory_eviction=[bool]$EvictSourcePages;commands_verified=[bool]$VerifyCommands;lost_save_reply_recovered=[bool]$VerifyCommands;sample_rate=$rate;capture=$ready.Sample.capture;audition_chunks=$playing.Sample.playback_chunks;state=$stateDirectory}|ConvertTo-Json
+ [pscustomobject]@{result='PASS';open_ms=$openMs;open_ms_p50_p95_p99=$percentiles;iterations=$Iterations;advisory_eviction=[bool]$EvictSourcePages;commands_verified=[bool]$VerifyCommands;lost_save_reply_recovered=[bool]$VerifyCommands;sample_rate=$rate;capture=$ready.Sample.capture;audition_chunks=$playing.Sample.playback_chunks;state=$stateDirectory;resource_samples=$resources.ToArray()}|ConvertTo-Json -Depth 4
 }finally{Stop-Player}

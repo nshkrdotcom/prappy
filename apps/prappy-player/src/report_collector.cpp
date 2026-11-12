@@ -10,6 +10,7 @@
 #include <vector>
 #include <algorithm>
 #include <wrl/client.h>
+#include <cstring>
 #include <json.hpp>
 namespace fs=std::filesystem;
 using Json=nlohmann::json;
@@ -39,14 +40,27 @@ struct WinsockSession {
 struct MappedDump {
     UniqueHandle file,mapping;
     void* view=nullptr;
+    size_t length=0;
     explicit MappedDump(const fs::path& path)
         :file(CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
                 nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)){
         if(!file.valid())throw std::runtime_error("Cannot open incident minidump.");
+        LARGE_INTEGER bytes{};
+        if(!GetFileSizeEx(file.get(),&bytes)||bytes.QuadPart<static_cast<LONGLONG>(sizeof(MINIDUMP_HEADER)))throw std::runtime_error("Truncated minidump header.");
+        length=static_cast<size_t>(bytes.QuadPart);
         mapping.handle=CreateFileMappingW(file.get(),nullptr,PAGE_READONLY,0,0,nullptr);
         if(!mapping.valid())throw std::runtime_error("Cannot map incident minidump.");
         view=MapViewOfFile(mapping.get(),FILE_MAP_READ,0,0,0);
         if(!view)throw std::runtime_error("Cannot view incident minidump.");
+        try{
+            MINIDUMP_HEADER header{};std::memcpy(&header,view,sizeof(header));
+            if(header.Signature!=MINIDUMP_SIGNATURE||header.StreamDirectoryRva>length||
+               header.NumberOfStreams>(length-header.StreamDirectoryRva)/sizeof(MINIDUMP_DIRECTORY))throw std::runtime_error("Invalid minidump stream directory.");
+            for(ULONG i=0;i<header.NumberOfStreams;++i){
+                MINIDUMP_DIRECTORY entry{};std::memcpy(&entry,static_cast<const char*>(view)+header.StreamDirectoryRva+static_cast<size_t>(i)*sizeof(entry),sizeof(entry));
+                if(entry.Location.Rva>length||entry.Location.DataSize>length-entry.Location.Rva)throw std::runtime_error("Minidump stream exceeds mapped file.");
+            }
+        }catch(...){UnmapViewOfFile(view);view=nullptr;throw;}
     }
     ~MappedDump(){if(view)UnmapViewOfFile(view);}
 };
@@ -168,8 +182,8 @@ void failureLocation(IDebugControl* control,IDebugSymbols* symbols,const fs::pat
     // virtual view instead of allocating and copying the entire dump to RAM.
     MappedDump bytes(dump);PMINIDUMP_DIRECTORY directory=nullptr;PVOID stream=nullptr;ULONG size=0;
     if(MiniDumpReadDumpStream(bytes.view,ExceptionStream,&directory,&stream,&size)&&size>=sizeof(MINIDUMP_EXCEPTION_STREAM)){
-        const auto* exception=static_cast<const MINIDUMP_EXCEPTION_STREAM*>(stream);
-        std::cout<<"Fault: code=0x"<<std::hex<<exception->ExceptionRecord.ExceptionCode<<std::dec<<" thread="<<exception->ThreadId<<"\n";
+        MINIDUMP_EXCEPTION_STREAM exception{};std::memcpy(&exception,stream,sizeof(exception));
+        std::cout<<"Fault: code=0x"<<std::hex<<exception.ExceptionRecord.ExceptionCode<<std::dec<<" thread="<<exception.ThreadId<<"\n";
         control->Execute(DEBUG_OUTCTL_IGNORE,".ecxr",DEBUG_EXECUTE_DEFAULT);
     }else std::cout<<"Live snapshot: no original exception context\n";
     DEBUG_STACK_FRAME frames[128]{};ULONG count=0;
@@ -240,6 +254,7 @@ int analyze(const fs::path& folder,const fs::path& root){
     debugSymbols->SetImagePath(search.c_str());
     HRESULT result=S_OK;
     if(fs::exists(folder/"crash.dmp")){
+        MappedDump validated(folder/"crash.dmp");
         result=client->OpenDumpFile((folder/"crash.dmp").string().c_str());if(SUCCEEDED(result))result=control->WaitForEvent(0,INFINITE);
         if(SUCCEEDED(result)){
             control->Execute(DEBUG_OUTCTL_IGNORE,".lines -e",DEBUG_EXECUTE_DEFAULT);

@@ -130,6 +130,7 @@ ctest --test-dir build/Release --output-on-failure
 pwsh scripts/test-state.ps1
 pwsh scripts/test-state.ps1 -BuildVariant Debug
 pwsh scripts/verify-native-editor.ps1 -Manifest C:\absolute\fixture.json
+pwsh scripts/verify-health.ps1 -Manifest C:\absolute\fixture.json -StateSource C:\absolute\fixture-state -VerifyCommands
 ```
 
 The state suite creates two short audio fixtures. Native backend/UI tests use

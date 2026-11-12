@@ -117,6 +117,7 @@ inline int integrationTest(const fs::path& manifestPath,const fs::path& logPath)
         const auto until=SDL_GetTicks()+2000;while(!preview.snapshot().finished&&SDL_GetTicks()<until)SDL_Delay(10);
         require(preview.snapshot().finished&&preview.snapshot().cursor==2000,"Live loop disable must drain once and end at Out");preview.stop();
         const auto segment=[&](Frame origin){
+            if(auto retained=native.find(origin))return retained;
             std::vector<float> values(2000,.1f);const auto data=std::as_bytes(std::span(values));
             auto item=std::make_shared<const prepared::Block>(prepared::NativeTimeline{44100,2,2000,prepared::SampleType::Float32},origin,1000,data);
             return native.adopt(item,memory.reserve(data.size()),"test","timeline",1);

@@ -394,6 +394,7 @@ class ClientExecutor {
                     std::lock_guard guard(state->notificationMutex);
                     if(state->notify)try{state->notify();}
                     catch(const std::exception& e){debuglog::write("backend.notify.error",e.what());}
+                    catch(...){debuglog::write("backend.notify.error","Completion notification threw a nonstandard exception.");}
                 }
             }
         }
