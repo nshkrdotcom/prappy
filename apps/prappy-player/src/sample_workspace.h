@@ -12,6 +12,7 @@
 #include <map>
 namespace sampling {
 class Workspace {
+    friend struct WorkspaceReadinessTests;
     struct PlayingSongMark {prepared::SourceRef source;std::string asset,timeline;Frame rate,frame;uint64_t ticket;bool submitted=false,failed=false;};
     std::optional<PlayingSongMark> pendingMark;
     Json preparedManifest;
@@ -60,6 +61,9 @@ class Workspace {
     bool fit=true,connectionAttempted=false;
     double viewportStart=0,viewportEnd=48000;
     Span monitorRange()const;
+    std::optional<Span> audioCoverage()const;
+    bool audioReady()const;
+    void selectAudioEndpoint(std::string);
     std::string audioEndpoint()const;
     void resetNativeSession();
     void closeNativeSession();
@@ -101,7 +105,7 @@ class Workspace {
     void metadataFields(const Json&);
     Json humanFacts(bool forSample=false)const;
     void beginAudition(Audio&,BoundaryCheck=BoundaryCheck::None,std::optional<Frame> = {},bool paused=false);
-    void stopTransport();
+    void stopTransport(bool rewind=true);
     void seekTransport(Audio&,Frame);
     void playbackOverlay();
     void process();

@@ -2,6 +2,55 @@
 #include "sample_workspace.h"
 #include <ostream>
 #include "imgui_internal.h"
+namespace sampling {
+struct WorkspaceReadinessTests {
+    static void run(Workspace& workspace,Audio& audio){
+        const auto require=[](bool ok){if(!ok)throw std::runtime_error("Editor audio readiness invariant failed.");};
+        const auto originalCapture=workspace.capture;
+        const auto originalSpan=workspace.editor.span;
+        const auto originalCursor=workspace.transport.cursor;
+        auto reject=[&]{
+            require(!workspace.audioReady());
+            workspace.toggleTransport(audio);
+            workspace.beginAudition(audio,BoundaryCheck::Start);
+            workspace.beginAudition(audio,BoundaryCheck::End);
+            workspace.seekTransport(audio,originalSpan.start);
+            require(!workspace.transport.engaged()&&workspace.editor.span==originalSpan&&workspace.capture==originalCapture);
+        };
+        reject(); // Restored draft before its descriptor arrives.
+        workspace.descriptorPath=workspace.audioEndpoint();
+        const Json valid={{"capture",originalCapture},{"timeline_id",originalCapture.at("timeline_id")},
+            {"sample_rate",workspace.rate},{"frame_count",workspace.editor.total},{"source_key",std::string(64,'a')}};
+        workspace.preparedManifest=valid;require(workspace.audioCoverage().has_value());reject(); // Descriptor alone is not a playback owner.
+        for(const auto& field:{"timeline_id","sample_rate","frame_count"}){
+            workspace.preparedManifest=valid;workspace.preparedManifest[field]=nullptr;require(!workspace.audioCoverage());reject();
+        }
+        workspace.preparedManifest=valid;workspace.preparedManifest["capture"]["id"]="wrong-source";require(!workspace.audioCoverage());reject();
+        workspace.preparedManifest=valid;workspace.preparedManifest["coverage"]={{"start_frame",10},{"end_frame",5}};require(!workspace.audioCoverage());reject();
+        workspace.preparedManifest=valid;workspace.descriptorPath+="/stale";require(!workspace.audioCoverage());reject();
+        workspace.preparedManifest=valid;workspace.transport.state=PlaybackState::Paused;
+        ++workspace.generation;workspace.selectAudioEndpoint(workspace.audioEndpoint());
+        require(workspace.preparedManifest.is_null()&&!workspace.transport.engaged()&&workspace.contextManifest.is_null());
+        Request stale{"capture","GET",workspace.descriptorPath,nullptr,workspace.generation-1,{}};
+        require(!workspace.current(stale));reject();
+        workspace.preparedManifest=nullptr;workspace.overviewDue=std::chrono::steady_clock::now();
+        workspace.transport.state=PlaybackState::Paused;workspace.closeNativeSession();require(!workspace.transport.engaged());
+        workspace.tick(audio);require(workspace.capture==originalCapture&&workspace.editor.span==originalSpan);
+        // Completing descriptor acquisition creates an owner for precisely that
+        // endpoint/key. No physical audio device or real backend is involved.
+        auto ready=valid;ready["capture"]["blob_sha256"]=std::string(64,'b');
+        ready["channels"]=2;ready["sample_format"]="float32";ready["access_mode"]="indexed";
+        workspace.descriptorPath=workspace.audioEndpoint();workspace.preparedManifest=ready;
+        Client::Transport offline=[](const Connection&,const Request& request,std::stop_token){Reply reply;reply.request=request;reply.error="Controlled unavailable PCM";return reply;};
+        workspace.nativePlayback=std::make_shared<NativePlayback>(Connection{},workspace.pcmBudget,[]{},offline);
+        workspace.nativePlayback->load(workspace.descriptorPath,originalCapture.at("id"),std::string(64,'b'),true,0,ready);
+        require(workspace.audioReady());workspace.beginAudition(audio);require(workspace.transport.state==PlaybackState::Loading);
+        workspace.preparedManifest["source_key"]=std::string(64,'c');reject(); // A different version cannot reuse this owner.
+        workspace.closeNativeSession();workspace.preparedManifest=nullptr;
+        workspace.transport.cursor=originalCursor;
+    }
+};
+}
 inline void sampleWorkspaceTests(const std::filesystem::path& root,std::ostream& log){
     using namespace sampling;
     const auto require=[](bool ok,const char* message){if(!ok)throw std::runtime_error(message);};
@@ -34,6 +83,8 @@ inline void sampleWorkspaceTests(const std::filesystem::path& root,std::ostream&
     require(injected&&workspace->preparationStatus()=="Injected editor draw failure","Editor draw error was not reported.");
     require(io.ConfigErrorRecoveryEnableAssert,"Editor recovery disabled ordinary assertions.");
     ImGui::Render();ImGui::DestroyContext();
+    WorkspaceReadinessTests::run(*workspace,audio);
+    log<<"PASS editor audio readiness: restored, delayed, detached, stale and invalid descriptors across transport entry points\n";
     log<<"PASS editor draw exception restores nested ImGui state without disabling assertions\n";
     workspace->returnToPlayer();
     auto reopened=std::make_unique<Workspace>(directory,[]{});

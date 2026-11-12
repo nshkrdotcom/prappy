@@ -32,7 +32,7 @@ Workspace::Workspace(fs::path d,std::function<void()> n,PcmBudget memory,Client:
 Workspace::~Workspace(){try{closeNativeSession();persist();}catch(const std::exception& e){OutputDebugStringA(e.what());}}
 void Workspace::get(std::string tag,std::string path){if(client){Json context=tag=="sampleMetadata"?draftSnapshot():Json();client->submit({std::move(tag),"GET",std::move(path),context,generation,{}});}}
 void Workspace::connect(){
-    if(client)stopTransport();
+    if(client)stopTransport(false);
     connectionAttempted=true;connectionReady=false;
     try{
         connection.url=serverUrl;
@@ -78,14 +78,14 @@ std::string Workspace::audioEndpoint()const{
 void Workspace::loadDetails(bool refresh){
     if(capture.is_null()||!client)return;
     const auto base=audioEndpoint();
-    if(descriptorPath!=base){descriptorPath=base;preparedManifest=nullptr;closeNativeSession();detailPath.clear();}
+    if(descriptorPath!=base)selectAudioEndpoint(base);
     if(preparedManifest.is_null()){get("capture",base);return;}
+    const auto verifiedCoverage=audioCoverage();
+    if(!verifiedCoverage)throw std::runtime_error("Audio descriptor does not match the active source clock or coverage.");
     if(!nativeSession){
         resetNativeSession();
-        const auto& t=preparedManifest;
-        const auto coverage=t.value("coverage",Json{{"start_frame",0},{"end_frame",editor.total}});
-        const Frame first=std::max(editor.span.start,coverage.at("start_frame").get<Frame>());
-        const Frame last=std::min(editor.span.end,coverage.at("end_frame").get<Frame>());
+        const Frame first=std::max(editor.span.start,verifiedCoverage->start);
+        const Frame last=std::min(editor.span.end,verifiedCoverage->end);
         if(first<last){nativePlayback->start({first,last},first,false,true);nativePlayback->cache({first,last});}
     }
     loadOverview();
@@ -101,8 +101,7 @@ void Workspace::loadDetails(bool refresh){
         }
     }
     const auto range=waveformRange(viewportStart,viewportEnd,editor.total);
-    const auto coverage=preparedManifest.value("coverage",Json{{"start_frame",0},{"end_frame",editor.total}});
-    const Frame start=std::max(range.start,coverage.at("start_frame").get<Frame>()),end=std::min(range.end,coverage.at("end_frame").get<Frame>());
+    const Frame start=std::max(range.start,verifiedCoverage->start),end=std::min(range.end,verifiedCoverage->end);
     if(end<=start)return;
     int level=-12;Frame stride=1;while((end-start+stride-1)/stride>1024){++level;stride*=2;}
     const Frame first=start/stride,last=(end-1)/stride+1;
@@ -171,7 +170,7 @@ void Workspace::command(std::string operation,Json payload){
         const auto row=std::find_if(pending.begin(),pending.end(),[&](const auto& p){return p.at("command").at("request_id")==body.at("request_id");});
         if(row!=pending.end()&&row->value("sending",false)){notice="Saving sample...";return;}
     }else{
-        if(preparedManifest.is_null()||!nativeSession)throw std::runtime_error("Selected audio is not ready to save.");
+        if(!audioReady()||!nativeSession)throw std::runtime_error("Selected audio is not ready to save.");
         body["source_key"]=preparedManifest.at("source_key");body["source_region"]=nullptr;
         const auto frozen=preparedManifest.value("region",Json());
         if(!frozen.is_null())body["source_region"]={{"id",frozen.at("id")},{"revision",frozen.at("revision")}};
@@ -374,20 +373,41 @@ void Workspace::finishMark(const Json& match){
         !resolved->selection&&resolved->intent.action==OpenSource::Cue?std::optional<Frame>(resolved->cue):std::nullopt);
     notice=resolved->selection?"Selection opened in sample editor.":"Song opened in sample editor.";
 }
-void Workspace::stopTransport(){if(nativePlayback)nativePlayback->pause(true);auditionSubmitted=0;transport.stop();}
+void Workspace::stopTransport(bool rewind){const auto cursor=transport.cursor;if(nativePlayback)nativePlayback->pause(true);auditionSubmitted=0;transport.stop();if(!rewind)transport.cursor=cursor;}
+void Workspace::selectAudioEndpoint(std::string path){
+    closeNativeSession();preparedManifest=nullptr;descriptorPath=std::move(path);
+    detailPath.clear();detailBins.clear();contextManifest=nullptr;contextPath.clear();contextBins.clear();overviewBins.clear();overviewDue={};++waveformRevision;
+}
+std::optional<Span> Workspace::audioCoverage()const{
+    try{
+        if(!capture.is_object()||!preparedManifest.is_object()||descriptorPath!=audioEndpoint())return {};
+        if(preparedManifest.at("capture").at("id")!=capture.at("id")||preparedManifest.at("timeline_id")!=capture.at("timeline_id")||
+           prepared::integer(preparedManifest.at("sample_rate"))!=rate||prepared::integer(preparedManifest.at("frame_count"))!=editor.total)return {};
+        const auto coverage=preparedManifest.value("coverage",Json{{"start_frame",0},{"end_frame",editor.total}});
+        Span span{prepared::integer(coverage.at("start_frame")),prepared::integer(coverage.at("end_frame"))};
+        if(span.start<0||span.end>editor.total||span.end<=span.start)return {};
+        return span;
+    }catch(const std::exception&){return {};}
+}
+bool Workspace::audioReady()const{
+    return audioCoverage().has_value()&&nativePlayback&&nativePlayback->reference()==descriptorPath&&
+        nativePlayback->descriptor().is_object()&&nativePlayback->descriptor().value("source_key",Json())==preparedManifest.value("source_key",Json())&&preparedManifest.contains("source_key");
+}
 Span Workspace::monitorRange()const{
-    const auto coverage=preparedManifest.value("coverage",Json{{"start_frame",0},{"end_frame",editor.total}});
-    Span result{std::max(transport.range.start,coverage.at("start_frame").get<Frame>()),std::min(transport.range.end,coverage.at("end_frame").get<Frame>())};
+    const auto coverage=audioCoverage();
+    if(!coverage)throw std::runtime_error("Audio is not ready for the active source.");
+    Span result{std::max(transport.range.start,coverage->start),std::min(transport.range.end,coverage->end)};
     if(result.end<=result.start)throw std::runtime_error("Selection is outside the preserved audio span.");
     return result;
 }
 void Workspace::closeNativeSession(){
+    stopTransport(false);
     if(nativePlayback&&nativePlayback!=incomingPlayback)nativePlayback->stop();
     nativeSession.reset();nativePlayback.reset();sharedPlayerSession=false;
 }
 void Workspace::resetNativeSession(){
     closeNativeSession();
-    if(incomingPlayback&&incomingPlayback->reference()==audioEndpoint()&&incomingPlayback->descriptor().at("source_key")==preparedManifest.at("source_key")){
+    if(incomingPlayback&&incomingPlayback->reference()==audioEndpoint()&&incomingPlayback->descriptor().is_object()&&incomingPlayback->descriptor().at("source_key")==preparedManifest.at("source_key")){
         nativePlayback=std::move(incomingPlayback);sharedPlayerSession=!incomingPrefetched;incomingPrefetched=false;
     }else{
         if(incomingPlayback)incomingPlayback->stop();incomingPlayback.reset();
@@ -399,14 +419,18 @@ void Workspace::resetNativeSession(){
 void Workspace::beginAudition(Audio& audio,BoundaryCheck check,std::optional<Frame> cue,bool paused){
     if(capture.is_null())return;
     if(!client)connect();
+    if(!audioReady()){stopTransport(false);notice="Audio is not ready for this source. Your draft is retained; try Play when loading finishes.";return;}
     if(!selectionDefined&&transport.scope!=PlaybackScope::Recording){notice="Choose or create a sample first.";return;}
+    try{
     audio.setPaused(true);stopTransport();auditionChunks=0;transport.boundary=check;auditionSelection=editor.span;
     transport.range=transport.bounds(editor.span,editor.total);transport.range=monitorRange();
     transport.cursor=std::clamp(cue.value_or(transport.range.start),transport.range.start,transport.range.end-1);
     transport.state=paused?PlaybackState::Paused:PlaybackState::Loading;
     if(nativePlayback){nativePlayback->start(transport.range,transport.cursor,transport.effectiveLoop(),paused);nativePlayback->gain(previewGain);nativeSession=nativePlayback->session();}
+    }catch(const std::exception& error){stopTransport();transport.state=PlaybackState::Error;notice=error.what();debuglog::write("editor.transport.error",notice);}
 }
 void Workspace::toggleTransport(Audio& audio){
+    if(!audioReady()){stopTransport(false);notice="Audio is not ready for this source. Your draft is retained; try Play when loading finishes.";return;}
     if(transport.state==PlaybackState::Playing||transport.state==PlaybackState::Buffering){if(nativePlayback)nativePlayback->pause(true);transport.cursor=nativePlayback?nativePlayback->state().cursor:transport.cursor;transport.state=PlaybackState::Paused;}
     else if(transport.state==PlaybackState::Paused){audio.setPaused(true);if(nativePlayback)nativePlayback->pause(false);transport.state=PlaybackState::Playing;}
     else if(transport.state!=PlaybackState::Loading){
@@ -416,6 +440,7 @@ void Workspace::toggleTransport(Audio& audio){
     }
 }
 void Workspace::seekTransport(Audio& audio,Frame frame){
+    if(editor.total<=0)return;
     const auto span=transport.bounds(editor.span,editor.total);
     frame=std::clamp(frame,span.start,span.end-1);
     if(transport.engaged())beginAudition(audio,transport.boundary,frame,transport.state==PlaybackState::Paused);
@@ -441,7 +466,7 @@ bool Workspace::current(const Request& request)const{
     if(tag=="collections"&&request.path!=endpoint(library)+"/collections")return false;
     if(tag=="browse"&&request.path!=browsePath)return false;
     if((tag=="capture"||tag=="source-analysis")&&request.path!=descriptorPath)return false;
-    if(tag=="context-descriptor")return !capture.is_null()&&request.path==endpoint(sourceLibrary)+"/captures/"+capture.at("id").get<std::string>()+"/audio";
+    if(tag=="context-descriptor")return audioCoverage().has_value()&&request.path==endpoint(sourceLibrary)+"/captures/"+capture.at("id").get<std::string>()+"/audio";
     if(tag=="source-waveform"&&request.body.value("context",false))return !contextManifest.is_null()&&(request.body.value("overview",false)||request.path==contextPath)&&request.body.at("source_key")==contextManifest.at("source_key");
     if(tag=="source-waveform"&&(preparedManifest.is_null()||request.body.at("source_key")!=preparedManifest.at("source_key")))return false;
     return tag!="source-waveform"||request.body.value("overview",false)||request.path==detailPath;
@@ -613,9 +638,8 @@ void Workspace::tick(Audio& audio){
         if(open&&pendingMark)submitMark();
         if(!open&&transport.engaged())stopTransport();
         if(open&&nativePlayback){
-            if(!preparedManifest.is_null()){
-                const auto coverage=preparedManifest.value("coverage",Json{{"start_frame",0},{"end_frame",editor.total}});
-                const Span selected{std::max(editor.span.start,coverage.at("start_frame").get<Frame>()),std::min(editor.span.end,coverage.at("end_frame").get<Frame>())};
+            if(const auto coverage=audioCoverage()){
+                const Span selected{std::max(editor.span.start,coverage->start),std::min(editor.span.end,coverage->end)};
                 if(selected.end>selected.start)nativePlayback->cache(selected);
             }
             nativePlayback->tick();nativeSession=nativePlayback->session();
@@ -633,7 +657,7 @@ void Workspace::tick(Audio& audio){
         }
         if(previousState!=transport.state&&notify)notify();
         const auto now=std::chrono::steady_clock::now();
-        if(open&&client&&overviewDue!=std::chrono::steady_clock::time_point{}&&now>=overviewDue){
+        if(open&&client&&audioCoverage()&&overviewDue!=std::chrono::steady_clock::time_point{}&&now>=overviewDue){
             overviewDue=now+std::chrono::seconds(1);if(preparedManifest.value("access_mode",std::string{})=="frozen")get("context-descriptor",endpoint(sourceLibrary)+"/captures/"+capture.at("id").get<std::string>()+"/audio");else get("source-analysis",descriptorPath);
         }
         if(!analysisJob.empty()&&now>=jobDue){jobDue=now+std::chrono::seconds(1);get("job",endpoint(library)+"/jobs/"+analysisJob);}
@@ -835,8 +859,8 @@ void Workspace::draw(Audio& audio,const std::function<void(const char*,bool)>& o
             const bool chosen=ImGui::Selectable((label+"##"+id).c_str());observe(("sample-item-"+std::to_string(itemIndex++)).c_str(),chosen);
             if(chosen){
                 handoff.cancel();pendingMark.reset();persist();stopTransport();
-                if(tab==0){++generation;region=nullptr;descriptorPath=endpoint(library)+"/captures/"+id+"/audio";get("capture",descriptorPath);}
-                else if(tab==1){transport.scope=PlaybackScope::Selection;++generation;region=item;descriptorPath=endpoint(library)+"/regions/"+item.at("id").get<std::string>()+"/revisions/"+std::to_string(item.at("revision").get<int>())+"/audio";get("capture",descriptorPath);}
+                if(tab==0){++generation;region=nullptr;selectAudioEndpoint(endpoint(library)+"/captures/"+id+"/audio");get("capture",descriptorPath);}
+                else if(tab==1){transport.scope=PlaybackScope::Selection;++generation;region=item;selectAudioEndpoint(endpoint(library)+"/regions/"+item.at("id").get<std::string>()+"/revisions/"+std::to_string(item.at("revision").get<int>())+"/audio");get("capture",descriptorPath);}
                 else{const auto members=item.at("members");items=Json::array();tab=1;for(const auto& member:members)get("collectionMember",endpoint(library)+"/entities/"+member.at("region").at("id").get<std::string>()+"?revision="+std::to_string(member.at("region").at("revision").get<int>()));break;}
             }
         }

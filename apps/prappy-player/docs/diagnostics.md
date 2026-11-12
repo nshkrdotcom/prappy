@@ -120,6 +120,29 @@ memory corruption cannot be guaranteed to yield an identifiable root cause.
 
 ## Reporting audit: 2026-11-11 incident
 
+### Subsequent incident at 15:59:51 HST
+
+Incident `e815e375a0a541bfa7ea9ff45658a5a1` captured the original throw in
+`Workspace::monitorRange`, reached through `beginAudition` and the Space-key
+transport action. The exception was JSON type_error.306: `value()` on null.
+Evidence is preserved under `build/crash-20261111-155951-e815e375a0a541bfa7ea9ff45658a5a1/`.
+
+The root defect was conflating restored editor state with loaded audio. A draft
+and capture remain valid while a descriptor is absent or being replaced. Some
+browser transitions also changed the endpoint before invalidating the old
+descriptor/session. Transport actions had no common readiness requirement.
+
+The editor now validates source identity, native clock, endpoint, coverage and
+playback-owner key together before audition/resume/save. Descriptor replacement
+invalidates transport and waveform context together, with generation checks
+rejecting stale responses. Coverage-dependent waveform/cache polling shares the
+same clock/coverage validation. Offline editing and seeking remain available;
+unavailable playback preserves the draft/cursor and reports that audio is not
+ready. Transport device/range errors stay in the editor. A valid descriptor with
+a recoverable PCM error remains retryable, rather than being confused with a
+missing descriptor. Lifecycle tests cover both unavailable states and successful
+owner acquisition, not just the original null access.
+
 ### Evidence and limits
 
 The incident at 14:47:53 HST (2026-11-12 00:47:53 UTC), PID 20708,
