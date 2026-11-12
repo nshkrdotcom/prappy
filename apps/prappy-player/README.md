@@ -53,19 +53,17 @@ icon with it. The MSVC runtime and SDL are statically linked. Explicit regressio
 executables and their independent MPV oracle live under `build/Release/tests/`;
 they are excluded from the player runtime.
 
-Debug launches automatically attach the packaged, Microsoft-signed ProcDump monitor
-(or use an already attached debugger). The build fetches ProcDump from Microsoft's
-Sysinternals download; launching accepts its license. Unhandled exceptions and
-termination snapshots go to `%LOCALAPPDATA%/Prappy/CrashDumps`. CRT abort can terminate
-without an exception, so normal exits also produce a small snapshot. Startup keeps
-two preceding dumps, allowing three after this run. Existing dumps may contain
-private memory: they stay local, are ignored by Git and are never uploaded.
-`player-debug.log` records PID, Debug build timestamp, executable location and monitor
-attachment; `player-build.json` records executable/PDB hashes and source identity.
-Replaced executable/PDB packages are retained under `build/install-history` for
-matching old dumps. Open the newest dump in WinDbg with its matching PDB; inspect
-the exception context and stack (or the termination stack for abort). A normal
-termination snapshot has no exception context. Release does not attach this monitor.
+Debug and Release both include fatal reporting independent of `debug_log`.
+Sentry Native runs its Windows crash handler outside the player; Boost.Stacktrace
+retains C++ throw locations. The automatically started `PrappyReports.exe` collector
+listens only on `127.0.0.1:19876` and saves reports to
+`%LOCALAPPDATA%/Prappy/Reports/incidents`. No cloud account or external upload is
+used. Keep `PrappyReports.exe`, `sentry-crash.exe` and `sentry-wer.dll` with the app.
+Normal exits produce no crash incident. The build archives exact binaries and
+PDBs by package identity; ordinary restarts do not discard the last failure.
+Run `pwsh scripts/inspect-crash.ps1` for the latest report and source frames.
+See [diagnostics](docs/diagnostics.md) for retention, probes, full-memory snapshots
+and the preserved investigation of the earlier termination-only capture gap.
 State beside the executable includes `player.ini`, `player-ui.txt`,
 `player-history.txt`, `sampling-connection.json` and `sample-workspaces.json`.
 Preserve those files and their backups when relocating the application.

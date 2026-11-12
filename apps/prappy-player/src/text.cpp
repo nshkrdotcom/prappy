@@ -6,11 +6,12 @@
 #include <cmath>
 #include <cstring>
 #include <list>
+#include <source_location>
 
 namespace text {
 using Microsoft::WRL::ComPtr;
 namespace {
-void check(HRESULT result) { if (FAILED(result)) throw std::runtime_error("DirectWrite text operation failed (" + std::to_string(static_cast<uint32_t>(result)) + ")."); }
+void check(HRESULT result,const std::source_location location=std::source_location::current()) { if (FAILED(result)) throw std::runtime_error(std::string(location.function_name())+" at "+location.file_name()+":"+std::to_string(location.line())+": DirectWrite HRESULT="+std::to_string(static_cast<uint32_t>(result))); }
 std::wstring wide(const std::string& value) {
     if (value.empty()) return {};
     const auto length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), nullptr, 0);
@@ -241,7 +242,7 @@ struct Painter::Impl {
         auto stored = std::make_unique<Tile>(); stored->index = index; stored->bytes = black.size() * 4;
         stored->texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, TileWidth, height);
         if (!stored->texture || !SDL_UpdateTexture(stored->texture, nullptr, black.data(), TileWidth * 4) || !SDL_SetTextureBlendMode(stored->texture, SDL_BLENDMODE_BLEND))
-            throw std::runtime_error(SDL_GetError());
+            throw std::runtime_error(std::string("Text texture create/update/blend: ")+SDL_GetError());
         bytes += stored->bytes; item.tiles.push_front(std::move(stored));
         while (item.tiles.size() > 8) { bytes -= item.tiles.back()->bytes; retired.splice(retired.end(), item.tiles, std::prev(item.tiles.end())); }
         trim(); return item.tiles.front()->texture;

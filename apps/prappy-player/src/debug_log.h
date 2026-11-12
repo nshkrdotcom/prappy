@@ -10,6 +10,9 @@
 #include <thread>
 #include <utility>
 namespace debuglog {
+using Observer=void(*)(const std::string&,const std::string&) noexcept;
+inline std::atomic<Observer> observer=nullptr;
+inline void setObserver(Observer value)noexcept{observer=value;}
 using Clock=std::chrono::steady_clock;
 inline long long elapsed(Clock::time_point start){return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now()-start).count();}
 class Log {
@@ -60,6 +63,7 @@ public:
         enabled=active;
     }
     void write(const std::string& event,const std::string& detail) noexcept {
+        if(const auto callback=observer.load(std::memory_order_relaxed))callback(event,detail);
         if(!enabled.load(std::memory_order_relaxed))return;
         try {
             SYSTEMTIME time{};GetSystemTime(&time);char stamp[96]{};

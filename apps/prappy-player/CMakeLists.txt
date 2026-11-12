@@ -42,6 +42,7 @@ if(PRAPPY_ASAN)
   add_link_options(/INCREMENTAL:NO /DEBUG)
 endif()
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+include(cmake/reporting.cmake)
 add_executable(prappy_analysis_portable_tests
   tests/portable_analysis_tests.cpp tests/analysis_tests.rc src/gain_policy.cpp
     src/analysis_dsp.cpp)
@@ -93,6 +94,9 @@ add_library(imgui STATIC
   third_party/imgui/backends/imgui_impl_sdlrenderer3.cpp
   third_party/imgui/misc/freetype/imgui_freetype.cpp)
 target_compile_definitions(imgui PUBLIC IMGUI_USE_WCHAR32 IMGUI_ENABLE_FREETYPE)
+target_compile_definitions(imgui PUBLIC IMGUI_USER_CONFIG="imgui_config.h")
+target_include_directories(imgui PUBLIC src)
+target_link_libraries(imgui PUBLIC prappy_reporting)
 target_include_directories(imgui SYSTEM PUBLIC third_party/imgui third_party/imgui/backends third_party/imgui/misc/freetype)
 target_link_libraries(imgui PUBLIC SDL3::SDL3-static freetype)
 add_executable(prappy_native_playback_tests tests/native_playback_tests.cpp tests/analysis_tests.rc src/sample_client.cpp)
@@ -118,6 +122,9 @@ if(PRAPPY_ANALYZE)
   target_compile_options(prappy_player PRIVATE /analyze /analyze:external-)
 endif()
 target_link_libraries(prappy_player PRIVATE implot imgui shell32 ole32 comctl32 bcrypt dwmapi dwrite winhttp)
+target_link_libraries(prappy_player PRIVATE prappy_reporting)
+target_compile_options(prappy_player PRIVATE /Zi)
+target_link_options(prappy_player PRIVATE /DEBUG)
 target_link_options(prappy_player PRIVATE /INCREMENTAL:NO /MANIFEST:EMBED /MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/assets/player.manifest)
 add_custom_command(TARGET prappy_player POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory

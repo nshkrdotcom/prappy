@@ -1,5 +1,6 @@
 #include "evaluation_state.h"
 #include "debug_crash.h"
+#include "imgui_internal.h"
 // UI setup follows Dear ImGui's MIT-licensed example_sdl3_sdlrenderer3.
 #include "player_ui.h"
 #include "analysis_dsp.h"
@@ -379,6 +380,9 @@ int runPlayer(HINSTANCE instance) {
         // Software comparison is available only in isolated test windows.
         renderer = presentation.open(window,windowTest && SDL_GetEnvironmentVariable(SDL_GetEnvironment(),"PRAPPY_TEST_SOFTWARE") != nullptr);
         IMGUI_CHECKVERSION(); ImGui::CreateContext(); imgui = true;
+        ImGui::GetCurrentContext()->ErrorCallback=[](ImGuiContext* context,void*,const char* message){
+            reporting::imguiError(message,context->CurrentWindow?context->CurrentWindow->Name:nullptr,context->FrameCount);
+        };
         ImPlot::CreateContext();
         auto& io = ImGui::GetIO(); io.IniFilename = nullptr; io.LogFilename = nullptr;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
@@ -391,6 +395,10 @@ int runPlayer(HINSTANCE instance) {
         platform = ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
         graphics = ImGui_ImplSDLRenderer3_Init(renderer);
         if (!platform || !graphics) throw std::runtime_error("Cannot initialize UI renderer.");
+        if(windowTest){
+            wchar_t probe[32]{};GetEnvironmentVariableW(L"PRAPPY_TEST_CRASH",probe,32);
+            if(std::wstring(probe)==L"device-lost"){SDL_Event event{};event.type=SDL_EVENT_RENDER_DEVICE_LOST;SDL_PushEvent(&event);}
+        }
         if (preferences.session.positioned) {
             auto& s = preferences.session;
             RECT rectangle{s.x,s.y,s.x+s.width,s.y+s.height};
@@ -543,6 +551,7 @@ int runPlayer(HINSTANCE instance) {
         bool samplingWasOpen=false;
         int listeningWidth=Width,listeningHeight=MinHeight;
         while (!done) {
+            reporting::phase("editor.tick");
             sampleWorkspace.tick(audio);if(!sampleWorkspace.active())audio.resumeNative();if(!sampleWorkspace.active())audio.resumeNative();
             if (sampleWorkspace.active()!=samplingWasOpen) {
                 if (sampleWorkspace.active()) { SDL_GetWindowSize(window,&listeningWidth,&listeningHeight); SDL_SetWindowSize(window,std::max(1100,listeningWidth),std::max(850,listeningHeight)); }
@@ -562,12 +571,19 @@ int runPlayer(HINSTANCE instance) {
             if (preferenceRevision != savedPreferences && !preferenceWriter.busy()) persistence = std::min(persistence, nextPreferenceSave);
             if(!scan.running())persistence=std::min(persistence,nextCatalogRefresh);
             SDL_Event event{};
-            bool received = SDL_WaitEventTimeout(&event, schedule.wait(now, visibleWindow, animate, windowTest && uiProbe.pollCommands, scan.running(), persistence));
+            reporting::phase("UI events");
+            reporting::heartbeat();
+            auto eventWait=schedule.wait(now, visibleWindow, animate, windowTest && uiProbe.pollCommands, scan.running(), persistence);
+            if(eventWait<0||eventWait>1000)eventWait=1000;
+            bool received = SDL_WaitEventTimeout(&event,eventWait);
             if (received) ++schedule.wakeups;
             do {
                 if (!received) break;
                 now = UiSchedule::Clock::now();
-                if (event.type == SDL_EVENT_RENDER_DEVICE_LOST) throw std::runtime_error("The graphics device was lost and could not be recovered.");
+                if (event.type == SDL_EVENT_RENDER_DEVICE_LOST) {
+                    reporting::phase("SDL_EVENT_RENDER_DEVICE_LOST");
+                    throw std::runtime_error("The graphics device was lost and could not be recovered: "+presentation.deviceStatus());
+                }
                 if (event.type == SDL_EVENT_RENDER_DEVICE_RESET) {
                     textPainter.resetTextures(); waveformImage.resetTexture();
                     ImGui_ImplSDLRenderer3_DestroyDeviceObjects();
@@ -618,6 +634,7 @@ int runPlayer(HINSTANCE instance) {
             if (previousSeekPreview != audio.seekPreview) schedule.request();
             if (previousGeneration != playback.generation || previousPause != audio.paused || previousActive != audio.active) schedule.request(2);
             if (audio.paused && (previousPosition != audio.position || previousDuration != audio.duration)) schedule.request();
+            reporting::phase("catalog update");
             if (scan.update(library)) {
                 schedule.request(2);
                 directoryIndex.rebuild(library); directoryIndex.prioritize(preferences.pinnedDirectories);
@@ -664,6 +681,7 @@ int runPlayer(HINSTANCE instance) {
             if (!schedule.due(now, animateNow)) continue;
             const auto frameStart = Presentation::Clock::now();
             textPainter.beginFrame();
+            reporting::phase("UI build");
             ImGui_ImplSDLRenderer3_NewFrame(); ImGui_ImplSDL3_NewFrame();
             // Scripted input is reapplied after the platform backend queues mouse state.
             if (windowTest) uiProbe.input(stateDirectory);
@@ -1081,6 +1099,7 @@ int runPlayer(HINSTANCE instance) {
             draw->AddRect({0, 0}, {static_cast<float>(width - 1), static_cast<float>(height - 1)}, IM_COL32(90, 99, 99, 255));
             }
             ImGui::End();
+            reporting::phase("editor.draw");
             sampleWorkspace.draw(audio,[&](const char* name,bool activated){uiProbe.observe(name,activated);});
             if (sampleWorkspace.active()) nextControls.push_back({0,0,static_cast<float>(width),static_cast<float>(height)});
             controls.swap(nextControls); ImGui::Render();
@@ -1088,6 +1107,7 @@ int runPlayer(HINSTANCE instance) {
                 ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(),renderer);
             });
             inputTimestamp = 0;
+            reporting::phase("frame state persistence");
             schedule.presented(now);
             schedule.caret = UiSchedule::Time::max();
             if (io.WantTextInput && io.ConfigInputTextCursorBlink) {
@@ -1159,13 +1179,22 @@ int runPlayer(HINSTANCE instance) {
         if (preferenceWriter.collect(true) && preferenceWriter.error.empty()) savedPreferences = preferenceWriter.revision;
         if (preferenceRevision != savedPreferences)
             stateio::write(stateDirectory / "player-ui.txt", preferences.serialize());
-        if (historyFile.writable && history.revision != historyFile.saved && !historyFile.notice.empty())
+        if (historyFile.writable && history.revision != historyFile.saved && !historyFile.notice.empty()) {
+            reporting::pauseHang();
             MessageBoxA(hwnd, historyFile.notice.c_str(), "Prappy Player: history was not saved", MB_OK | MB_ICONWARNING);
+            reporting::heartbeat();
+        }
     } catch (const std::exception& e) {
+        reporting::fatal("runPlayer");
+        debuglog::write("app.fatal",std::string("handler=runPlayer error=")+e.what());
         if (uiProbe.enabled) {
             if (args.size() == 2) { std::ofstream error(fs::path(args[1]) / "ui-error.txt"); error << e.what(); }
         }
-        MessageBoxA(nullptr, e.what(), "Prappy Player", MB_OK | MB_ICONERROR); exitCode = 1;
+        if(!uiProbe.enabled)MessageBoxA(nullptr, e.what(), "Prappy Player", MB_OK | MB_ICONERROR); exitCode = 1;
+    }
+    catch (...) {
+        reporting::fatal("runPlayer");
+        if(!uiProbe.enabled)MessageBoxA(nullptr,"Unexpected non-standard C++ exception. See the local incident report.","Prappy Player",MB_OK|MB_ICONERROR);exitCode=1;
     }
     // Playback and state writers have shut down. Native text-input/window
     // cleanup must not hold the single-instance lock if Windows stalls.
@@ -1184,5 +1213,7 @@ int runPlayer(HINSTANCE instance) {
         }
     }
     if (window) SDL_DestroyWindow(window);
+    debuglog::write("app.exit","code="+std::to_string(exitCode));
+    debuglog::instance().flush();
     return exitCode;
 }
