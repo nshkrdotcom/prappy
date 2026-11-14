@@ -375,7 +375,7 @@ class ClientExecutor {
                 try {
                     if(!state->credentialError.empty())result.error=state->credentialError;
                     else if(!stop.stop_requested())result=state->transport(connection,request,stop);
-                    if((request.tag=="libraries"||request.tag=="catalog")&&!result.error.empty()&&state->credentialError.empty()&&connection.startWorkstation&&!stop.stop_requested()) {
+                    if((request.tag=="capabilities"||request.tag=="libraries"||request.tag=="catalog")&&!result.error.empty()&&state->credentialError.empty()&&connection.startWorkstation&&!stop.stop_requested()) {
                         state->bootstrap();
                         const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(45);
                         do {

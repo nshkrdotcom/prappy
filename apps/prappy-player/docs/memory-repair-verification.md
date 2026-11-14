@@ -176,3 +176,20 @@ Automatic approval review rejected the combined install/startup command with
 Review also rejected the smoke test that opened canonical live state. That
 specific live-state startup/shutdown check was not performed; the isolated
 installed-package checks above passed and canonical user state stayed untouched.
+
+
+### Reboot recovery correction — 2026-11-13
+
+The real startup log (PID 11660, 2026-11-14 02:58 UTC) shows capabilities
+failing with WinHTTP 12029 before the backend listened. Catalog subsequently
+bootstrapped WSL successfully, but the workspace's already-failed handshake
+never reached libraries or source loading. Retained drafts therefore appeared
+without waveform/PCM even after catalog recovery.
+
+The HTTP executor now gives `capabilities` the same cancellable, bounded local
+backend startup/retry path as `libraries` and `catalog`, including when a token
+already exists after reboot. Deterministic production-client regressions cover
+all three tags with existing credentials and an initially unavailable service.
+Debug build/state tests and disposable restored-editor waveform, audition,
+exact-frame save/export and response-loss retry checks passed. Evidence and
+pre-change state/log copies: `build/editor-cold-start-20261113`.

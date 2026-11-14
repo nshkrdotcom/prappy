@@ -217,6 +217,25 @@ inline void sampleClientCancellationTests(std::ostream& log) {
         const auto replies=client.collect();
         require(reads==2&&bootstraps==1&&replies.size()==2&&replies[0].error.empty()&&replies[1].error.empty(),"Cold bootstrap did not cache its first successful credential read.");
     }
+    // Credentials survive a reboot, but an existing token does not mean the
+    // HTTP service has started. Every initial handshake must bootstrap/retry.
+    for(const auto* tag:{"capabilities","libraries","catalog"}){
+        std::promise<void> completed;
+        std::atomic<int> attempts=0,bootstraps=0;
+        Connection connection;connection.token=std::string(32,'c');connection.startWorkstation=true;
+        Client client(connection,[&]{completed.set_value();},
+            [&](const Connection&,const Request&,std::stop_token){
+                ++attempts;Reply reply;if(!bootstraps)reply.error="Backend is not listening yet.";
+                return reply;
+            },{},[&]{++bootstraps;});
+        Request request;request.tag=tag;request.path="/disposable";client.submit(request);
+        require(completed.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready,
+            "Cold-start handshake did not complete after backend startup.");
+        const auto replies=client.collect();
+        require(bootstraps==1&&attempts==2&&replies.size()==1&&replies[0].error.empty(),
+            "An existing credential stranded the handshake before backend startup.");
+    }
+    log<<"PASS capabilities, libraries and catalog recover cold HTTP startup with existing credentials\n";
     log<<"PASS sampling retirement returns before blocked credential/transport release and cleans up without notification\n";
     log<<"PASS foreground PCM bypasses retired browse/source work and credentials initialize once per connection\n";
     log<<"PASS sampling pending requests remain bounded at 512\n";
