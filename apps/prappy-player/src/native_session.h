@@ -152,6 +152,7 @@ public:
     }
     void clearPreservation(){preserved.reset();}
     void restart(uint64_t epoch){if(epoch<=generation)throw std::runtime_error("Native session generation did not advance.");generation=epoch;decoderEpoch.clear();}
+    void resumeVerifiedDecoder(){decoderEpoch.clear();}
     prepared::Frame nextMissingEnd(prepared::Frame start,prepared::Frame end)const{
         for(const auto& piece:cold){if(start>=piece.first&&start<piece.first+piece.count)return start;if(piece.first>start)end=std::min(end,piece.first);}
         for(const auto& b:buffers){if(start>=b->pcm->start()&&start<b->pcm->start()+b->pcm->frames())return start;if(b->pcm->start()>start)end=std::min(end,b->pcm->start());}

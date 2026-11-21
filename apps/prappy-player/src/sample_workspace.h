@@ -16,6 +16,7 @@ class Workspace {
     struct PlayingSongMark {prepared::SourceRef source;std::string asset,timeline;Frame rate,frame;uint64_t ticket;bool submitted=false,failed=false;};
     std::optional<PlayingSongMark> pendingMark;
     Json preparedManifest;
+    std::optional<std::pair<std::string,Span>> pendingAudition;
     Json contextManifest;
     std::string contextPath;
     std::vector<PeakBin> contextBins;

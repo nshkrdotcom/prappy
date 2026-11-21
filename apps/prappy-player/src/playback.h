@@ -46,7 +46,7 @@ struct Playback {
         // Load paused, then honor the latest play/pause intent after committing.
         // This also prevents a brief audible start when restoring a saved session.
         try {
-            if(!load(path,true,kind==Kind::Restore?0:position)){notice=audio.error;return false;}
+            if(!load(path,true,position)){notice=audio.error;return false;}
         } catch(const prepared::NotReady& error){
             waitingSource=path;pending=Pending{kind,0,targetId,oldPaused,position,paused};
             availabilityStarted=debuglog::Clock::now();debuglog::write("play.waiting","state="+std::string(error.what()));
@@ -128,7 +128,7 @@ struct Playback {
     void toggle() {
         if (pending) pending->paused = !pending->paused;
         else if (audio.active) { audio.pause(); checkpoint(); file.save(history, true); }
-        else if (const auto entry = history.current()) request(entry->path, Kind::Restart, history.cursor);
+        else if (const auto entry = history.current()) request(entry->path, Kind::Restart, history.cursor, false, entry->position);
         else if (!audio.current.empty()) request(audio.current);
         else navigate(1);
     }
@@ -139,7 +139,7 @@ struct Playback {
             const auto track=std::find_if(library.tracks.begin(),library.tracks.end(),[&](const auto& item){return Library::matches(item,waitingId);});
             if(track!=library.tracks.end()&&track->prepared&&track->prepared->ready()){
                 try{
-                    if(load(*waitingSource,true,pending->kind==Kind::Restore?0:pending->position)){
+                    if(load(*waitingSource,true,pending->position)){
                         debuglog::write("play.available","wait_ms="+std::to_string(debuglog::elapsed(availabilityStarted)));
                         pending->serial=audio.serial;waitingSource.reset();notice.clear();
                     }else{notice=audio.error;pending.reset();waitingSource.reset();++generation;}
@@ -157,7 +157,7 @@ struct Playback {
             else history.visit(static_cast<size_t>(destination - history.trail.begin()));
             if (completed.kind == Kind::Restore) {
                 const double position = audio.duration > .25 && completed.position < audio.duration - .1 ? completed.position : 0;
-                if (position > 0) audio.seek(position);
+                if (std::abs(audio.position-position) > .002) audio.seek(position);
                 audio.position = position; history.position(position);
             }
             if (decideGain) {

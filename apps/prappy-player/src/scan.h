@@ -128,7 +128,7 @@ public:
         if (!running() || job.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return false;
         auto [next, success] = job.get();
         if (success) { next.order = library.order; next.sort(); library = std::move(next); }
-        else library.notice = std::move(next.notice);
+        else { library.notice = std::move(next.notice); library.catalogCurrent=next.catalogCurrent; }
         return success;
     }
     std::string status() const {

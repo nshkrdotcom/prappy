@@ -20,6 +20,14 @@ int main(int argc,char** argv) {
         if(!refreshPreparedCatalog(library,config,{},progress))throw std::runtime_error(library.notice);
         if(library.tracks.size()!=fixture.at("expected_sources").get<size_t>()||!library.backend)
             throw std::runtime_error("Indexed catalog source count differs.");
+        Library local;
+        if(!restorePreparedCatalog(local,config,{},progress)||local.catalogCurrent||
+           local.tracks.size()!=library.tracks.size()||local.catalogValidator!=library.catalogValidator)
+            throw std::runtime_error("Last known browse snapshot did not restore independently.");
+        Library unchanged;
+        unchanged.catalogScope=local.catalogScope;unchanged.catalogValidator=local.catalogValidator;
+        if(refreshPreparedCatalog(unchanged,config,{},progress)||!unchanged.catalogCurrent||!unchanged.tracks.empty())
+            throw std::runtime_error("An unchanged browse response replaced the local list.");
         const auto track=std::find_if(library.tracks.begin(),library.tracks.end(),[&](const auto& t){return t.prepared&&t.prepared->source.capture==fixture.at("capture_id").get<std::string>();});
         if(track==library.tracks.end()||!track->prepared->ready())throw std::runtime_error("Fixture original is not playable.");
         const auto& source=*track->prepared;

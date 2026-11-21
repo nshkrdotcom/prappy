@@ -34,6 +34,9 @@ struct ScanProgress {
 struct Library {
     std::shared_ptr<const sampling::Connection> backend;
     std::string backendDistribution;
+    std::string catalogValidator, catalogScope;
+    bool catalogCurrent=false;
+    std::optional<prepared::CatalogSource> resumeSource;
     std::map<std::wstring,std::string> labels;
     std::vector<Track> tracks;
     std::vector<fs::path> roots;

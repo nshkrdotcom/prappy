@@ -14,7 +14,7 @@
 #include <chrono>
 namespace sampling {
 using Json = nlohmann::json;
-struct Connection { std::string url = "http://127.0.0.1:8765", token; fs::path credentialFile; bool startWorkstation=false; };
+struct Connection { std::string url = "http://127.0.0.1:8765", token; fs::path credentialFile; bool startWorkstation=false; fs::path resumeDirectory; };
 Connection authorize(Connection,std::stop_token = {});
 struct UploadFrame {
     uint32_t metadata,sendLength;uint64_t total;
@@ -23,6 +23,7 @@ struct UploadFrame {
         metadata=static_cast<uint32_t>(header);total=4+header+audio;sendLength=total<=UINT32_MAX?static_cast<uint32_t>(total):0;
     }
 };
+struct Reply;
 struct Request {
     std::string tag, method = "GET", path;
     Json body;
@@ -32,6 +33,8 @@ struct Request {
     uint64_t diagnosticId=0;
     PcmBudget::Permit pcmMemory,incomingMemory;
     std::shared_ptr<const NativeSession::Clip> upload;
+    std::string catalogValidator;
+    std::function<void(Reply&,std::stop_token)> localWork;
 };
 struct Reply {
     Request request;
@@ -40,6 +43,7 @@ struct Reply {
     std::shared_ptr<const prepared::Block> preparedPcm;
     std::string error;
     int status = 0;
+    std::string catalogValidator;
 };
 Reply perform(const Connection&, const Request&, std::stop_token = {});
 std::string uuid();

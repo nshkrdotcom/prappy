@@ -53,6 +53,11 @@ std::string readCredential(const fs::path& path,std::stop_token stop) {
     return token;
 }
 void startWorkstationBackend() {
+    static std::mutex launchMutex;
+    static std::chrono::steady_clock::time_point lastLaunch{};
+    std::lock_guard guard(launchMutex);
+    const auto now=std::chrono::steady_clock::now();
+    if(lastLaunch.time_since_epoch().count()&&now-lastLaunch<std::chrono::seconds(3))return;
     debuglog::write("backend.start","distro=ubuntu26-dev");
     std::array<wchar_t,MAX_PATH> system{};
     const auto length=GetSystemDirectoryW(system.data(),static_cast<UINT>(system.size()));
@@ -65,6 +70,7 @@ void startWorkstationBackend() {
         CREATE_NO_WINDOW|CREATE_NEW_PROCESS_GROUP,nullptr,nullptr,&startup,&process))
         throw std::runtime_error("Cannot start Workstation backend: Windows error "+std::to_string(GetLastError()));
     CloseHandle(process.hThread);CloseHandle(process.hProcess);
+    lastLaunch=now;
 }
 
 }
@@ -151,6 +157,13 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
         DWORD redirectPolicy=WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
         if(!WinHttpSetOption(operation.value,WINHTTP_OPTION_REDIRECT_POLICY,&redirectPolicy,sizeof(redirectPolicy)))throw std::runtime_error("Cannot constrain backend redirects.");
         auto headers=wide("Authorization: Bearer "+token+"\r\nContent-Type: "+std::string(request.upload?"application/octet-stream":"application/json")+"\r\nX-Prappy-Request-Id: "+std::to_string(GetCurrentProcessId())+"_"+std::to_string(request.diagnosticId)+"\r\n");
+        if(!request.catalogValidator.empty()){
+            const auto& tag=request.catalogValidator;
+            if(tag.size()!=66||tag.front()!='"'||tag.back()!='"'||
+               tag.substr(1,64).find_first_not_of("0123456789abcdef")!=std::string::npos)
+                throw std::runtime_error("Invalid catalog validator.");
+            headers+=wide("If-None-Match: "+tag+"\r\n");
+        }
         const auto body=request.method=="GET" || request.body.is_null() ? std::string{} : request.body.dump();
         if(body.size()>8*1024*1024)throw std::runtime_error("Backend request metadata exceeds the 8 MiB limit.");
         bool sent=false;
@@ -178,6 +191,12 @@ Reply perform(const Connection& connection,const Request& request,std::stop_toke
         WinHttpQueryHeaders(operation.value,WINHTTP_QUERY_STATUS_CODE|WINHTTP_QUERY_FLAG_NUMBER,nullptr,&status,&length,nullptr);
         debuglog::write("http.headers",identity+" ms="+std::to_string(debuglog::elapsed(began))+" status="+std::to_string(status));
         reply.status=static_cast<int>(status);
+        if(request.tag=="catalog"){
+            std::array<wchar_t,80> validator{};DWORD size=sizeof(validator);
+            if(WinHttpQueryHeaders(operation.value,WINHTTP_QUERY_ETAG,nullptr,validator.data(),&size,nullptr))
+                reply.catalogValidator=utf8(fs::path(validator.data()));
+            if(status==304)return reply;
+        }
         std::array<wchar_t,256> serverTiming{};DWORD timingSize=sizeof(serverTiming);
         if(WinHttpQueryHeaders(operation.value,WINHTTP_QUERY_CUSTOM,L"Server-Timing",serverTiming.data(),&timingSize,nullptr))
             debuglog::write("http.server",identity+" "+utf8(fs::path(serverTiming.data())));
@@ -280,34 +299,38 @@ struct ClientState {
     // its own gate so retirement also fences callbacks already being delivered.
     std::deque<Request> pending;
     std::vector<Reply> completed;
-    bool retired=false,credentialsStarted=false,credentialsReady=false;
+    bool retired=false,credentialsStarted=false,credentialsReady=false,testBootstrap=false;
     std::string credentialError;
     std::mutex notificationMutex;
     std::function<void()> notify;
 };
 namespace {
 size_t requestLane(const Request& request) {
+    if(request.localWork)return 4;
+    if(request.tag=="catalog")return 3;
     if(request.tag=="source-pcm" || request.tag=="source-waveform")return 0;
     if(request.tag=="libraries"||request.method!="GET")return 1;
     return 2;
 }
-// One process-wide executor, with exactly three independently scheduled lanes.
+// One process-wide executor with catalog work isolated from interactive requests.
 // No Client owns a thread or joins on retirement. Weak registrations and the
-// three active slots bound retired state even when a redirector ignores cancel.
+// active slots bound retired state even when a redirector ignores cancel.
 // Workers join at process teardown, after the UI and instance lock are gone.
 class ClientExecutor {
     struct Lane {size_t index=0;std::jthread worker;std::shared_ptr<ClientState> active;std::optional<Request> request;std::stop_source cancel;};
-    std::array<Lane,3> lanes;
+    static constexpr size_t LaneCount=5;
+    std::array<Lane,LaneCount> lanes;
     std::vector<std::weak_ptr<ClientState>> clients;
     std::deque<std::shared_ptr<ClientState>> cleanup;
     static bool closesSession(const Request& request){return request.tag=="source-session-close"&&request.method=="DELETE";}
     static int priority(const Request& request){
+        if(request.localWork)return request.tag=="resume-cache-write"?2:0;
         if(request.tag!="source-pcm")return 2;
         return request.body.is_object()&&(request.body.value("native_feed",false)||request.body.value("audition",false))?0:1;
     }
     static auto next(ClientState& state,size_t index){
         auto best=state.pending.end();
-        if(state.credentialsReady)for(auto it=state.pending.begin();it!=state.pending.end();++it)
+        if(state.credentialsReady||index==4)for(auto it=state.pending.begin();it!=state.pending.end();++it)
             if(requestLane(*it)==index&&(best==state.pending.end()||priority(*it)<priority(*best)))best=it;
         return best;
     }
@@ -352,7 +375,10 @@ class ClientExecutor {
                     if(connection.token.empty())connection.token=trim(state->reader(connection.credentialFile,stop));
                     if(connection.token.size()<32)throw std::runtime_error("Token file is empty or invalid.");
                 };
-                try {read();}catch(const std::exception& e){error=e.what();connection.token.clear();}
+                try {
+                    if(connection.startWorkstation&&!state->testBootstrap&&!stop.stop_requested())state->bootstrap();
+                    read();
+                }catch(const std::exception& e){error=e.what();connection.token.clear();}
                 if(!error.empty()&&connection.startWorkstation&&!stop.stop_requested()) {
                     try {
                         state->bootstrap();
@@ -373,16 +399,19 @@ class ClientExecutor {
                 debuglog::write("http.dequeue","req="+std::to_string(request.diagnosticId)+" tag="+request.tag+" queue_ms="+std::to_string(debuglog::elapsed(request.queuedAt)));
                 Reply result;result.request=request;
                 try {
-                    if(!state->credentialError.empty())result.error=state->credentialError;
+                    if(request.localWork){if(!stop.stop_requested())request.localWork(result,stop);}
+                    else if(!state->credentialError.empty())result.error=state->credentialError;
                     else if(!stop.stop_requested())result=state->transport(connection,request,stop);
-                    if((request.tag=="capabilities"||request.tag=="libraries"||request.tag=="catalog")&&!result.error.empty()&&state->credentialError.empty()&&connection.startWorkstation&&!stop.stop_requested()) {
+                    const auto retry=[&]{return !result.error.empty()&&(result.status==0||result.status==503);};
+                    if(!request.localWork&&(request.tag=="capabilities"||request.tag=="libraries"||request.tag=="catalog"||request.tag=="source-descriptor"||request.tag=="capture")&&
+                       retry()&&state->credentialError.empty()&&connection.startWorkstation&&!stop.stop_requested()) {
                         state->bootstrap();
                         const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(45);
                         do {
                             {std::unique_lock guard(mutex);wake.wait_for(guard,stop,std::chrono::milliseconds(250),[]{return false;});}
                             if(stop.stop_requested())break;
                             result=state->transport(connection,request,stop);
-                        }while(!result.error.empty()&&std::chrono::steady_clock::now()<deadline);
+                        }while(retry()&&std::chrono::steady_clock::now()<deadline);
                         if(!result.error.empty()&&!stop.stop_requested())result.error="Workstation backend did not start. See ~/.local/state/audioharvest/prappy-server.log in WSL. "+result.error;
                     }
                 }catch(const std::exception& e){result.error=e.what();}
@@ -413,7 +442,7 @@ public:
     std::mutex mutex;
     std::condition_variable_any wake;
     ~ClientExecutor() {
-        std::array<std::shared_ptr<ClientState>,3> active;
+        std::array<std::shared_ptr<ClientState>,LaneCount> active;
         for(auto& lane:lanes)lane.worker.request_stop();
         {
             std::lock_guard guard(mutex);
@@ -520,6 +549,7 @@ Client::Client(Connection connection,std::function<void()> notify,Transport tran
     }
     state->transport=transport?std::move(transport):perform;
     state->reader=reader?std::move(reader):readCredential;
+    state->testBootstrap=static_cast<bool>(bootstrap);
     state->bootstrap=bootstrap?std::move(bootstrap):startWorkstationBackend;
     ClientExecutor::instance().add(state);
 }

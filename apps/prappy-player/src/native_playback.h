@@ -3,6 +3,8 @@
 #include "native_spill.h"
 #include "sample_audition.h"
 #include "prepared_requests.h"
+#include "resume_audio.h"
+#include "debug_log.h"
 #include <cmath>
 #include <exception>
 
@@ -20,20 +22,55 @@ private:
     Json manifest;
     State status;
     std::string endpoint,capture,original,owner,leasePath;
+    std::string expectedTimeline;
     Span coverage{},range{};
     std::optional<Span> cacheWindow;
     Frame decodedEnd=-1,pendingStart=0,pendingEnd=0;
     uint64_t generation=0;
     bool pending=false,started=false,repeat=false;
+    bool readResume=true,cacheWritePending=false,usedResume=false,liveDecoder=false;
+    std::string resumeEpoch;
     float level=1;
     double initialSeconds=0;
     std::chrono::steady_clock::time_point renewDue{};
+    std::string cacheScope()const{return saveConnection.url+"\n"+utf8(saveConnection.credentialFile);}
+    void submitRead(Request request){
+        if(readResume&&!saveConnection.resumeDirectory.empty()){
+            const auto path=saveConnection.resumeDirectory;
+            const auto scope=cacheScope(),target=endpoint;
+            const auto context=request.body;const auto memory=budget;
+            request.localWork=[path,scope,target,context,memory](Reply& reply,std::stop_token stop){
+                resume_audio::read(path,scope,target,context,memory,reply,stop);
+            };
+        }
+        client.submit(std::move(request));
+    }
+    void remember(const Reply& reply){
+        if(cacheWritePending||saveConnection.resumeDirectory.empty()||!reply.preparedPcm||
+           reply.preparedPcm->bytes().size()>resume_audio::BlockLimit)return;
+        const auto path=saveConnection.resumeDirectory;
+        const auto scope=cacheScope(),target=endpoint;
+        const auto data=manifest;
+        const auto pcm=reply.preparedPcm;
+        const auto allocation=reply.request.pcmMemory;
+        const auto epoch=reply.body.at("decoder_epoch").get<std::string>();
+        const auto memory=budget;
+        Request job;job.tag="resume-cache-write";job.generation=generation;
+        job.localWork=[path,scope,target,data,pcm,allocation,epoch,memory](Reply&,std::stop_token stop){
+            (void)allocation;
+            auto scratch=memory.reserve(pcm->bytes().size()+resume_audio::HeaderLimit);
+            resume_audio::write(path,scope,target,data,*pcm,epoch,stop);
+        };
+        try{client.submit(std::move(job));cacheWritePending=true;}
+        catch(const std::exception& error){debuglog::write("resume.audio.write",error.what());}
+    }
     void release(){
         if(leasePath.empty())return;
         // Keep the close path retryable if the bounded executor rejects the
         // command. The server also expires abandoned leases independently.
-        client.submit({"source-session-close","DELETE",leasePath,nullptr,generation,{}});
+        if(liveDecoder)client.submit({"source-session-close","DELETE",leasePath,nullptr,generation,{}});
         leasePath.clear();
+        liveDecoder=false;
     }
     prepared::NativeTimeline timeline()const{
         prepared::NativeTimeline t{prepared::integer(manifest.at("sample_rate")),prepared::integer(manifest.at("channels")),
@@ -107,7 +144,7 @@ private:
             "&timeline="+manifest.at("timeline_id").get<std::string>()+"&session="+owner+"&start="+std::to_string(frame)+"&count="+std::to_string(count),context,generation,{}};
         const auto bytes=static_cast<size_t>(count)*stride;
         message.incomingMemory=budget.reserve(bytes);message.pcmMemory=budget.reserve(bytes);
-        client.submit(std::move(message));
+        submitRead(std::move(message));
         pending=true;pendingStart=frame;pendingEnd=frame+count;
     }
     void fillWindow(){
@@ -123,6 +160,8 @@ private:
         const auto key=value.at("source_key").get<std::string>(),id=value.at("timeline_id").get<std::string>();
         if(key.size()!=64||key.find_first_not_of("0123456789abcdef")!=std::string::npos||!prepared::SourceRef::valid(id,"tl_"))
             throw std::runtime_error("Native playback source clock identity is invalid.");
+        if(!expectedTimeline.empty()&&id!=expectedTimeline)
+            throw std::runtime_error("Saved playback clock changed; select the recording again.");
         const auto mode=value.at("access_mode").get<std::string>();
         if(mode!="indexed"&&mode!="frozen")throw std::runtime_error("Unsupported native playback source.");
         const prepared::NativeTimeline t{prepared::integer(value.at("sample_rate")),prepared::integer(value.at("channels")),
@@ -171,13 +210,16 @@ public:
         });
     }
     bool retainsOrRequests(Frame frame)const{return retained&&(retained->find(frame)||(pending&&frame>=pendingStart&&frame<pendingEnd));}
-    void load(std::string path,std::string expectedCapture,std::string expectedOriginal,bool paused,double seconds,Json known=nullptr){
+    void load(std::string path,std::string expectedCapture,std::string expectedOriginal,bool paused,double seconds,
+              Json known=nullptr,std::string timelineId={}){
         if(!std::isfinite(seconds)||seconds<0||!prepared::SourceRef::valid(expectedCapture,"cap_")||
             expectedOriginal.size()!=64||expectedOriginal.find_first_not_of("0123456789abcdef")!=std::string::npos)
             throw std::runtime_error("Invalid native playback request.");
-        stop();endpoint=std::move(path);capture=std::move(expectedCapture);original=std::move(expectedOriginal);initialSeconds=seconds;
+        stop();endpoint=std::move(path);capture=std::move(expectedCapture);original=std::move(expectedOriginal);
+        expectedTimeline=std::move(timelineId);initialSeconds=seconds;
         status.paused=paused;status.buffering=true;
-        if(known.is_null())client.submit({"source-descriptor","GET",endpoint,nullptr,generation,{}});
+        if(known.is_null())submitRead({"source-descriptor","GET",endpoint,
+            Json{{"capture_id",capture},{"original",original},{"seconds",seconds}},generation,{}});
         else descriptor(std::move(known));
     }
     void start(Span span,Frame frame,bool loop,bool paused){
@@ -202,19 +244,51 @@ public:
         try{release();}catch(...){closingError=std::current_exception();}
         output.stop();retained.reset();manifest=nullptr;
         ++generation;pending=started=repeat=false;cacheWindow.reset();decodedEnd=-1;status=State{};
+        readResume=true;usedResume=false;cacheWritePending=false;resumeEpoch.clear();
         if(closingError)std::rethrow_exception(closingError);
     }
     void tick(){
         try{
             for(auto& reply:client.collect()){
+                if(reply.request.tag=="resume-cache-write"){
+                    cacheWritePending=false;
+                    if(!reply.error.empty())debuglog::write("resume.audio.write",reply.error);
+                    continue;
+                }
                 if(reply.request.generation!=generation)continue;
+                const bool local=static_cast<bool>(reply.request.localWork);
+                if(local&&(reply.status!=200||!reply.error.empty())){
+                    reply.request.localWork={};
+                    client.submit(std::move(reply.request));continue;
+                }
                 if(!reply.error.empty())throw std::runtime_error(reply.error);
                 if(reply.request.tag=="source-descriptor")descriptor(std::move(reply.body));
                 else if(reply.request.tag=="source-pcm"){
                     pending=false;if(!retained)continue;
+                    if(!reply.preparedPcm)throw std::runtime_error("Playback did not receive verified audio.");
+                    const auto epoch=reply.body.at("decoder_epoch").get<std::string>();
+                    const bool forPlayback=reply.request.body.value("native_feed",true);
+                    if(usedResume&&(!local||epoch!=resumeEpoch)){
+                        // A different verified decoder stream starts a distinct output run.
+                        if(forPlayback){output.stop();started=false;status.cursor=reply.preparedPcm->start();}
+                        retained->resumeVerifiedDecoder();usedResume=false;
+                        if(!local)readResume=false;
+                    }
+                    if(local){
+                        if(!usedResume)debuglog::write("resume.audio.hit","frame="+std::to_string(reply.preparedPcm->start()));
+                        usedResume=true;resumeEpoch=epoch;
+                        if(reply.request.pcmMemory->bytes!=reply.preparedPcm->bytes().size()){
+                            reply.request.pcmMemory.reset();
+                            reply.request.pcmMemory=budget.reserve(reply.preparedPcm->bytes().size());
+                        }
+                    }
                     auto block=retained->adopt(reply.preparedPcm,reply.request.pcmMemory,reply.request.body.at("source_key"),
-                        reply.request.body.at("timeline_id"),generation,reply.body.at("decoder_epoch").get<std::string>());
-                    if(block){++status.transfers;decodedEnd=block->pcm->start()+block->pcm->frames();if(reply.request.body.value("native_feed",true))feed(std::move(block));}
+                        reply.request.body.at("timeline_id"),generation,epoch);
+                    if(block){
+                        if(!local){liveDecoder=true;remember(reply);}
+                        ++status.transfers;decodedEnd=block->pcm->start()+block->pcm->frames();
+                        if(forPlayback)feed(std::move(block));
+                    }
                 }else if(reply.request.tag=="source-session"&&!reply.body.value("active",false))
                     throw std::runtime_error("Native playback decoder expired; retained audio is unchanged.");
             }
@@ -226,7 +300,7 @@ public:
             }else request(status.cursor);
             fillWindow();
             const auto now=std::chrono::steady_clock::now();
-            if(!leasePath.empty()&&now>=renewDue){renewDue=now+std::chrono::seconds(15);client.submit({"source-session","GET",leasePath,nullptr,generation,{}});}
+            if(liveDecoder&&!leasePath.empty()&&now>=renewDue){renewDue=now+std::chrono::seconds(15);client.submit({"source-session","GET",leasePath,nullptr,generation,{}});}
         }catch(const std::exception& e){status.error=e.what();status.buffering=false;pending=false;output.stop();}
     }
 };

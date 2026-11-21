@@ -5,6 +5,61 @@
 #include <cstring>
 
 static void require(bool value,const char* message){if(!value)throw std::runtime_error(message);}
+static void resumeAudioTests(){
+    using namespace sampling;
+    const auto directory=fs::temp_directory_path()/("prappy-resume-test-"+uuid());
+    struct Cleanup {fs::path path;~Cleanup(){std::error_code error;fs::remove_all(path,error);}} cleanup{directory};
+    const prepared::NativeTimeline timeline{48000,2,120,prepared::SampleType::Int32};
+    const auto capture="cap_"+std::string(32,'a'),original=std::string(64,'b');
+    const Json descriptor={{"capture",{{"id",capture},{"blob_sha256",original}}},{"access_mode","frozen"},
+        {"source_key",std::string(64,'c')},{"timeline_id","tl_"+std::string(32,'d')},
+        {"sample_rate",48000},{"channels",2},{"frame_count",120},{"sample_format","int32"}};
+    std::vector<std::byte> audio(80,std::byte{21});
+    const prepared::Block block(timeline,10,10,audio);
+    resume_audio::write(directory,"backend","/saved/2",descriptor,block,"verified",{});
+    const PcmBudget budget(64);
+    Reply cachedDescriptor;
+    resume_audio::read(directory,"backend","/saved/2",
+        {{"capture_id",capture},{"original",original},{"seconds",12./48000}},budget,cachedDescriptor,{});
+    require(cachedDescriptor.status==200&&cachedDescriptor.body==descriptor,"Local descriptor did not reopen");
+    auto expected=prepared::pcmContext(descriptor,12,10);
+    Reply hit;
+    resume_audio::read(directory,"backend","/saved/2",expected,budget,hit,{});
+    require(hit.status==200&&hit.preparedPcm->start()==12&&hit.preparedPcm->frames()==8&&
+        hit.preparedPcm->bytes()==std::vector<std::byte>(64,std::byte{21}),"Cached PCM lost exact overlap or sample bytes");
+    Reply otherRevision;
+    resume_audio::read(directory,"backend","/saved/3",expected,budget,otherRevision,{});
+    require(!otherRevision.preparedPcm,"A different sample revision reused cached bytes");
+    {
+        SDL_SetHint(SDL_HINT_AUDIO_DRIVER,"dummy");
+        Connection connection;connection.resumeDirectory=directory;connection.credentialFile=directory/"unavailable-token";
+        const auto scope=connection.url+"\n"+utf8(connection.credentialFile);
+        const auto bytes=std::vector<std::byte>(96000,std::byte{21});
+        const prepared::NativeTimeline localClock{48000,2,12000,prepared::SampleType::Int32};
+        auto localDescriptor=descriptor;localDescriptor["frame_count"]=12000;
+        const prepared::Block localBlock(localClock,0,12000,bytes);
+        resume_audio::write(directory,scope,"/offline",localDescriptor,localBlock,"frozen",{});
+        std::atomic_bool contacted=false;
+        NativePlayback player(connection,budget,[]{},[&](const Connection&,const Request&,std::stop_token){
+            contacted=true;Reply unavailable;unavailable.error="Offline";return unavailable;
+        });
+        player.load("/offline",capture,original,true,0);
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+        while(!player.state().loaded&&player.state().error.empty()&&std::chrono::steady_clock::now()<deadline){
+            player.tick();SDL_Delay(1);
+        }
+        require(player.state().loaded&&player.state().paused&&!contacted,
+            "Fresh transport did not prime exact local audio without a backend or readable token");
+        resume_audio::write(directory,"backend","/saved/2",descriptor,block,"verified",{});
+    }
+    {
+        std::fstream corrupted(resume_audio::slot(directory,0),std::ios::binary|std::ios::in|std::ios::out);
+        corrupted.seekp(-1,std::ios::end);corrupted.put(0);
+    }
+    Reply corrupt;
+    resume_audio::read(directory,"backend","/saved/2",expected,budget,corrupt,{});
+    require(!corrupt.preparedPcm,"Corrupt local audio was accepted");
+}
 template<class Predicate> static void until(sampling::NativePlayback& player,Predicate done){
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
     do{player.tick();if(done())return;if(!player.state().error.empty())throw std::runtime_error(player.state().error);SDL_Delay(1);}while(std::chrono::steady_clock::now()<deadline);
@@ -151,7 +206,7 @@ static void speakerOutputTest(){
 }
 int main(int argc,char** argv){
  try{
-        uploadFrameTests();spillTests();selectionAuthorityTests();missingSelectionTests();failedEvictionTests();
+        uploadFrameTests();resumeAudioTests();spillTests();selectionAuthorityTests();missingSelectionTests();failedEvictionTests();
         if(argc==2&&std::string_view(argv[1])=="--save-storage"){std::cout<<"PASS checked native save framing and bounded lossless storage\n";return 0;}
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER,"dummy");
     using namespace sampling;using namespace prepared;

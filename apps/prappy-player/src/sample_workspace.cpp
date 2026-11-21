@@ -35,7 +35,22 @@ Workspace::~Workspace(){
     // recoverable drafts and pending-save state during the final persist.
     try{persist();}catch(const std::exception& e){OutputDebugStringA(e.what());}
 }
-void Workspace::get(std::string tag,std::string path){if(client){Json context=tag=="sampleMetadata"?draftSnapshot():Json();client->submit({std::move(tag),"GET",std::move(path),context,generation,{}});}}
+void Workspace::get(std::string tag,std::string path){
+    if(!client)return;
+    Json context=tag=="sampleMetadata"?draftSnapshot():Json();
+    Request request{std::move(tag),"GET",std::move(path),context,generation,{}};
+    if(request.tag=="capture"&&capture.is_object()&&rate>0&&request.path==audioEndpoint()){
+        const auto cache=connection.resumeDirectory;
+        const auto scope=connection.url+"\n"+utf8(connection.credentialFile),target=request.path;
+        const auto expected=Json{{"capture_id",capture.at("id")},{"original",capture.at("blob_sha256")},
+            {"seconds",static_cast<double>(editor.span.start)/rate}};
+        const auto memory=pcmBudget;
+        request.localWork=[cache,scope,target,expected,memory](Reply& reply,std::stop_token stop){
+            resume_audio::read(cache,scope,target,expected,memory,reply,stop);
+        };
+    }
+    client->submit(std::move(request));
+}
 void Workspace::connect(){
     if(client)stopTransport(false);
     connectionAttempted=true;connectionReady=false;
@@ -44,6 +59,7 @@ void Workspace::connect(){
         connection.token.clear();connection.credentialFile=stateio::pathFromText(tokenFile);
         stateio::evaluationConnection(directory,connection.url,connection.credentialFile);
         connection.startWorkstation=serverUrl=="http://127.0.0.1:8765";
+        connection.resumeDirectory=directory/"editor-pcm-v1";
         client=std::make_unique<Client>(connection,notify,backendTransport);get("capabilities","/v1/capabilities");notice="Connecting...";
         stateio::write(directory/"sampling-connection.json",Json{{"url",serverUrl},{"token_file",tokenFile},{"library",library}}.dump(2));
     }catch(const std::exception& e){notice=e.what();}
@@ -472,7 +488,16 @@ void Workspace::beginAudition(Audio& audio,BoundaryCheck check,std::optional<Fra
     }catch(const std::exception& error){stopTransport();transport.state=PlaybackState::Error;notice=error.what();debuglog::write("editor.transport.error",notice);}
 }
 void Workspace::toggleTransport(Audio& audio){
-    if(!audioReady()){stopTransport(false);notice="Audio is not ready for this source. Your draft is retained; try Play when loading finishes.";return;}
+    if(!audioReady()){
+        if(pendingAudition){pendingAudition.reset();notice="Playback request cancelled.";return;}
+        if(capture.is_object()){
+            pendingAudition=std::make_pair(audioEndpoint(),editor.span);
+            notice="Waiting for this audio. Your draft is available.";
+            if(connectionAttempted&&preparedManifest.is_null()&&!connectionReady)loadDetails();
+        }
+        return;
+    }
+    pendingAudition.reset();
     if(transport.state==PlaybackState::Playing||transport.state==PlaybackState::Buffering){if(nativePlayback)nativePlayback->pause(true);transport.cursor=nativePlayback?nativePlayback->state().cursor:transport.cursor;transport.state=PlaybackState::Paused;}
     else if(transport.state==PlaybackState::Paused){audio.setPaused(true);if(nativePlayback)nativePlayback->pause(false);transport.state=PlaybackState::Playing;}
     else if(transport.state!=PlaybackState::Loading){
@@ -519,6 +544,10 @@ void Workspace::process(){
         const auto& tag=reply.request.tag;
         try{
         if(!current(reply.request))continue;
+        if(reply.request.localWork&&(reply.status!=200||!reply.error.empty())){
+            reply.request.localWork={};
+            client->submit(std::move(reply.request));continue;
+        }
         if(tag=="command"||tag=="native-save-hash")for(auto& entry:pending)
             if(entry.at("command").at("request_id")==reply.request.body.at("request_id"))entry["sending"]=false;
         if(!reply.error.empty()&&tag=="source-waveform"&&reply.request.body.value("overview",false)){
@@ -695,9 +724,17 @@ void Workspace::tick(Audio& audio){
             else if(nativePlayback!=parent)parent->stop();
         }
         if(open&&audio.loaded&&!audio.paused)audio.setPaused(true);
-        if(open && !connectionAttempted)connect();
+        if(open && !connectionAttempted){connect();if(!capture.is_null()&&!pendingMark)loadDetails();}
         if(open&&pendingMark&&incomingPlayback)incomingPlayback->tick();
         process();
+        if(pendingAudition){
+            if(!open||capture.is_null()||pendingAudition->first!=audioEndpoint()||pendingAudition->second!=editor.span)
+                pendingAudition.reset();
+            else if(audioReady()&&nativePlayback->state().loaded){
+                pendingAudition.reset();
+                toggleTransport(audio);
+            }
+        }
         if(open&&pendingMark)submitMark();
         if(!open&&transport.engaged())stopTransport();
         if(open&&nativePlayback){

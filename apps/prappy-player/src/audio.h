@@ -66,7 +66,7 @@ struct Audio {
                 native.reset();nativeConnection=backend;
                 native=std::make_shared<sampling::NativePlayback>(backend,*nativeMemory,notify);
             }
-            native->load(source.source.endpoint(),source.source.capture,source.asset,startPaused,startPosition);
+            native->load(source.source.endpoint(),source.source.capture,source.asset,startPaused,startPosition,nullptr,source.timeline);
             native->gain(static_cast<float>(volume/100));return true;
         }catch(const std::exception& e){error=e.what();active=loaded=false;return false;}
     }

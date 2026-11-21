@@ -9,13 +9,14 @@
 #include <shellapi.h>
 
 int WINAPI wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE, _In_ PWSTR, _In_ int) {
+    const auto entered=std::chrono::steady_clock::now();
     bool windowTest=false;
     try {
         int count=0;auto* arguments=CommandLineToArgvW(GetCommandLineW(),&count);
         if(arguments){windowTest=count>=2&&std::wstring(arguments[1])==L"--window-test";LocalFree(arguments);}
         const auto directory=executableDir();
         reporting::initialize(directory/L"PrappyPlayer.exe",windowTest?directory.parent_path()/L"reporting-validation":fs::path{},!windowTest);
-        const int code=runPlayer(instance);reporting::finish(code);return code;
+        const int code=runPlayer(instance,entered);reporting::finish(code);return code;
     }
     catch (const std::exception& e) {
         reporting::fatal("wWinMain");

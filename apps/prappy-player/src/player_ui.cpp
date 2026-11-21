@@ -220,7 +220,7 @@ static void style() {
     s.Colors[ImGuiCol_HeaderActive] = {.20f, .57f, .43f, 1};
     s.ScaleAllSizes(Scale); s.FontSizeBase = 18;
 }
-int runPlayer(HINSTANCE instance) {
+int runPlayer(HINSTANCE instance,std::chrono::steady_clock::time_point entered) {
     struct ComLifetime {
         HRESULT result = E_FAIL;
         ~ComLifetime() { if (SUCCEEDED(result)) CoUninitialize(); }
@@ -287,12 +287,14 @@ int runPlayer(HINSTANCE instance) {
         audio.volume = preferences.volume;
         Scan scan(refreshPreparedCatalog);
         scan.notify = notify;
+        Scan localCatalog(restorePreparedCatalog);
+        localCatalog.notify = notify;
         try { createDefaultConfig(config); } catch (const std::exception& e) { library.notice = e.what(); }
         Config settings;
         try {
             settings = readConfig(config);
             debuglog::instance().configure(stateDirectory/"player-debug.log",settings.debugLog);
-            debuglog::write("app.start","debug_log=true");
+            debuglog::write("app.start","debug_log=true entry_ms="+std::to_string(debuglog::elapsed(entered)));
         } catch (const std::exception& e) { library.notice = e.what(); }
         debugcrash::start(executableDir(),windowTest);
         sampling::PcmBudget pcmMemory(settings.editorPcmMib);
@@ -306,7 +308,10 @@ int runPlayer(HINSTANCE instance) {
         RemoteWaveform preparedWaveform(notify);
         uint64_t analysisGeneration = 0;
         std::shared_ptr<const analysis::Result> waveform;
-        bool restorePlayback=true;
+        const auto resumeSourcePath=stateDirectory/"resume-source-v1.json";
+        stateio::Writer resumeWriter;
+        resumeWriter.notify=notify;
+        uint64_t resumeSerial=0;
         Browse browser;
         browser.view = static_cast<Browse::View>(preferences.session.view);
         browser.availability = preferences.session.availability;
@@ -415,8 +420,25 @@ int runPlayer(HINSTANCE instance) {
         } else SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
         if (preferences.session.maximized && !preferences.strip) SDL_MaximizeWindow(window);
         SDL_ShowWindow(window);
-        scan.begin(config, library.order, &library);
-        auto nextCatalogRefresh=UiSchedule::Clock::now()+std::chrono::seconds(5);
+        debuglog::write("startup.window.shown","");
+        const auto startRestore=[&] {
+            try {
+                library.backend=std::make_shared<sampling::Connection>(preparedConnection(stateDirectory));
+                library.resumeSource=readResumeSource(resumeSourcePath);
+                if(library.resumeSource&&history.current()&&!playback.generation){
+                    library.labels.emplace(key(history.current()->path),library.resumeSource->title);
+                    playback.restore();
+                }
+            }catch(const std::exception& error){debuglog::write("startup.resume.error",error.what());}
+            localCatalog.begin(config,library.order);
+        };
+        auto nextCatalogRefresh=UiSchedule::Clock::now();
+        const auto refreshCatalog=[&]{
+            Library baseline;
+            baseline.catalogValidator=library.catalogValidator;
+            baseline.catalogScope=library.catalogScope;
+            scan.begin(config,library.order,&baseline);
+        };
         bool done = false, expanded = preferences.session.expanded;
         bool historyView = preferences.session.history;
         uint64_t historyGeneration = 0;
@@ -627,21 +649,31 @@ int runPlayer(HINSTANCE instance) {
             const auto previousPosition = audio.position, previousDuration = audio.duration;
             const auto previousSeekPreview = audio.seekPreview;
             playback.tick();
-            if(now>=nextCatalogRefresh&&!scan.running()) {
-                scan.begin(config,library.order,&library);
+            resumeWriter.collect();
+            if(audio.loaded&&audio.preparedSource&&audio.loadedSerial!=resumeSerial&&!resumeWriter.busy()){
+                library.resumeSource=*audio.preparedSource;
+                const auto source=library.resumeSource;
+                resumeSerial=audio.loadedSerial;
+                resumeWriter.startGenerated(resumeSourcePath,[source]{return serializeResumeSource(*source);},resumeSerial);
+            }
+            auto resumeSource=std::move(library.resumeSource);
+            const auto localChanged=localCatalog.update(library);
+            if(schedule.presents&&now>=nextCatalogRefresh&&!scan.running()&&!localCatalog.running()) {
+                refreshCatalog();
                 nextCatalogRefresh=now+std::chrono::seconds(5);
             }
             if (previousSeekPreview != audio.seekPreview) schedule.request();
             if (previousGeneration != playback.generation || previousPause != audio.paused || previousActive != audio.active) schedule.request(2);
             if (audio.paused && (previousPosition != audio.position || previousDuration != audio.duration)) schedule.request();
             reporting::phase("catalog update");
-            if (scan.update(library)) {
+            const auto remoteChanged=scan.update(library);
+            library.resumeSource=std::move(resumeSource);
+            if (localChanged||remoteChanged) {
                 schedule.request(2);
                 directoryIndex.rebuild(library); directoryIndex.prioritize(preferences.pinnedDirectories);
                 history.setLimit(library.historyLimit); filterDirty = true;
                 browseVisits = UINT64_MAX; browseCatalogDirty = true;
                 prioritizeCurrent();
-                if(restorePlayback){restorePlayback=false;playback.restore();}
             }
             // Establish selection before draining a fast warm-cache completion.
             // Otherwise a startup waveform can be discarded while the service
@@ -707,6 +739,8 @@ int runPlayer(HINSTANCE instance) {
             ImGui::Begin("Player", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
             const auto listeningPosition=playback.pending&&playback.pending->kind==Playback::Kind::Restore?playback.pending->position:audio.displayPosition();
             const auto listeningDuration=audio.duration>0?audio.duration:waveform?waveform->duration():0.;
+            const auto listeningLabel=audio.preparedSource&&!library.labels.contains(key(audio.current))?
+                audio.preparedSource->title:library.pathLabel(audio.current);
             const auto drawPlayerWaveform=[&](ImVec2 size){
                 double seek=listeningPosition;
                 if(waveformSeek(waveformImage,waveform,seek,listeningDuration,size,!waveformSelection.active))audio.seek(seek);
@@ -729,7 +763,7 @@ int runPlayer(HINSTANCE instance) {
                 if (centeredButton(">##strip", {30, 26}, "next")) playback.navigate(1); rememberControl();
                 ImGui::SameLine();
                 if (centeredButton("More##strip", {58, 26}, "more")) ImGui::OpenPopup("Options"); rememberControl();
-                ImGui::SameLine(); filenameText(audio.current.empty() ? "Choose a track" : utf8(audio.current.filename()));
+                ImGui::SameLine(); filenameText(audio.current.empty() ? "Choose a track" : listeningLabel);
                 if (!audio.current.empty()) rememberControl();
                 tooltip(library.pathLabel(audio.current));
                 if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) contextPath = audio.current;
@@ -1006,7 +1040,7 @@ int runPlayer(HINSTANCE instance) {
                 ImGui::PushStyleColor(ImGuiCol_Text,audio.error.empty()?ImVec4(.68f,.72f,.72f,1):ImVec4(1,.63f,.5f,1));
                 filenameText(displayMessage,static_cast<float>(width)*.45f);ImGui::PopStyleColor();tooltip(displayMessage);uiProbe.observe("footer",false);ImGui::SameLine();
             }
-            filenameText(audio.current.empty() ? "Choose a track from List" : library.pathLabel(audio.current),std::max(10.f,static_cast<float>(width)-ImGui::GetCursorPosX()-u(8)));
+            filenameText(audio.current.empty() ? "Choose a track from List" : listeningLabel,std::max(10.f,static_cast<float>(width)-ImGui::GetCursorPosX()-u(8)));
             uiProbe.observe("audio-info", false);
             if (!audio.current.empty()) rememberControl();
             if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) contextPath = audio.current;
@@ -1091,7 +1125,7 @@ int runPlayer(HINSTANCE instance) {
             ImGui::SetCursorPos({refreshX, transportRowY});
             ImGui::BeginDisabled(scan.running());
             if (centeredButton(scan.running() ? "Scanning" : "Refresh", {refreshWidth, buttonHeight}, "refresh")) {
-                scan.begin(config, library.order, &library);
+                if(!localCatalog.running())refreshCatalog();
             }
             rememberControl();
             ImGui::EndDisabled();
@@ -1108,6 +1142,10 @@ int runPlayer(HINSTANCE instance) {
             });
             inputTimestamp = 0;
             reporting::phase("frame state persistence");
+            if(!schedule.presents){
+                debuglog::write("startup.first.present","entry_ms="+std::to_string(debuglog::elapsed(entered)));
+                startRestore();schedule.request(2);
+            }
             schedule.presented(now);
             schedule.caret = UiSchedule::Time::max();
             if (io.WantTextInput && io.ConfigInputTextCursorBlink) {
@@ -1165,7 +1203,7 @@ int runPlayer(HINSTANCE instance) {
                 uiProbe.telemetry += "\nTEXT " + std::to_string(textStats.shaped) + " " + std::to_string(textStats.rasterized) + " " + std::to_string(textStats.bytes);
                 uiProbe.telemetry += "\nPLAYBACK_ERROR " + (audio.error.empty() ? playback.notice : audio.error);
                 uiProbe.telemetry += "\nCATALOG "+sampling::Json{{"sources",library.tracks.size()},
-                    {"notice",library.notice},{"refreshing",scan.running()}}.dump();
+                    {"notice",library.notice},{"refreshing",scan.running()},{"current",library.catalogCurrent}}.dump();
                 uiProbe.telemetry += "\nSAMPLER " + sampleWorkspace.diagnostics();
                 uiProbe.telemetry += "\nPLAYER_SELECTION " + sampling::Json{{"active",waveformSelection.active},{"start",waveformSelection.start},{"end",waveformSelection.end}}.dump();
                 std::ostringstream status;

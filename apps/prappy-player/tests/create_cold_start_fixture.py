@@ -90,7 +90,7 @@ def gated_app(config):
         if response.status_code==200 and route.endswith('/native-saves') and lose_save_reply:
             lose_save_reply=False
             return JSONResponse({'error':{'code':'fixture_reply_lost','message':'Injected committed-save response loss'}},status_code=503)
-        if response.status_code==200 and ((route.endswith('/audio') and analysis_pending) or (route=='/v1/catalog' and catalog_offline)):
+        if response.status_code==200 and ((route.endswith('/audio') and analysis_pending) or (route in {'/v1/catalog','/v1/browse-catalog'} and catalog_offline)):
             if route.endswith('/audio'):analysis_pending-=1
             else:catalog_offline-=1
             body=json.loads(b''.join([chunk async for chunk in response.body_iterator]))
@@ -98,6 +98,11 @@ def gated_app(config):
                 body['analysis_state']='Queued';body.pop('waveform',None)
             else:
                 for item in body['items']:item['state']='Offline'
+            if route=='/v1/browse-catalog':
+                import hashlib
+                modified=JSONResponse(body)
+                modified.headers['etag']='"'+hashlib.sha256(modified.body).hexdigest()+'"'
+                return modified
             return JSONResponse(body)
         return response
 
