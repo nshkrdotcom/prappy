@@ -1035,8 +1035,11 @@ int runPlayer(HINSTANCE instance,std::chrono::steady_clock::time_point entered) 
             auto draw = ImGui::GetWindowDrawList();
             draw->AddRectFilled({0, transportY}, {static_cast<float>(width), static_cast<float>(height)}, IM_COL32(49, 53, 56, 255));
             ImGui::SetCursorPos({u(8), transportY + u(2)});
+            const auto catalogStatus=library.tracks.empty()&&scan.running()?scan.status():
+                (!library.catalogCurrent&&!library.catalogValidator.empty()&&!library.notice.empty()?
+                    std::string("Using saved library list"):library.notice);
             const auto message = !historyFile.notice.empty() ? historyFile.notice : (!playback.notice.empty() ? playback.notice :
-                (!audio.error.empty() ? audio.error : (scan.running() ? statusText(library.notice, scan.status()) : library.notice)));
+                (!audio.error.empty() ? audio.error : (playback.pending?std::string("Preparing audio"):catalogStatus)));
             const auto displayMessage = statusText(message, playback.folder.empty() ? "" : "Folder: " + library.pathLabel(playback.folder));
             if(!displayMessage.empty()){
                 ImGui::PushStyleColor(ImGuiCol_Text,audio.error.empty()?ImVec4(.68f,.72f,.72f,1):ImVec4(1,.63f,.5f,1));
@@ -1126,7 +1129,7 @@ int runPlayer(HINSTANCE instance,std::chrono::steady_clock::time_point entered) 
             rememberControl(); tooltip(std::string(repeatTooltip(history.repeat)) + (playback.folder.empty() ? "" : " Library progression is scoped to the selected folder."));
             ImGui::SetCursorPos({refreshX, transportRowY});
             ImGui::BeginDisabled(scan.running());
-            if (centeredButton(scan.running() ? "Scanning" : "Refresh", {refreshWidth, buttonHeight}, "refresh")) {
+            if (centeredButton(scan.running()&&library.tracks.empty() ? "Scanning" : "Refresh", {refreshWidth, buttonHeight}, "refresh")) {
                 if(!localCatalog.running())refreshCatalog();
             }
             rememberControl();

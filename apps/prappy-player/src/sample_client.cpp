@@ -72,6 +72,10 @@ void startWorkstationBackend() {
     CloseHandle(process.hThread);CloseHandle(process.hProcess);
     lastLaunch=now;
 }
+void startWorkstationOnFirstUse() {
+    static std::once_flag launched;
+    std::call_once(launched,startWorkstationBackend);
+}
 
 }
 Connection authorize(Connection connection,std::stop_token stop) {
@@ -376,7 +380,7 @@ class ClientExecutor {
                     if(connection.token.size()<32)throw std::runtime_error("Token file is empty or invalid.");
                 };
                 try {
-                    if(connection.startWorkstation&&!state->testBootstrap&&!stop.stop_requested())state->bootstrap();
+                    if(connection.startWorkstation&&!state->testBootstrap&&!stop.stop_requested())startWorkstationOnFirstUse();
                     read();
                 }catch(const std::exception& e){error=e.what();connection.token.clear();}
                 if(!error.empty()&&connection.startWorkstation&&!stop.stop_requested()) {
