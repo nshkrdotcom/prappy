@@ -1,5 +1,5 @@
 param([Parameter(Mandatory)][string]$Manifest,[string]$BuildVariant='Release',
-    [ValidateRange(1,100)][int]$Iterations=1,[switch]$EvictSourcePages,[switch]$InjectAnalysisPending,[switch]$InjectCatalogOffline,[switch]$VerifySaveExport,[switch]$VerifyCommands)
+    [ValidateRange(1,100)][int]$Iterations=1,[switch]$EvictSourcePages,[switch]$InjectAnalysisPending,[switch]$InjectCatalogOffline,[switch]$VerifySaveExport,[switch]$VerifyCommands,[switch]$VerifyOfflineRelaunch)
 $ErrorActionPreference='Stop'
 if(!('EditorMemoryNative' -as [type])){Add-Type @'
 using System;
@@ -11,6 +11,7 @@ public static class EditorMemoryNative {
 $app=Split-Path $PSScriptRoot -Parent
 $fixture=Get-Content -LiteralPath $Manifest -Raw|ConvertFrom-Json
 if($VerifyCommands -and (!$VerifySaveExport -or !$fixture.generated_codec -or $fixture.url -match ':8765(/|$)')){throw 'Command/retry injection requires generated fixture media and save/export verification.'}
+if($VerifyOfflineRelaunch -and (!$fixture.gate_url -or $fixture.url -match ':8765(/|$)')){throw 'Offline relaunch requires a disposable fixture.'}
 $stateDirectory=Join-Path $app ('build/native-editor-'+[guid]::NewGuid().ToString('N'))
 $null=New-Item -ItemType Directory $stateDirectory
 $encoding=[Text.UTF8Encoding]::new($false)
@@ -48,7 +49,7 @@ try {
  Click list;Click library-0
  $song=Wait-Ui {param($ui)$ui.Duration-gt 14.9} 'native source playback'
  $playerWidth=$song.Width;$playerHeight=$song.Height
- $headers=if($EvictSourcePages -or $InjectAnalysisPending -or $VerifyCommands){@{Authorization='Bearer '+[IO.File]::ReadAllText($fixture.token_file).Trim()}}else{@{}}
+ $headers=if($EvictSourcePages -or $InjectAnalysisPending -or $VerifyCommands -or $VerifyOfflineRelaunch){@{Authorization='Bearer '+[IO.File]::ReadAllText($fixture.token_file).Trim()}}else{@{}}
  if($InjectAnalysisPending){$null=Invoke-RestMethod -Method Post -Headers $headers -Uri ($fixture.gate_url+'/analysis-pending?count=2')}
  if($EvictSourcePages){$null=Invoke-RestMethod -Method Post -Headers $headers -Uri ($fixture.gate_url+'/evict?capture='+$fixture.capture_id)}
  $clock=[Diagnostics.Stopwatch]::StartNew()
@@ -114,7 +115,18 @@ try {
  if($playing.Sample.playhead-lt 0 -or $playing.Sample.playhead-gt $fixture.mark_capture.timeline.frame_count){throw 'Audition cursor left the native timeline.'}
  Stop-Player
  $script:inputSequence=0
- Start-Player
+ if($VerifyOfflineRelaunch){$null=Invoke-RestMethod -Method Post -Uri ($fixture.gate_url+'/hold') -Headers $headers}
+ try{
+  Start-Player
+  if($VerifyOfflineRelaunch){
+   $offline=Wait-Ui {param($ui)$ui.Sample.open -and $ui.Sample.capture-eq $ready.Sample.capture -and $ui.Sample.pcm_selection_ready} 'editor restored its local PCM while the backend is held'
+   Require ($offline.Sample.start-eq $ready.Sample.start -and $offline.Sample.end-eq $ready.Sample.end) 'Offline editor kept the exact selection'
+   Click sample-listen
+   $null=Wait-Ui {param($ui)$ui.Sample.audio_frames_submitted-gt 0} 'offline editor audition submitted native audio'
+  }
+ }finally{
+  if($VerifyOfflineRelaunch){$null=Invoke-RestMethod -Method Post -Uri ($fixture.gate_url+'/release') -Headers $headers}
+ }
  $restored=Wait-Ui {param($ui)$ui.Sample.capture-eq $ready.Sample.capture -and $ui.Sample.pcm_selection_ready -and $ui.Sample.waveform_detail_bins-gt 0} 'native editor restart'
  if($restored.Sample.end-ne $ready.Sample.end){throw 'Editor restart changed native selection frames.'}
  $log=Get-Content "$stateDirectory/player-debug.log" -Raw

@@ -40,13 +40,14 @@ void Workspace::get(std::string tag,std::string path){
     Json context=tag=="sampleMetadata"?draftSnapshot():Json();
     Request request{std::move(tag),"GET",std::move(path),context,generation,{}};
     if(request.tag=="capture"&&capture.is_object()&&rate>0&&request.path==audioEndpoint()){
-        const auto cache=connection.resumeDirectory;
+        const auto cache=connection.resumeDirectory,shared=connection.sharedResumeDirectory;
         const auto scope=connection.url+"\n"+utf8(connection.credentialFile),target=request.path;
         const auto expected=Json{{"capture_id",capture.at("id")},{"original",capture.at("blob_sha256")},
             {"seconds",static_cast<double>(editor.span.start)/rate}};
         const auto memory=pcmBudget;
-        request.localWork=[cache,scope,target,expected,memory](Reply& reply,std::stop_token stop){
+        request.localWork=[cache,shared,scope,target,expected,memory](Reply& reply,std::stop_token stop){
             resume_audio::read(cache,scope,target,expected,memory,reply,stop);
+            if(!reply.status&&!shared.empty())resume_audio::read(shared,scope,target,expected,memory,reply,stop);
         };
     }
     client->submit(std::move(request));
@@ -60,6 +61,7 @@ void Workspace::connect(){
         stateio::evaluationConnection(directory,connection.url,connection.credentialFile);
         connection.startWorkstation=serverUrl=="http://127.0.0.1:8765";
         connection.resumeDirectory=directory/"editor-pcm-v1";
+        connection.sharedResumeDirectory=directory/"song-pcm-v1";
         client=std::make_unique<Client>(connection,notify,backendTransport);get("capabilities","/v1/capabilities");notice="Connecting...";
         stateio::write(directory/"sampling-connection.json",Json{{"url",serverUrl},{"token_file",tokenFile},{"library",library}}.dump(2));
     }catch(const std::exception& e){notice=e.what();}

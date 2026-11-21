@@ -14,7 +14,12 @@
 #include <chrono>
 namespace sampling {
 using Json = nlohmann::json;
-struct Connection { std::string url = "http://127.0.0.1:8765", token; fs::path credentialFile; bool startWorkstation=false; fs::path resumeDirectory; };
+struct Connection {
+    std::string url = "http://127.0.0.1:8765", token;
+    fs::path credentialFile;
+    bool startWorkstation=false;
+    fs::path resumeDirectory, sharedResumeDirectory;
+};
 Connection authorize(Connection,std::stop_token = {});
 struct UploadFrame {
     uint32_t metadata,sendLength;uint64_t total;

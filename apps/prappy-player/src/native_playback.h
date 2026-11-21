@@ -28,7 +28,8 @@ private:
     Frame decodedEnd=-1,pendingStart=0,pendingEnd=0;
     uint64_t generation=0;
     bool pending=false,started=false,repeat=false;
-    bool readResume=true,cacheWritePending=false,usedResume=false,liveDecoder=false;
+    bool readResume=true,usedResume=false,liveDecoder=false;
+    unsigned cacheWrites=0;
     std::string resumeEpoch;
     float level=1;
     double initialSeconds=0;
@@ -36,17 +37,18 @@ private:
     std::string cacheScope()const{return saveConnection.url+"\n"+utf8(saveConnection.credentialFile);}
     void submitRead(Request request){
         if(readResume&&!saveConnection.resumeDirectory.empty()){
-            const auto path=saveConnection.resumeDirectory;
+            const auto path=saveConnection.resumeDirectory,shared=saveConnection.sharedResumeDirectory;
             const auto scope=cacheScope(),target=endpoint;
             const auto context=request.body;const auto memory=budget;
-            request.localWork=[path,scope,target,context,memory](Reply& reply,std::stop_token stop){
+            request.localWork=[path,shared,scope,target,context,memory](Reply& reply,std::stop_token stop){
                 resume_audio::read(path,scope,target,context,memory,reply,stop);
+                if(!reply.status&&!shared.empty())resume_audio::read(shared,scope,target,context,memory,reply,stop);
             };
         }
         client.submit(std::move(request));
     }
     void remember(const Reply& reply){
-        if(cacheWritePending||saveConnection.resumeDirectory.empty()||!reply.preparedPcm||
+        if(cacheWrites>=2||saveConnection.resumeDirectory.empty()||!reply.preparedPcm||
            reply.preparedPcm->bytes().size()>resume_audio::BlockLimit)return;
         const auto path=saveConnection.resumeDirectory;
         const auto scope=cacheScope(),target=endpoint;
@@ -61,7 +63,7 @@ private:
             auto scratch=memory.reserve(pcm->bytes().size()+resume_audio::HeaderLimit);
             resume_audio::write(path,scope,target,data,*pcm,epoch,stop);
         };
-        try{client.submit(std::move(job));cacheWritePending=true;}
+        try{client.submit(std::move(job));++cacheWrites;}
         catch(const std::exception& error){debuglog::write("resume.audio.write",error.what());}
     }
     void release(){
@@ -244,14 +246,14 @@ public:
         try{release();}catch(...){closingError=std::current_exception();}
         output.stop();retained.reset();manifest=nullptr;
         ++generation;pending=started=repeat=false;cacheWindow.reset();decodedEnd=-1;status=State{};
-        readResume=true;usedResume=false;cacheWritePending=false;resumeEpoch.clear();
+        readResume=true;usedResume=false;cacheWrites=0;resumeEpoch.clear();
         if(closingError)std::rethrow_exception(closingError);
     }
     void tick(){
         try{
             for(auto& reply:client.collect()){
                 if(reply.request.tag=="resume-cache-write"){
-                    cacheWritePending=false;
+                    if(cacheWrites)--cacheWrites;
                     if(!reply.error.empty())debuglog::write("resume.audio.write",reply.error);
                     continue;
                 }

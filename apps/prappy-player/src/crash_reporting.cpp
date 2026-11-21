@@ -35,12 +35,14 @@ std::deque<std::pair<std::string,std::string>> breadcrumbs;
 std::thread breadcrumbWorker;
 bool breadcrumbStopping=false,breadcrumbWriting=false;
 size_t breadcrumbDropped=0;
+void pruneSessions();
 void emitBreadcrumb(const std::string& category,const std::string& message){
     auto crumb=sentry_value_new_breadcrumb("default",message.c_str());
     sentry_value_set_by_key(crumb,"category",sentry_value_new_string(category.c_str()));
     sentry_add_breadcrumb(crumb);
 }
 void runBreadcrumbs(){
+    try{pruneSessions();}catch(...){/* retain evidence if cleanup fails */}
     for(;;){
         std::pair<std::string,std::string> row;size_t lost=0;
         {
@@ -143,7 +145,6 @@ void initialize(const fs::path& executable,const fs::path& reportRoot,bool inter
         root=fs::path(local)/L"Prappy"/L"Reports";
     }else root=fs::absolute(reportRoot);
     sessionIdentity=uuid();session=root/"sessions"/sessionIdentity;fs::create_directories(session);
-    try{pruneSessions();}catch(...){/* retain evidence if cleanup fails */}
     const auto manifest=executable.parent_path()/"player-build.json";
     if(fs::exists(manifest)){
         const auto build=Json::parse(read(manifest));buildIdentity=build.value("build_id",build.value("commit",std::string("development")));
@@ -162,7 +163,10 @@ void initialize(const fs::path& executable,const fs::path& reportRoot,bool inter
     const auto readyName=L"Local\\PrappyReports-"+std::to_wstring(port)+L"-ready";
     HANDLE collectorReady=CreateEventW(nullptr,TRUE,FALSE,readyName.c_str());
     if(!collectorReady)throw std::runtime_error("Cannot create collector readiness event.");
-    try{launch(executable.parent_path()/L"PrappyReports.exe",L"--serve \""+root.wstring()+L"\" "+std::to_wstring(port));}
+    try{
+        if(WaitForSingleObject(collectorReady,0)!=WAIT_OBJECT_0)
+            launch(executable.parent_path()/L"PrappyReports.exe",L"--serve \""+root.wstring()+L"\" "+std::to_wstring(port));
+    }
     catch(...){CloseHandle(collectorReady);throw;}
     const auto status=WaitForSingleObject(collectorReady,5000);CloseHandle(collectorReady);
     if(status!=WAIT_OBJECT_0)throw std::runtime_error("Local report collector did not become ready.");

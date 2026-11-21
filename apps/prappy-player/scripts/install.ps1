@@ -1,10 +1,12 @@
 #Requires -Version 7.0
 param([ValidateSet('Debug','Release')][string]$Config='Debug',
-    [string]$Destination=(Join-Path $PSScriptRoot '../build/Release'),[switch]$NoBuild)
+    [string]$Destination=(Join-Path $PSScriptRoot '../build/Release'),[switch]$NoBuild,
+    [ValidatePattern('^[A-Za-z0-9-]*$')][string]$VariantSuffix='')
 $ErrorActionPreference='Stop'
 $app=Split-Path $PSScriptRoot -Parent
-if(!$NoBuild){ & "$PSScriptRoot/build.ps1" -Config $Config }
-$source=[IO.Path]::GetFullPath((Join-Path $app "build/$Config"))
+if(!$NoBuild){ & "$PSScriptRoot/build.ps1" -Config $Config -VariantSuffix $VariantSuffix }
+$variant=if($VariantSuffix){"$Config-$VariantSuffix"}else{$Config}
+$source=[IO.Path]::GetFullPath((Join-Path $app "build/$variant"))
 $target=[IO.Path]::GetFullPath($Destination)
 $manifest=Get-Content -LiteralPath "$source/player-build.json" -Raw | ConvertFrom-Json
 if($manifest.configuration -ne $Config){throw 'Build configuration does not match install request.'}

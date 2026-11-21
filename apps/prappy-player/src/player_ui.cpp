@@ -221,6 +221,7 @@ static void style() {
     s.ScaleAllSizes(Scale); s.FontSizeBase = 18;
 }
 int runPlayer(HINSTANCE instance,std::chrono::steady_clock::time_point entered) {
+    const auto reportingStartup=debuglog::elapsed(entered);
     struct ComLifetime {
         HRESULT result = E_FAIL;
         ~ComLifetime() { if (SUCCEEDED(result)) CoUninitialize(); }
@@ -294,7 +295,8 @@ int runPlayer(HINSTANCE instance,std::chrono::steady_clock::time_point entered) 
         try {
             settings = readConfig(config);
             debuglog::instance().configure(stateDirectory/"player-debug.log",settings.debugLog);
-            debuglog::write("app.start","debug_log=true entry_ms="+std::to_string(debuglog::elapsed(entered)));
+            debuglog::write("app.start","debug_log=true entry_ms="+std::to_string(debuglog::elapsed(entered))+
+                " reporting_ms="+std::to_string(reportingStartup));
         } catch (const std::exception& e) { library.notice = e.what(); }
         debugcrash::start(executableDir(),windowTest);
         sampling::PcmBudget pcmMemory(settings.editorPcmMib);
