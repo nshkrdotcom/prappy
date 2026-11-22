@@ -132,7 +132,7 @@ endif()
 target_link_libraries(prappy_player PRIVATE implot imgui shell32 ole32 comctl32 bcrypt dwmapi dwrite winhttp)
 target_link_libraries(prappy_player PRIVATE prappy_reporting)
 target_compile_options(prappy_player PRIVATE /Zi)
-target_link_options(prappy_player PRIVATE /DEBUG)
+target_link_options(prappy_player PRIVATE /DEBUG /PDBALTPATH:%_PDB%)
 target_link_options(prappy_player PRIVATE /INCREMENTAL:NO /MANIFEST:EMBED /MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/assets/player.manifest)
 add_custom_command(TARGET prappy_player POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory

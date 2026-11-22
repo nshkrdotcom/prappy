@@ -28,7 +28,7 @@ target_include_directories(prappy_report_collector SYSTEM PRIVATE third_party/js
 target_compile_definitions(prappy_report_collector PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(prappy_report_collector PRIVATE /W4 /WX /utf-8 /EHsc /Zi)
 target_link_libraries(prappy_report_collector PRIVATE ws2_32 dbgeng dbghelp ole32)
-target_link_options(prappy_report_collector PRIVATE /DEBUG /INCREMENTAL:NO)
+target_link_options(prappy_report_collector PRIVATE /DEBUG /INCREMENTAL:NO /PDBALTPATH:%_PDB%)
 add_executable(prappy_crash_probe tests/crash_probe.cpp)
 target_link_libraries(prappy_crash_probe PRIVATE prappy_reporting)
 target_compile_options(prappy_crash_probe PRIVATE /Zi /Od /EHsc)
