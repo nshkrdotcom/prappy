@@ -271,8 +271,8 @@ public:
                     const auto epoch=reply.body.at("decoder_epoch").get<std::string>();
                     const bool forPlayback=reply.request.body.value("native_feed",true);
                     if(usedResume&&(!local||epoch!=resumeEpoch)){
-                        // A different verified decoder stream starts a distinct output run.
-                        if(forPlayback){output.stop();started=false;status.cursor=reply.preparedPcm->start();}
+                        // Provenance changes when a block arrives. The audio callback
+                        // switches blocks only when playback reaches its next frame.
                         retained->resumeVerifiedDecoder();usedResume=false;
                         if(!local)readResume=false;
                     }

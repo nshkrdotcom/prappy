@@ -65,6 +65,52 @@ template<class Predicate> static void until(sampling::NativePlayback& player,Pre
     do{player.tick();if(done())return;if(!player.state().error.empty())throw std::runtime_error(player.state().error);SDL_Delay(1);}while(std::chrono::steady_clock::now()<deadline);
     throw std::runtime_error("Native transport timed out at frame "+std::to_string(player.state().cursor));
 }
+static void resumeHandoffTests(){
+    using namespace sampling;
+    const auto directory=fs::temp_directory_path()/("prappy-resume-handoff-"+uuid());
+    struct Cleanup {fs::path path;~Cleanup(){std::error_code error;fs::remove_all(path,error);}} cleanup{directory};
+    constexpr Frame rate=48000, boundary=rate*3, tail=rate/2;
+    const prepared::NativeTimeline clock{rate,2,boundary+tail,prepared::SampleType::Int32};
+    const auto capture="cap_"+std::string(32,'a'),original=std::string(64,'b');
+    const Json descriptor={{"capture",{{"id",capture},{"blob_sha256",original}}},{"access_mode","indexed"},
+        {"source_key",std::string(64,'c')},{"timeline_id","tl_"+std::string(32,'d')},
+        {"sample_rate",rate},{"channels",2},{"frame_count",clock.frames},{"sample_format","int32"}};
+    const prepared::Block first(clock,0,boundary,std::vector<std::byte>(boundary*8,std::byte{21}));
+    const auto following=std::make_shared<const prepared::Block>(clock,boundary,tail,
+        std::vector<std::byte>(tail*8,std::byte{42}));
+    SDL_SetHint(SDL_HINT_AUDIO_DUMMY_TIMESCALE,"0.1");
+    for(const bool cachedContinuation:{false,true}){
+        Connection connection;
+        connection.token=std::string(48,'t');
+        connection.resumeDirectory=directory/(cachedContinuation?"cached":"live");
+        const auto scope=connection.url+"\n"+utf8(connection.credentialFile);
+        const std::string endpoint="/source/continuity";
+        resume_audio::write(connection.resumeDirectory,scope,endpoint,descriptor,first,"old-owner",{});
+        if(cachedContinuation)
+            resume_audio::write(connection.resumeDirectory,scope,endpoint,descriptor,*following,"new-owner",{});
+        std::atomic_int reads=0;
+        NativePlayback player(connection,PcmBudget(64),[]{},[&](const Connection&,const Request& request,std::stop_token){
+            Reply reply;
+            reply.status=200;
+            if(request.tag=="source-pcm"){
+                ++reads;
+                require(request.body.at("origin_frame")==boundary&&request.body.at("frame_count")==tail,
+                    "Continuation requested the wrong source frames");
+                reply.preparedPcm=following;
+                reply.body={{"decoder_epoch","new-owner"}};
+            }
+            return reply;
+        });
+        player.load(endpoint,capture,original,true,0,descriptor);
+        until(player,[&]{return player.state().transfers==2;});
+        require(reads==(cachedContinuation?0:1),"Test did not exercise the intended continuation source");
+        require(player.state().paused&&player.state().cursor==0,"Decoder handoff moved the playback cursor before queued audio played");
+        player.pause(false);
+        until(player,[&]{return player.state().finished;});
+        require(player.state().submitted==clock.frames,"Decoder handoff discarded queued source frames");
+    }
+    SDL_ResetHint(SDL_HINT_AUDIO_DUMMY_TIMESCALE);
+}
 static void uploadFrameTests(){
     using sampling::UploadFrame;
     const UploadFrame ordinary(64,4096);require(ordinary.total==4164&&ordinary.sendLength==4164,"Small upload framing changed");
@@ -209,6 +255,7 @@ int main(int argc,char** argv){
         uploadFrameTests();resumeAudioTests();spillTests();selectionAuthorityTests();missingSelectionTests();failedEvictionTests();
         if(argc==2&&std::string_view(argv[1])=="--save-storage"){std::cout<<"PASS checked native save framing and bounded lossless storage\n";return 0;}
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER,"dummy");
+    resumeHandoffTests();
     using namespace sampling;using namespace prepared;
     const std::string capture="cap_"+std::string(32,'a'),sha(64,'b'),key(64,'c'),timeline="tl_"+std::string(32,'d');
     speakerOutputTest();
